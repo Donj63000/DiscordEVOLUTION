@@ -6,56 +6,33 @@ import asyncio
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+from alive import keep_alive  # le mini-serveur Flask
 
-# Import du mini-serveur Flask
-from alive import keep_alive
-
-# -----------------------
-# 1) Chargement du token
-# -----------------------
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise ValueError("Le token Discord est introuvable dans .env")
 
-# -----------------------
-# 2) Configuration du bot
-# -----------------------
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# -----------------------
-# 3) Événement on_ready
-# -----------------------
 @bot.event
 async def on_ready():
     print(f"Bot connecté : {bot.user} (ID: {bot.user.id})")
 
-# -----------------------
-# 4) Exemple de commande ping
-# -----------------------
 @bot.command(name="ping")
 async def ping_cmd(ctx):
     await ctx.send("Pong!")
 
-# -----------------------
-# 5) Fonction principale asynchrone
-# -----------------------
 async def main():
-    """
-    Lance le mini-serveur Flask (keep_alive),
-    charge toutes les extensions en mode asynchrone,
-    puis démarre le bot Discord.
-    """
-    # 1) Démarrer le mini-serveur HTTP pour garder le service actif
+    # 1) Lancement du mini-serveur keep-alive
     keep_alive()
 
-    # 2) Charger les extensions (Cogs) avec 'await'
-    #    Si tu veux retirer la commande help d'origine :
-    #    bot.remove_command("help")
+    # 2) Charger les cogs en mode asynchrone
+    #    ex: bot.remove_command("help") si tu veux
     await bot.load_extension("job")
     await bot.load_extension("ia")
     await bot.load_extension("ticket")
@@ -68,12 +45,8 @@ async def main():
     await bot.load_extension("help")
     await bot.load_extension("welcome")
 
-    # 3) Démarrer le bot (bloquant tant que le bot reste en ligne)
+    # 3) Lancer le bot
     await bot.start(TOKEN)
 
-# -----------------------
-# 6) Lancement du script
-# -----------------------
 if __name__ == "__main__":
-    # On exécute la fonction asynchrone 'main()' dans l'event loop
     asyncio.run(main())
