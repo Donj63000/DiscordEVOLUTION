@@ -18,25 +18,28 @@ class WelcomeCog(commands.Cog):
     async def on_member_join(self, member: discord.Member):
         """
         Se déclenche lorsqu'un membre rejoint le serveur.
-        1. MP de bienvenue + question sur le règlement
-        2. Confirmation 'oui', sinon rappel
-        3. Demande s'il est invité ou membre
-        4. Si invité => rôle Invités + fin
-        5. Si membre => pseudo Dofus, recruteur => role Membre validé
-        6. Message de bienvenue dans #𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥
-        7. Détails dans #𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭
-        8. Enregistrement auto via PlayersCog si présent
+        1. Message privé de bienvenue + question sur le règlement.
+        2. Confirmation 'oui', sinon rappel.
+        3. Demande s'il est invité ou membre.
+        4. Si invité => rôle Invités + fin.
+        5. Si membre => pseudo Dofus, recruteur => rôle Membre validé.
+        6. Message de bienvenue dans #𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥.
+        7. Détails dans #𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭.
+        8. Enregistrement auto via PlayersCog si présent.
         """
 
         # Étape 1 : MP de bienvenue
         try:
             dm_channel = await member.create_dm()
             bienvenue_msg = (
-                f"🎉 Bienvenue dans Evolution, {member.mention} ! 🎉\n\n"
-                "Nous sommes ravis de t’accueillir. Merci de prendre un moment pour lire le règlement.\n"
-                "As-tu lu et accepté le règlement ? (Réponds simplement par **oui**.)"
+                f"🎉 **Bienvenue dans Evolution, {member.mention} !** 🎉\n\n"
+                "Nous sommes super contents de t’accueillir parmi nous. Avant de commencer, "
+                "prends juste quelques instants pour parcourir notre règlement — "
+                "on préfère que tout se passe dans la bonne ambiance !\n\n"
+                "D’ailleurs, l’as-tu **lu et accepté** ? \n\n"
+                "*(Pour le confirmer, réponds simplement par **oui**.)*"
             )
-            # Envoi éventuel d’une image
+            # Envoi éventuel d’une image de bienvenue (optionnelle)
             file = discord.File("welcome1.png", filename="welcome1.png")
             await dm_channel.send(content=bienvenue_msg, file=file)
 
@@ -59,7 +62,7 @@ class WelcomeCog(commands.Cog):
             try:
                 rappel_msg = (
                     f"⏳ Hé, {member.mention}, je n’ai pas encore reçu ta confirmation !\n"
-                    "Pour avancer, réponds simplement **oui** si tu acceptes le règlement."
+                    "Pour qu’on puisse avancer, réponds simplement **oui** si tu acceptes le règlement."
                 )
                 await dm_channel.send(rappel_msg)
             except discord.Forbidden:
@@ -68,8 +71,8 @@ class WelcomeCog(commands.Cog):
 
         # Étape 3 : Demander s’il est invité ou membre
         invite_or_member_msg = (
-            "Parfait ! Es-tu **membre** de la guilde ou simplement **invité** sur le serveur ?\n"
-            "(Réponds par `membre` ou `invité`.)"
+            "**Parfait !** Maintenant, dis-moi : tu es **membre** de la guilde ou juste **invité** sur le serveur ?\n"
+            "*(Réponds par `membre` ou `invité`.)*"
         )
         await dm_channel.send(invite_or_member_msg)
 
@@ -87,7 +90,7 @@ class WelcomeCog(commands.Cog):
             user_status = "invité"
             try:
                 await dm_channel.send(
-                    "Temps écoulé. Je considère que tu es **invité** pour le moment."
+                    "Le temps est écoulé. Je vais supposer que tu es **invité** pour l’instant, pas de soucis !"
                 )
             except discord.Forbidden:
                 pass
@@ -99,17 +102,21 @@ class WelcomeCog(commands.Cog):
                 try:
                     await member.add_roles(guests_role)
                     await dm_channel.send(
-                        "Tu as reçu le rôle **Invités**. Pour nous rejoindre plus tard, contacte le staff !"
+                        "Pas de souci ! Je t’ai attribué le rôle **Invités**. "
+                        "Profite du serveur et n’hésite pas à discuter avec nous. "
+                        "Et si tu veux rejoindre la guilde plus tard, fais signe au staff ! 😉"
                     )
                 except Exception as e:
                     print(f"Impossible d'ajouter le rôle Invités à {member}: {e}")
             else:
-                await dm_channel.send("Le rôle 'Invités' n’existe pas. Signale-le à un admin.")
+                await dm_channel.send(
+                    "Le rôle 'Invités' n’existe pas encore. Peux-tu prévenir un admin ?"
+                )
             return
 
         # Étape 4 : Si membre => demande pseudo Dofus
         await dm_channel.send(
-            "Super, bienvenue officiellement ! Peux-tu me donner **ton pseudo exact** sur Dofus ?"
+            "**Super nouvelle !** J’ai juste besoin d’une petite info : quel est **ton pseudo exact** sur Dofus ?"
         )
 
         def check_pseudo(msg: discord.Message):
@@ -121,15 +128,17 @@ class WelcomeCog(commands.Cog):
         except asyncio.TimeoutError:
             dofus_pseudo = "Inconnu"
             try:
-                await dm_channel.send("Temps écoulé, on mettra ‘Inconnu’ pour le moment.")
+                await dm_channel.send(
+                    "Le temps est écoulé, on notera ‘Inconnu’ pour le moment. N’hésite pas à contacter le staff plus tard !"
+                )
             except discord.Forbidden:
                 pass
             return
 
         # Étape 5 : Demander le recruteur
         question_recruteur_msg = (
-            "Qui t’a invité dans la guilde ? (Pseudo Discord ou Dofus)\n"
-            "Si tu ne sais plus, réponds `non`."
+            "Dernière petite étape : **Qui t’a invité** à nous rejoindre ? (Pseudo Discord ou Dofus)\n"
+            "Si tu ne te souviens plus, réponds simplement `non`."
         )
         await dm_channel.send(question_recruteur_msg)
 
@@ -142,7 +151,7 @@ class WelcomeCog(commands.Cog):
         except asyncio.TimeoutError:
             recruiter_pseudo = "non"
             try:
-                await dm_channel.send("Ok, on mettra ‘non’ pour le recruteur.")
+                await dm_channel.send("Ok, aucun problème, je mettrai ‘non’ pour le recruteur.")
             except discord.Forbidden:
                 pass
 
@@ -163,13 +172,15 @@ class WelcomeCog(commands.Cog):
                 print(f"Impossible d'ajouter le rôle Membre validé à {member}: {e}")
         else:
             await dm_channel.send(
-                "Le rôle 'Membre validé d'Evolution' est introuvable. Signale-le à un admin."
+                "Le rôle **Membre validé d'Evolution** est introuvable. Signale-le à un admin."
             )
 
         # Message de confirmation
         try:
             await dm_channel.send(
-                f"Merci, **{dofus_pseudo}** ! Tu es désormais officiellement membre de la guilde Evolution. 🎉"
+                f"**Génial, {dofus_pseudo} !** Te voilà membre officiel de la guilde *Evolution*. "
+                "Bienvenue à toi et profite bien du serveur ! Si tu as la moindre question, "
+                "n’hésite pas à la poser sur le salon général ou à contacter un membre du staff."
             )
         except discord.Forbidden:
             pass
@@ -189,9 +200,10 @@ class WelcomeCog(commands.Cog):
         general_channel = discord.utils.get(member.guild.text_channels, name="𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥")
         if general_channel:
             annonce_msg_general = (
-                f"🔥 Un nouvel aventurier nous rejoint ! 🔥\n\n"
-                f"{member.mention}, alias **{dofus_pseudo}**, débarque dans Evolution. "
-                "Faites-lui un triomphe !"
+                f"🔥 **Nouvelle recrue en approche** ! 🔥\n\n"
+                f"Faites un triomphe à {member.mention}, alias **{dofus_pseudo}** sur Dofus, "
+                "qui rejoint officiellement nos rangs ! 🎉\n"
+                "Un grand bienvenue de la part de toute la guilde ! 😃"
             )
             await general_channel.send(annonce_msg_general)
         else:
