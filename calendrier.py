@@ -1,6 +1,7 @@
 import calendar
 import io
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -64,13 +65,10 @@ def gen_cal(data_events, bg, annee, mois):
     fig = plt.figure(figsize=(LARGEUR_FIG, HAUTEUR_FIG), facecolor="none")
     ax = fig.add_subplot(111)
     ax.set_axis_off()
-
     if bg is not None:
         ax.imshow(bg, extent=[0, 1, 0, 1], zorder=0)
 
-    # Noms des colonnes (jours de la semaine)
-    labs = ["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"]
-
+    labs = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
     table = ax.table(
         cellText=table_txt,
         colLabels=labs,
@@ -79,12 +77,10 @@ def gen_cal(data_events, bg, annee, mois):
         zorder=1,
         bbox=BOITE_TABLEAU
     )
-
     table.auto_set_font_size(False)
     table.set_fontsize(TAILLE_POLICE)
     table.scale(ECHELLE_CELLULE_X, ECHELLE_CELLULE_Y)
-
-    for key, cell in table.get_celld().items():
+    for _, cell in table.get_celld().items():
         cell.set_facecolor("none")
         cell.set_edgecolor("lightgray")
         cell.set_linewidth(0.5)
@@ -100,7 +96,6 @@ def gen_cal(data_events, bg, annee, mois):
     )
 
     plt.tight_layout()
-
     buffer = io.BytesIO()
     plt.savefig(buffer, format='png', dpi=RESOLUTION_DPI, transparent=True)
     buffer.seek(0)
