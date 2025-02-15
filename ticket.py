@@ -29,9 +29,10 @@ import datetime
 # Ensemble global permettant de suivre les utilisateurs ayant déjà un ticket ouvert
 open_tickets = set()
 
+
 class TicketView(discord.ui.View):
     """
-    Vue contenant les boutons d'interaction pour la gestion d'un ticket.
+    Vue (View) contenant les boutons d'interaction pour la gestion d'un ticket.
     """
     def __init__(self, author: discord.User):
         super().__init__(timeout=None)
@@ -64,7 +65,7 @@ class TicketView(discord.ui.View):
             self.taken_by = interaction.user
             embed = interaction.message.embeds[0]
 
-            # Statut : "En attente ⌛" -> "En cours 🔄"
+            # Remplacer "En attente ⌛" par "En cours 🔄"
             for index, field in enumerate(embed.fields):
                 if field.name == "Statut":
                     embed.set_field_at(index, name="Statut", value="En cours 🔄", inline=field.inline)
@@ -102,7 +103,7 @@ class TicketView(discord.ui.View):
         staff_role = discord.utils.get(interaction.guild.roles, name="Staff")
         if staff_role is None or staff_role not in interaction.user.roles:
             await interaction.response.send_message(
-                "❌ Vous n'avez pas la permission de modifier le statut de ce ticket.",
+                "❌ Vous n'avez pas la permission de modifier le statut de ce ticket (rôle 'Staff' requis).",
                 ephemeral=True
             )
             return
@@ -122,47 +123,52 @@ class TicketView(discord.ui.View):
 
         embed.color = discord.Color.green()  # Couleur verte = résolu
 
-        # Désactivation de tous les boutons
+        # Désactiver tous les boutons
         for child in self.children:
             child.disabled = True
 
-        # Supprimer l'utilisateur de l'ensemble
+        # Retirer l'utilisateur de l'ensemble open_tickets
         open_tickets.discard(self.author.id)
 
         await interaction.response.edit_message(embed=embed, view=self)
 
-        # Envoi d'un MP à l'utilisateur
+        # Envoi d'un MP à l'utilisateur pour le prévenir
         try:
             await self.author.send(
                 f"Votre ticket a été résolu par le staff : **{self.taken_by.display_name}**.\n"
-                "Merci pour votre patience !"
+                "Merci pour votre patience !"
             )
         except discord.Forbidden:
-            print("[DEBUG] Impossible d'envoyer un DM à l'auteur du ticket (DM bloqués).")
+            print("[DEBUG] Impossible d'envoyer un DM à l'auteur (DM bloqués).")
 
         self.stop()
 
 
 class TicketCog(commands.Cog):
+    """
+    Gère la commande !ticket et la commande !staff pour afficher les membres du Staff.
+    """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @commands.command(name="ticket")
     async def create_ticket(self, ctx: commands.Context):
         """
-        Crée un nouveau ticket. Ne fonctionne qu'en serveur (pas en DM).
+        Crée un nouveau ticket. Envoie d'abord un DM à l'utilisateur pour recueillir sa demande,
+        puis publie un embed dans #ticket avec des boutons pour le staff.
         """
         print(f"[DEBUG] Commande !ticket appelée par {ctx.author} (ID: {ctx.author.id}).")
 
         if ctx.guild is None:
-            return
+            return  # Commande lancée en DM => rien ne se passe
 
         user = ctx.author
 
+        # Supprimer le message de commande si possible
         try:
             await ctx.message.delete()
         except discord.Forbidden:
-            print("[DEBUG] Impossible de supprimer le message de commande.")
+            print("[DEBUG] Impossible de supprimer le message !ticket")
 
         if user.id in open_tickets:
             await user.send(
@@ -170,9 +176,10 @@ class TicketCog(commands.Cog):
             )
             return
 
+        # Marquer l'utilisateur comme "ayant un ticket"
         open_tickets.add(user.id)
 
-        # Envoi d'un DM pour recueillir la description du problème
+        # Tente d'envoyer un DM pour recueillir la description
         try:
             await user.send(
                 "Bonjour, vous avez ouvert un ticket de support.\n"
@@ -180,10 +187,12 @@ class TicketCog(commands.Cog):
             )
         except discord.Forbidden:
             open_tickets.discard(user.id)
-            await ctx.send(f"{user.mention}, je n'ai pas pu ouvrir le ticket car vous bloquez les messages privés.")
+            await ctx.send(
+                f"{user.mention}, je n'ai pas pu ouvrir le ticket car vous bloquez les MP."
+            )
             return
 
-        # Attente de la réponse en DM
+        # On attend la réponse en DM
         def check_dm(m: discord.Message):
             return m.author == user and isinstance(m.channel, discord.DMChannel)
 
@@ -206,13 +215,17 @@ class TicketCog(commands.Cog):
         embed.add_field(name="Statut", value="En attente ⌛", inline=True)
         embed.add_field(name="Contenu du ticket", value=ticket_content, inline=False)
 
+        # Chercher le salon #ticket
         ticket_channel = discord.utils.get(ctx.guild.text_channels, name="ticket")
         if ticket_channel is None:
             open_tickets.discard(user.id)
             await user.send("❌ Le ticket n'a pas pu être créé car le canal `#ticket` est introuvable.")
             return
 
+        # Créer la View
         view = TicketView(user)
+
+        # Envoyer l'embed dans #ticket
         await ticket_channel.send(embed=embed, view=view)
         await user.send(
             "✅ Votre ticket a bien été envoyé au staff. Vous serez recontacté ici une fois pris en charge."
@@ -223,19 +236,20 @@ class TicketCog(commands.Cog):
     async def staff_list(self, ctx: commands.Context):
         """
         Affiche la liste de tous les membres possédant le rôle 'Staff'.
-        On force un fetch des membres pour éviter les problèmes de cache.
+        Force un fetch_members() pour contourner les caches.
         """
-        # Vérification préalable de l'activation de l'intent members
         if not self.bot.intents.members:
-            await ctx.send("❌ L'intent 'members' n'est pas activé. Veuillez l'activer dans votre code et sur le portail Discord.")
+            await ctx.send(
+                "❌ L'intent 'members' n'est pas activé. Activez-le dans votre code et sur le portail Discord (Server Members Intent)."
+            )
             return
 
-        # Récupération brute de tous les membres
         all_fetched_members = []
         try:
+            # On récupère tous les membres du serveur
             async for member in ctx.guild.fetch_members(limit=None):
                 all_fetched_members.append(member)
-        except discord.ClientException as e:
+        except discord.HTTPException as e:
             await ctx.send(f"Erreur lors du fetch des membres : {e}")
             return
 
@@ -244,14 +258,14 @@ class TicketCog(commands.Cog):
             await ctx.send("Le rôle 'Staff' n'existe pas sur ce serveur.")
             return
 
-        # Filtrer pour récupérer les membres possédant le rôle 'Staff'
+        # Filtrer sur ceux qui ont le rôle staff
         members_with_staff_role = [m for m in all_fetched_members if staff_role in m.roles]
 
         if not members_with_staff_role:
             await ctx.send("Aucun membre ne possède le rôle 'Staff'.")
             return
 
-        # Construction de la liste sous forme de texte
+        # Construire la liste
         lines = [f"- {member.mention} (ID: {member.id})" for member in members_with_staff_role]
         staff_list_str = "\n".join(lines)
 
@@ -263,16 +277,17 @@ class TicketCog(commands.Cog):
         await ctx.send(embed=embed)
 
 
-def setup(bot: commands.Bot):
+# Pour Py-Cord / Discord.py 2.x, on définit la fonction setup asynchrone
+async def setup(bot: commands.Bot):
     """
-    Pour charger ce cog : bot.load_extension('ticket')
+    Pour charger ce cog :
+      await bot.load_extension('ticket')
 
     Assurez-vous d'activer l'intent "members" :
       intents = discord.Intents.default()
       intents.members = True
       bot = commands.Bot(command_prefix='!', intents=intents)
 
-    Et dans le portail dev (https://discord.com/developers/applications),
-    onglet "Bot" > "Privileged Gateway Intents" > cochez "SERVER MEMBERS INTENT".
+    Et sur le portail dev Discord (onglet Bot), cochez "Server Members Intent".
     """
-    bot.add_cog(TicketCog(bot))
+    await bot.add_cog(TicketCog(bot))
