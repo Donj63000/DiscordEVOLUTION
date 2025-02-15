@@ -61,6 +61,16 @@ async def main():
     # Charger les cogs en mode asynchrone avec 'await'
 
     await bot.load_extension("activite")
+    await bot.load_extension("job")
+    await bot.load_extension("ia")
+    await bot.load_extension("ticket")
+    await bot.load_extension("players")
+    await bot.load_extension("defender")
+    await bot.load_extension("calcul")
+    await bot.load_extension("sondage")
+    await bot.load_extension("stats")
+    await bot.load_extension("help")
+    await bot.load_extension("welcome")
 
     
     # Démarrer le bot Discord
