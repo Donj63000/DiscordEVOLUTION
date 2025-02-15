@@ -31,30 +31,35 @@ STATS_SPECIALES = ["pa", "pm", "po", "invocation"]
 
 def estimer_probabilites(stat: str, valeur_jet: int):
     """
-    Retourne un dictionnaire avec la probabilité (en pourcentage) d'obtenir
-    chaque type de rune (normale, Pa, Ra) à partir de 'valeur_jet' pour la stat 'stat'.
+    Retourne un dictionnaire avec la probabilité (en %) d'obtenir
+    chaque type de rune (normale, Pa, Ra) pour la stat 'stat' et le jet 'valeur_jet'.
     """
     if stat in STATS_SPECIALES:
         return {
             "special": True,
             "message": (
-                f"La caractéristique **{stat.upper()}** ne peut pas atteindre 100% d'obtention "
-                "pour sa rune (Ga Pa / Ga Pme / Ga Po...). Les taux dépassent rarement 66%. "
-                "Impossible de calculer un palier 100%."
+                f"La caractéristique {stat.upper()} ne peut pas atteindre 100% "
+                "pour sa rune (Ga Pa / Ga Pme / Ga Po...). Taux max ~66%. "
+                "Pas de calcul de palier 100% possible."
             )
         }
+
     if stat not in PALIER_100:
         return {
             "error": True,
-            "message": f"Statistique inconnue : {stat}. Paliers non définis dans le module."
+            "message": f"Statistique inconnue : {stat}."
         }
+
     paliers = PALIER_100[stat]
     p_n = paliers["normale"]
     p_pa = paliers["pa"]
     p_ra = paliers["ra"]
+
     prob_normale = 0
     prob_pa = 0
     prob_ra = 0
+
+    # Calcul prob rune normale
     if valeur_jet <= 0:
         prob_normale = 0
     elif 1 <= valeur_jet < p_n:
@@ -62,6 +67,8 @@ def estimer_probabilites(stat: str, valeur_jet: int):
         prob_normale = min(base, 100)
     else:
         prob_normale = 100
+
+    # Calcul prob rune Pa
     if valeur_jet < p_pa:
         if valeur_jet <= p_n:
             prob_pa = 0
@@ -71,6 +78,8 @@ def estimer_probabilites(stat: str, valeur_jet: int):
             prob_pa = min(base, 100)
     else:
         prob_pa = 100
+
+    # Calcul prob rune Ra
     if valeur_jet < p_pa:
         prob_ra = 0
     elif p_pa <= valeur_jet < p_ra:
@@ -79,6 +88,7 @@ def estimer_probabilites(stat: str, valeur_jet: int):
         prob_ra = min(base, 100)
     else:
         prob_ra = 100
+
     return {
         "error": False,
         "special": False,
@@ -90,8 +100,9 @@ def estimer_probabilites(stat: str, valeur_jet: int):
 class CalculRuneCog(commands.Cog):
     """
     Cog permettant la commande !rune pour estimer les probabilités d'obtention de runes
-    à partir d'un jet donné dans une statistique (selon des formules communautaires).
+    à partir d'un jet dans une statistique (selon des formules communautaires).
     """
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
@@ -105,38 +116,38 @@ class CalculRuneCog(commands.Cog):
             usage_msg = (
                 "**Commande :** `!rune jet <valeur_jet> <stat>`\n\n"
                 "**Description :**\n"
-                "Cette commande permet d'estimer les probabilités d'obtention de runes lors du brisage d'un objet dans Dofus Retro, "
-                "selon la valeur du jet (la statistique de l'objet) et la caractéristique concernée.\n\n"
+                "Estime les probabilités d'obtention de runes lors du brisage d'un objet (Dofus Retro).\n"
+                "Basé sur la valeur du jet (statistique de l'objet) et la stat concernée.\n\n"
                 "**Paramètres :**\n"
-                " - `jet` : Mot-clé obligatoire indiquant que l'on fournit la valeur du jet.\n"
-                " - `<valeur_jet>` : Un entier représentant la valeur du jet obtenu (ex. 30 ou 104).\n"
-                " - `<stat>` : La statistique concernée (par exemple : force, intelligence, chance, agilite, vitalite, etc.).\n\n"
+                "- `jet` : mot-clé obligatoire.\n"
+                "- `<valeur_jet>` : entier (ex. 30, 104).\n"
+                "- `<stat>` : ex. force, intelligence, chance, vitalite...\n\n"
                 "**Exemples :**\n"
-                " - `!rune jet 30 force` : Estime les probabilités pour un objet affichant 30 points en force.\n"
-                " - `!rune jet 104 vitalite` : Estime les probabilités pour un objet affichant 104 points en vitalite, ce qui correspond souvent à un palier garanti pour une rune Ra vitalite.\n\n"
-                "**Notes :**\n"
-                " - Les statistiques supportées dans ce calcul sont celles définies dans le dictionnaire (force, intelligence, chance, agilite, vitalite, sagesse, initiative, pods, prospection).\n"
-                " - Pour les statistiques spéciales (ex. `pa`, `pm`, `po`, `invocation`), aucun calcul n'est effectué car leur taux maximal reste plafonné (~66%).\n\n"
-                "Les valeurs sont calculées par interpolation linéaire entre des paliers définis par la communauté. "
-                "Pour plus d'informations, consultez par exemple [les taux de brisage sur JeuxOnLine](https://forums.jeuxonline.info/sujet/1045383/les-taux-de-brisage).\n\n"
-                "Utilisez cette commande pour obtenir une estimation rapide des chances d'obtenir chaque type de rune "
-                "en fonction du jet de l'objet et de la statistique choisie. Les résultats sont arrondis et fournis à titre indicatif."
+                "- `!rune jet 30 force`\n"
+                "- `!rune jet 104 vitalite`\n"
+                "Les résultats sont approximatifs, arrondis, et fournis à titre indicatif."
             )
             await ctx.send(usage_msg)
             return
+
         tokens = args.split()
         if len(tokens) < 3:
             await ctx.send("Syntaxe incorrecte. Exemple : `!rune jet 30 force`")
             return
+
         if tokens[0].lower() != "jet":
             await ctx.send("Syntaxe incorrecte. Il manque le mot-clé 'jet' après !rune.")
             return
+
         try:
             valeur_jet = int(tokens[1])
         except ValueError:
             await ctx.send(f"`{tokens[1]}` n'est pas un nombre valide.")
             return
-        stat_input = " ".join(tokens[2:]).lower().replace("é", "e").replace("è", "e")
+
+        stat_input = " ".join(tokens[2:]).lower()
+        stat_input = stat_input.replace("é", "e").replace("è", "e")
+
         remplacement = {
             "agilite": ["agi", "agilite"],
             "force": ["fo", "force"],
@@ -152,16 +163,21 @@ class CalculRuneCog(commands.Cog):
             "po": ["po"],
             "invocation": ["invoc", "invocation"]
         }
+
         matched_stat = None
         for cle, aliases in remplacement.items():
             if stat_input in aliases:
                 matched_stat = cle
                 break
+
         if not matched_stat:
-            matched_stat = stat_input if stat_input in PALIER_100 or stat_input in STATS_SPECIALES else None
+            # Fallback : si l'utilisateur a tapé le nom exact "prospection" par ex.
+            from_main_keys = (stat_input in PALIER_100 or stat_input in STATS_SPECIALES)
+            matched_stat = stat_input if from_main_keys else None
             if not matched_stat:
                 await ctx.send(f"Statistique '{stat_input}' inconnue.")
                 return
+
         result = estimer_probabilites(matched_stat, valeur_jet)
         if result.get("error"):
             await ctx.send(result["message"])
@@ -169,21 +185,29 @@ class CalculRuneCog(commands.Cog):
         if result.get("special"):
             await ctx.send(result["message"])
             return
+
         prob_norm = result["normale"]
         prob_pa = result["pa"]
         prob_ra = result["ra"]
+
         embed = discord.Embed(
             title="Estimation de brisage",
-            description=f"**Jet** : {valeur_jet} en {matched_stat}\nProbabilités estimées d'obtention :",
+            description=(
+                f"**Jet** : {valeur_jet} en **{matched_stat}**\n"
+                "Probabilités estimées d'obtention :"
+            ),
             color=0x03a9f4
         )
         embed.add_field(name="Rune normale", value=f"{prob_norm}%", inline=True)
         embed.add_field(name="Rune Pa", value=f"{prob_pa}%", inline=True)
         embed.add_field(name="Rune Ra", value=f"{prob_ra}%", inline=True)
-        note = ("⚠️ Ces chiffres sont approximatifs, basés sur des formules communautaires.\n"
-                "Au-dessus de chaque palier, la rune inférieure est déjà incluse (ex. si Pa=100%, alors normale=100% aussi).")
+        note = (
+            "⚠️ Chiffres approximatifs basés sur des formules communautaires.\n"
+            "Si Pa=100%, normale l'est forcément, etc."
+        )
         embed.set_footer(text=note)
         await ctx.send(embed=embed)
 
-def setup(bot: commands.Bot):
-    bot.add_cog(CalculRuneCog(bot))
+# Fonction d'installation du cog (asynchrone)
+async def setup(bot: commands.Bot):
+    await bot.add_cog(CalculRuneCog(bot))
