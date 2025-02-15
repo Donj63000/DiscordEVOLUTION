@@ -1,0 +1,29 @@
+{
+  "next_id": 14,
+  "events": {
+    "10": {
+      "id": "10",
+      "titre": "XXXX1",
+      "date_str": "2025-02-12 04:20:00",
+      "description": "",
+      "creator_id": 544619572473364480,
+      "role_id": 1337988848499822674,
+      "participants": [
+        544619572473364480
+      ],
+      "cancelled": true
+    },
+    "12": {
+      "id": "12",
+      "titre": "XXsXX1",
+      "date_str": "2025-02-12 04:20:00",
+      "description": "",
+      "creator_id": 544619572473364480,
+      "role_id": 1337990475889770536,
+      "participants": [
+        544619572473364480
+      ],
+      "cancelled": true
+    }
+  }
+}
