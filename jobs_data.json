@@ -1,0 +1,144 @@
+{
+    "pandi_pandaa": {
+        "name": "Pandi-Panda",
+        "jobs": {
+            "Alchimiste": 100,
+            "Bijoutier": 100,
+            "Boucher": 100,
+            "Chasseur": 100,
+            "Cordomage": 100,
+            "Cordonnier": 100,
+            "Costumage": 100,
+            "Joaillomage": 100,
+            "Poissonnier": 100,
+            "Sculptemage d'Arcs": 100,
+            "Sculptemage de Bâtons": 100,
+            "Tailleur": 100,
+            "Sculpteur d'Arcs": 85,
+            "Mineur": 100,
+            "Bûcheron": 77,
+            "Boulanger": 83,
+            "Forgeur de Pelles": 66,
+            "Sculpteur de Bâtons": 66,
+            "Pêcheur": 75,
+            "Paysan": 64,
+            "Sculpteur de Baguette": 96
+        }
+    },
+    "jay": {
+        "name": "Jay",
+        "jobs": {
+            "Bijoutier": 82,
+            "Joaillomage": 100,
+            "Tailleur": 50,
+            "Sculpteur de Baguette": 100
+        }
+    },
+    "nuskov": {
+        "name": "nuskov",
+        "jobs": {
+            "Bijoutier": 100,
+            "Cordonnier": 100,
+            "Tailleur": 100,
+            "Pêcheur": 45,
+            "Cordomage": 100,
+            "Boulanger": 100
+        }
+    },
+    ".krugeri": {
+        "name": ".krugeri",
+        "jobs": {
+            "Bijoutier": 100
+        }
+    },
+    "strizdiso": {
+        "name": "Strizdiso",
+        "jobs": {
+            "Bijoutier": 100,
+            "Boulanger": 100,
+            "Paysan": 100,
+            "Mineur": 70,
+            "Bricoleur": 35
+        }
+    },
+    "sinshiki_my_aya": {
+        "name": "Sinshiki / My-Aya",
+        "jobs": {
+            "Bijoutier": 65,
+            "Cordonnier": 65,
+            "Joaillomage": 100,
+            "Tailleur": 65,
+            "Cordomage": 100
+        }
+    },
+    "idir1234": {
+        "name": "idir1234",
+        "jobs": {
+            "Cordomage": 100
+        }
+    },
+    "as_pique": {
+        "name": "as_pique",
+        "jobs": {
+            "Tailleur": 81
+        }
+    },
+    "544619572473364480": {
+        "name": "coca-cola",
+        "jobs": {
+            "Pêcheur": 61
+        }
+    },
+    "bhakara": {
+        "name": "Bhakara",
+        "jobs": {
+            "Bijoutier": 67,
+            "Cordonnier": 65,
+            "Joaillomage": 100,
+            "Cordomage": 100
+        }
+    },
+    "lobstar": {
+        "name": "Lobstar",
+        "jobs": {
+            "Mineur": 100,
+            "Bûcheron": 100,
+            "Forgeur d'Épées": 100,
+            "Paysan": 100,
+            "Boulanger": 100,
+            "Chasseur": 100,
+            "Boucher": 100,
+            "Bricoleur": 100,
+            "Cordonnier": 80,
+            "Bijoutier": 60,
+            "Alchimiste": 60
+        }
+    },
+    "520571060878442506": {
+        "name": "striz(diso)",
+        "jobs": {
+            "paysan": 100,
+            "boulanger": 100,
+            "mineur": 70,
+            "bucheron": 54
+        }
+    },
+    "321478600090189824": {
+        "name": "Pandi-Panda",
+        "jobs": {
+            "sculptemagedebaguettes": 100,
+            "sculpteurdebaguettes": 100
+        }
+    },
+    "1188998146425098342": {
+        "name": "Bramss/the bramster",
+        "jobs": {
+            "tailleur": 100,
+            "bijoutier": 100,
+            "joaillomage": 100,
+            "mineur": 63,
+            "chasseur": 100,
+            "boucher": 100
+        }
+    }
+}
