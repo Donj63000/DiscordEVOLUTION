@@ -15,41 +15,22 @@ import discord
 from discord.ext import commands
 from cryptography.fernet import Fernet
 
-# Regex pour détecter les URL dans un message
 URL_REGEX = re.compile(r"(https?://[^\s]+)", re.IGNORECASE)
 
 class DefenderCog(commands.Cog):
     """
-    Cog pour l'analyse des URLs dans les messages Discord.
-    1) on_message: analyse automatique de tout message contenant une URL (sauf si c'est une commande).
-    2) !scan <URL>: analyse manuelle (embed) et suppression du message de commande.
-    3) Historique chiffré en SQLite.
+    Analyse des URLs dans les messages Discord.
+    - on_message: analyse automatique de tout message contenant une URL (hors commande).
+    - !scan <URL>: analyse manuelle (embed) et suppression du message de commande.
+    - Historique chiffré en SQLite.
     """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-
-        # ============================
-        # 1) Lecture des clés d'API depuis l'environnement
-        # ============================
         self.GOOGLE_SAFE_BROWSING_API_KEY = os.getenv("GSB_API_KEY")
         self.VIRUSTOTAL_API_KEY = os.getenv("VT_API_KEY")
+        self.LISTE_BLANCHE_DOMAINE = []
 
-        # Tu peux, si tu le souhaites, rendre ces clés obligatoires :
-        # if not self.GOOGLE_SAFE_BROWSING_API_KEY:
-        #     raise ValueError("Clé Google Safe Browsing (GSB_API_KEY) manquante dans l'environnement.")
-        # if not self.VIRUSTOTAL_API_KEY:
-        #     raise ValueError("Clé VirusTotal (VT_API_KEY) manquante dans l'environnement.")
-
-        # Liste blanche (on peut y ajouter des domaines sûrs)
-        self.LISTE_BLANCHE_DOMAINE = [
-            # "google.com",
-            # "monsite.fr"
-        ]
-
-        # ============================
-        # 2) Clé de chiffrement (Fernet)
-        # ============================
         self.KEY_FILE = "secret.key"
         if not os.path.exists(self.KEY_FILE):
             self.key = Fernet.generate_key()
@@ -62,10 +43,6 @@ class DefenderCog(commands.Cog):
             logging.info("Clé de chiffrement chargée (Defender).")
 
         self.fernet = Fernet(self.key)
-
-        # ============================
-        # 3) Fichiers (logs, DB)
-        # ============================
         self.DB_FILENAME = "historique_defender.db"
         self.LOG_FILENAME = "defender_discord.log"
 
@@ -74,9 +51,6 @@ class DefenderCog(commands.Cog):
         self.securiser_fichiers()
         logging.info("DefenderCog initialisé avec succès.")
 
-    # ============================
-    # Logging & BD
-    # ============================
     def initialiser_logging(self):
         logging.basicConfig(
             level=logging.INFO,
@@ -115,9 +89,6 @@ class DefenderCog(commands.Cog):
                 logging.error(f"Erreur chmod (Defender): {e}")
 
     def enregistrer_historique(self, url: str, statut: str):
-        """
-        Enregistre dans la base le lien chiffré + statut.
-        """
         try:
             conn = sqlite3.connect(self.DB_FILENAME)
             cursor = conn.cursor()
@@ -132,12 +103,8 @@ class DefenderCog(commands.Cog):
         except sqlite3.Error as e:
             logging.error(f"Erreur BD (historique): {e}")
 
-    # ============================
-    # Commande !scan <URL>
-    # ============================
     @commands.command(name="scan", help="Analyse un lien (Safe Browsing + VirusTotal) et supprime le message de commande.")
     async def scan_command(self, ctx, *, url: str = None):
-        # Supprimer le message de commande
         try:
             await ctx.message.delete()
         except discord.Forbidden:
@@ -147,7 +114,6 @@ class DefenderCog(commands.Cog):
             await ctx.send("Usage : `!scan <URL>`", delete_after=10)
             return
 
-        # Analyse et envoi d'embed
         statut, color, url_affiche = self.analyser_url(url)
         if statut is None:
             await ctx.send(f"URL invalide ou non supportée : {url}", delete_after=10)
@@ -156,46 +122,33 @@ class DefenderCog(commands.Cog):
         embed = self.creer_embed(url_affiche, statut, color)
         await ctx.send(embed=embed)
 
-    # ============================
-    # on_message : Scan automatique
-    # ============================
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # 1) Ignorer les messages des bots
         if message.author.bot:
             return
 
-        # 2) Vérifier si c'est une commande
         ctx = await self.bot.get_context(message)
         if ctx.valid and ctx.command is not None:
-            # Ne pas lancer l'analyse automatique pour éviter les doublons
             return
 
-        # 3) Rechercher les URLs
         found_urls = URL_REGEX.findall(message.content)
         if not found_urls:
-            # S’il n’y a pas d’URL, on laisse passer
             await self.bot.process_commands(message)
             return
 
-        # 4) Analyser toutes les URLs trouvées
         new_content = message.content
-        results = []        # Pour stocker (url_originale, statut, url_affiche)
-        worst_status = None # Pour déterminer la pire catégorie rencontrée
+        results = []
+        worst_status = None
 
         for raw_url in found_urls:
             statut, color, url_affiche = self.analyser_url(raw_url)
             if statut is None:
-                # URL invalide => on ne l'inclut pas dans l'embed
                 continue
 
             results.append((raw_url, statut, url_affiche))
-
-            # Si c’est dangereux, on remplace l’URL par [dangerous link removed]
             if "DANGEREUX" in statut:
                 new_content = new_content.replace(raw_url, "[dangerous link removed]")
 
-            # Gérer la « gravité » pour la couleur finale de l'embed
             severity = 0
             if "INDÉTERMINÉ" in statut:
                 severity = 1
@@ -216,12 +169,10 @@ class DefenderCog(commands.Cog):
                 else:
                     worst_status = "SÛR"
 
-        # 5) Si on n'a aucun résultat valide, on laisse passer
         if not results:
             await self.bot.process_commands(message)
             return
 
-        # 6) Éditer le message si on l'a modifié
         if new_content != message.content:
             try:
                 await message.edit(content=new_content)
@@ -230,13 +181,12 @@ class DefenderCog(commands.Cog):
             except discord.HTTPException as e:
                 logging.warning(f"Erreur lors de l'édition du message: {e}")
 
-        # 7) Couleur globale de l'embed
         if worst_status == "DANGEREUX":
             final_color = 0xE74C3C
         elif worst_status == "INDÉTERMINÉ":
             final_color = 0xF1C40F
         else:
-            final_color = 0x2ECC71  # SÛR ou None
+            final_color = 0x2ECC71
 
         embed = discord.Embed(
             title="Analyse Defender",
@@ -248,19 +198,12 @@ class DefenderCog(commands.Cog):
         for original_url, statut, url_affiche in results:
             embed.add_field(
                 name=f"URL détectée : {original_url}",
-                value=f"**Statut :** {statut}\n"
-                      f"**Affichage :** {url_affiche}",
+                value=f"**Statut :** {statut}\n**Affichage :** {url_affiche}",
                 inline=False
             )
-
-        # 8) Envoyer l’embed
         await message.reply(embed=embed, mention_author=False)
-        # 9) Laisser passer la suite
         await self.bot.process_commands(message)
 
-    # ============================
-    # Logique d'analyse d'URL
-    # ============================
     def analyser_url(self, raw_url: str):
         url_nettoyee, whitelisted = self.valider_et_nettoyer_url(raw_url)
         if not url_nettoyee:
@@ -286,23 +229,16 @@ class DefenderCog(commands.Cog):
             color = 0xF1C40F
 
         self.enregistrer_historique(url_nettoyee, statut)
-
-        if "DANGEREUX" in statut:
-            url_affiche = self.mask_dangerous(url_nettoyee)
-        else:
-            url_affiche = url_nettoyee
-
+        url_affiche = self.mask_dangerous(url_nettoyee) if "DANGEREUX" in statut else url_nettoyee
         return statut, color, url_affiche
 
     def valider_et_nettoyer_url(self, url: str):
         url = url.strip()
         if not self.est_url_valide(url):
             return None, False
-
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
             return None, False
-
         domain = parsed.netloc.lower().split(':')[0]
         whitelisted = any(
             domain == w or domain.endswith("." + w)
@@ -311,9 +247,6 @@ class DefenderCog(commands.Cog):
         return url, whitelisted
 
     def est_url_valide(self, url: str) -> bool:
-        """
-        Vérifie que l'URL est conforme (syntaxe, taille, pas de scripts JS...).
-        """
         if not validators.url(url):
             return False
         if len(url) > 2048:
@@ -335,17 +268,9 @@ class DefenderCog(commands.Cog):
                 return True
         return False
 
-    # --- Safe Browsing
     def verifier_url_safe_browsing(self, url: str):
-        """
-        Vérifie l'URL via Google Safe Browsing.
-        Retourne (True, None) si sûre, (False, data) si dangereuse,
-        ou (None, None) si indéterminé (erreur ou impossibilité).
-        """
-        # Si pas de clé config, on ne peut pas vérifier
         if not self.GOOGLE_SAFE_BROWSING_API_KEY:
             return None, None
-
         endpoint = 'https://safebrowsing.googleapis.com/v4/threatMatches:find'
         payload = {
             "client": {"clientId": "defender_discord_bot", "clientVersion": "1.0"},
@@ -360,7 +285,6 @@ class DefenderCog(commands.Cog):
             }
         }
         params = {'key': self.GOOGLE_SAFE_BROWSING_API_KEY}
-
         try:
             resp = requests.post(endpoint, params=params, json=payload, timeout=10)
             resp.raise_for_status()
@@ -371,29 +295,17 @@ class DefenderCog(commands.Cog):
         except (requests.RequestException, json.JSONDecodeError):
             return None, None
 
-    # --- VirusTotal
     def verifier_url_virustotal(self, url: str):
-        """
-        Vérifie l'URL via l'API VirusTotal.
-        Retourne (True, None) si sûre, (False, data) si dangereuse,
-        ou (None, None) si indéterminée (pas connue, soumission nécessaire).
-        """
-        # Si pas de clé config, on ne peut pas vérifier
         if not self.VIRUSTOTAL_API_KEY:
             return None, None
-
         try:
-            # Encodage Base64 "URL-safe" pour l'endpoint VT
             url_b64 = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
             endpoint = f"https://www.virustotal.com/api/v3/urls/{url_b64}"
             headers = {'x-apikey': self.VIRUSTOTAL_API_KEY}
             resp = requests.get(endpoint, headers=headers, timeout=10)
-
             if resp.status_code == 404:
-                # URL pas encore connue => on la soumet
                 self.soumettre_virustotal(url)
                 return None, None
-
             resp.raise_for_status()
             data = resp.json()
             stats = data['data']['attributes']['last_analysis_stats']
@@ -402,15 +314,11 @@ class DefenderCog(commands.Cog):
             if malicious > 0 or suspicious > 0:
                 return False, data
             return True, None
-
         except (requests.RequestException, json.JSONDecodeError, KeyError) as e:
             logging.error(f"Erreur VirusTotal: {e}")
             return None, None
 
     def soumettre_virustotal(self, url: str):
-        """
-        Soumet l'URL à VirusTotal pour analyse si elle n'est pas déjà connue.
-        """
         try:
             endpoint = 'https://www.virustotal.com/api/v3/urls'
             headers = {'x-apikey': self.VIRUSTOTAL_API_KEY}
@@ -419,20 +327,10 @@ class DefenderCog(commands.Cog):
         except Exception as e:
             logging.error(f"Erreur soumission VirusTotal: {e}")
 
-    # ============================
-    # Aides (masquage, création d'embed)
-    # ============================
     def mask_dangerous(self, url: str) -> str:
-        """
-        Transforme "http" en "hxxp" pour rendre l'URL moins cliquable.
-        """
         return re.sub(r'(?i)^http', 'hxxp', url)
 
     def mask_sensitive_info(self, msg: str) -> str:
-        """
-        Remplace la partie domain.tld par domain***.tld pour éviter
-        d'exposer entièrement l'URL dans les logs.
-        """
         pattern = re.compile(
             r'(?i)\b((?:https?://)?(?:www\.)?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:/[^\s]*)?'
         )
@@ -442,9 +340,6 @@ class DefenderCog(commands.Cog):
         )
 
     def creer_embed(self, url_affiche: str, statut: str, color: int) -> discord.Embed:
-        """
-        Crée un embed unique pour la commande !scan.
-        """
         embed = discord.Embed(
             title="Analyse Defender",
             description=f"**URL analysée :** {url_affiche}",
@@ -454,6 +349,6 @@ class DefenderCog(commands.Cog):
         embed.set_footer(text="EVO Defender© By Coca - Analysis via Safe Browsing & VirusTotal")
         return embed
 
-
-def setup(bot: commands.Bot):
-    bot.add_cog(DefenderCog(bot))
+# Changement vers une config asynchrone pour Discord.py/Py-Cord 2.x
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DefenderCog(bot))
