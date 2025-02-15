@@ -9,6 +9,7 @@ pour rester actif en continu sur des plateformes d'hébergement gratuites.
 """
 
 import os
+import asyncio
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -48,32 +49,33 @@ async def ping_cmd(ctx):
     await ctx.send("Pong!")
 
 # -----------------------
-# 5) Chargement des cogs
+# 5) Fonction principale asynchrone
+# -----------------------
+async def main():
+    # Optionnel : retirer la commande help par défaut si désiré
+    bot.remove_command("help")
+    
+    # Lancer le mini-serveur Flask pour le keep-alive
+    keep_alive()
+    
+    # Charger les cogs en mode asynchrone avec 'await'
+    await bot.load_extension("job")
+    await bot.load_extension("ia")
+    await bot.load_extension("ticket")
+    await bot.load_extension("players")
+    await bot.load_extension("defender")
+    await bot.load_extension("calcul")
+    await bot.load_extension("sondage")
+    await bot.load_extension("activite")
+    await bot.load_extension("stats")
+    await bot.load_extension("help")
+    await bot.load_extension("welcome")
+    
+    # Démarrer le bot Discord
+    await bot.start(TOKEN)
+
+# -----------------------
+# 6) Lancement du script
 # -----------------------
 if __name__ == "__main__":
-    # Si tu veux retirer la commande help par défaut
-    bot.remove_command("help")
-
-    # Charger tes cogs (extension)
-    bot.load_extension("job")
-    bot.load_extension("ia")
-    bot.load_extension("ticket")
-    bot.load_extension("players")
-    bot.load_extension("defender")
-    bot.load_extension("calcul")
-    bot.load_extension("sondage")
-    bot.load_extension("activite")
-    bot.load_extension("stats")
-    bot.load_extension("help")
-    bot.load_extension("welcome")
-
-    # -----------------------
-    # 6) Lancement du keep_alive
-    # -----------------------
-    # On appelle la fonction depuis alive.py
-    keep_alive()
-
-    # -----------------------
-    # 7) Lancement du bot Discord
-    # -----------------------
-    bot.run(TOKEN)
+    asyncio.run(main())
