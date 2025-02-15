@@ -257,7 +257,6 @@ class HelpCog(commands.Cog):
         embed.set_footer(text="Pour plus de détails, consultez le règlement complet ou demandez au Staff.")
 
         chunks = list(chunk_text(summary_text, max_size=1024))
-
         for i, chunk in enumerate(chunks, start=1):
             embed.add_field(
                 name=f"Règlement (Partie {i})",
@@ -267,5 +266,5 @@ class HelpCog(commands.Cog):
 
         await ctx.send(embed=embed)
 
-def setup(bot: commands.Bot):
-    bot.add_cog(HelpCog(bot))
+async def setup(bot: commands.Bot):
+    await bot.add_cog(HelpCog(bot))
