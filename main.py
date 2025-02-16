@@ -71,6 +71,7 @@ async def main():
     await bot.load_extension("stats")
     await bot.load_extension("help")
     await bot.load_extension("welcome")
+    await bot.load_extension("entree")
 
     
     # Démarrer le bot Discord
