@@ -7,22 +7,13 @@ from discord.ext import commands
 from datetime import datetime
 
 class WelcomeCog(commands.Cog):
-    """
-    Cog de gestion de l'accueil des nouveaux membres sur un serveur Discord.
-    """
-
-    # Stocker les IDs des membres déjà accueillis pour éviter les doublons
-    already_welcomed = set()
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.already_welcomed = set()
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        # Log de débogage
         print(f"[DEBUG] on_member_join triggered for user {member} (ID={member.id}).")
-
-        # 1) Ignorer si le membre est un bot ou s'il a déjà été accueilli
         if member.bot:
             print("[DEBUG] Member is a bot, ignoring.")
             return
@@ -31,8 +22,6 @@ class WelcomeCog(commands.Cog):
             return
         self.already_welcomed.add(member.id)
         print("[DEBUG] Ajout de l'ID dans already_welcomed.")
-
-        # 2) Tenter d'envoyer un MP de bienvenue
         try:
             dm_channel = await member.create_dm()
             bienvenue_msg = (
@@ -52,12 +41,11 @@ class WelcomeCog(commands.Cog):
             await self.fallback_public_greeting(member)
             return
 
-        # 3) Attendre que le membre confirme avoir lu le règlement
         def check_reglement(msg: discord.Message):
             return (
-                msg.author == member and
-                msg.channel == dm_channel and
-                msg.content.lower().startswith("oui")
+                msg.author == member
+                and msg.channel == dm_channel
+                and msg.content.lower().startswith("oui")
             )
 
         try:
@@ -75,7 +63,6 @@ class WelcomeCog(commands.Cog):
                 pass
             return
 
-        # 4) Demander si le membre est invité ou membre
         invite_or_member_msg = (
             "**Parfait !** Maintenant, dis-moi : tu es **membre** de la guilde ou juste **invité** sur le serveur ?\n\n"
             "*(Réponds par `membre` ou `invité`.)*"
@@ -84,9 +71,9 @@ class WelcomeCog(commands.Cog):
 
         def check_status(msg: discord.Message):
             return (
-                msg.author == member and
-                msg.channel == dm_channel and
-                msg.content.lower() in ["membre", "invité"]
+                msg.author == member
+                and msg.channel == dm_channel
+                and msg.content.lower() in ["membre", "invité"]
             )
 
         try:
@@ -101,7 +88,6 @@ class WelcomeCog(commands.Cog):
             except discord.Forbidden:
                 pass
 
-        # 5) Si le membre est invité, attribuer le rôle « Invités » et terminer
         if user_status == "invité":
             guests_role = discord.utils.get(member.guild.roles, name="Invités")
             if guests_role:
@@ -119,7 +105,6 @@ class WelcomeCog(commands.Cog):
                 await dm_channel.send("Le rôle 'Invités' n’existe pas encore. Peux-tu prévenir un admin ? 🙏")
             return
 
-        # 6) Si le membre se définit comme membre, demander son pseudo exact sur Dofus
         await dm_channel.send("**Super nouvelle !** J’ai juste besoin d’une petite info : quel est **ton pseudo exact** sur Dofus ? 🤔")
 
         def check_pseudo(msg: discord.Message):
@@ -138,7 +123,6 @@ class WelcomeCog(commands.Cog):
             print("[DEBUG] Timeout pseudo => Inconnu.")
             return
 
-        # 7) Demander qui a invité le membre
         question_recruteur_msg = (
             "Dernière petite étape : **Qui t’a invité** à nous rejoindre ? (Pseudo Discord ou Dofus)\n\n"
             "Si tu ne te souviens plus, réponds simplement `non`."
@@ -161,15 +145,13 @@ class WelcomeCog(commands.Cog):
             print("[DEBUG] Timeout recruteur => 'non'.")
 
         recruitment_date = datetime.now().strftime("%d/%m/%Y")
-
-        # 8) Renommer le membre et lui attribuer le rôle "Membre validé d'Evolution"
         validated_role = discord.utils.get(member.guild.roles, name="Membre validé d'Evolution")
         try:
             await member.edit(nick=dofus_pseudo)
             print("[DEBUG] Surnom modifié.")
         except (discord.Forbidden, discord.HTTPException) as e:
             print(f"[DEBUG] Impossible de renommer {member}: {e}")
-        
+
         if validated_role:
             try:
                 await member.add_roles(validated_role)
@@ -180,7 +162,6 @@ class WelcomeCog(commands.Cog):
             await dm_channel.send("Le rôle **Membre validé d'Evolution** est introuvable. Signale-le à un admin. 🚧")
             print("[DEBUG] Rôle Membre validé introuvable.")
 
-        # 9) Envoyer le message final de confirmation
         try:
             await dm_channel.send(
                 f"**Génial, {dofus_pseudo} !** Te voilà membre officiel de la guilde *Evolution*. "
@@ -191,7 +172,6 @@ class WelcomeCog(commands.Cog):
         except discord.Forbidden:
             pass
 
-        # 10) Appeler PlayersCog pour l'inscription auto, si présent
         players_cog = self.bot.get_cog("PlayersCog")
         if players_cog:
             players_cog.auto_register_member(
@@ -203,7 +183,6 @@ class WelcomeCog(commands.Cog):
         else:
             print("[WARNING] PlayersCog introuvable, pas d'inscription auto.")
 
-        # 11) Annonce dans le canal "𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥"
         general_channel = discord.utils.get(member.guild.text_channels, name="𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥")
         if general_channel:
             annonce_msg_general = (
@@ -217,7 +196,6 @@ class WelcomeCog(commands.Cog):
         else:
             print("[DEBUG] Canal '𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥' introuvable.")
 
-        # 12) Annonce dans le canal "𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭"
         recruitment_channel = discord.utils.get(member.guild.text_channels, name="𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭")
         if recruitment_channel:
             if recruiter_pseudo.lower() == "non":
@@ -233,9 +211,6 @@ class WelcomeCog(commands.Cog):
             print("[DEBUG] Canal '𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭' introuvable.")
 
     async def fallback_public_greeting(self, member: discord.Member):
-        """
-        Si l'envoi de DM échoue (parce que les MP sont bloqués), envoyer un message de fallback dans le canal "𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥".
-        """
         general_channel = discord.utils.get(member.guild.text_channels, name="𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥")
         if general_channel:
             await general_channel.send(
