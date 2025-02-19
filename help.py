@@ -4,20 +4,15 @@
 import discord
 from discord.ext import commands
 
-def chunk_text(text: str, max_size: int = 1024):
-    lines = text.split('\n')
-    current_chunk = ""
-    for line in lines:
-        if len(current_chunk) + len(line) + 1 > max_size:
-            yield current_chunk
-            current_chunk = line
-        else:
-            if current_chunk:
-                current_chunk += "\n" + line
-            else:
-                current_chunk = line
-    if current_chunk:
-        yield current_chunk
+def chunk_text(text: str, max_size: int = 3000):
+    """
+    Générateur qui découpe le texte en blocs de taille maximale max_size.
+    Chaque bloc aura au plus 'max_size' caractères.
+    """
+    start = 0
+    while start < len(text):
+        yield text[start:start + max_size]
+        start += max_size
 
 class HelpCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -305,21 +300,22 @@ class HelpCog(commands.Cog):
             "*Règlement en vigueur à compter du 19/02/2025.*\n"
         )
 
-        embed = discord.Embed(
-            title="Résumé Simplifié du Règlement d'Evolution",
-            description="**Voici le texte mis à jour :**",
-            color=discord.Color.gold()
-        )
-        embed.set_footer(text="Pour plus de détails, consultez le règlement complet ou demandez au Staff.")
-
-        chunks = list(chunk_text(summary_text, max_size=1024))
+        chunks = list(chunk_text(summary_text, 3000))
         for i, chunk in enumerate(chunks, start=1):
-            embed.add_field(
-                name=f"Règlement (Partie {i})",
-                value=chunk,
-                inline=False
-            )
-        await ctx.send(embed=embed)
+            if i == 1:
+                embed = discord.Embed(
+                    title="Résumé Simplifié du Règlement d'Evolution",
+                    description=chunk,
+                    color=discord.Color.gold()
+                )
+                embed.set_footer(text="Pour plus de détails, consultez le règlement complet ou demandez au Staff.")
+            else:
+                embed = discord.Embed(
+                    title=f"Règlement (suite) [Part {i}]",
+                    description=chunk,
+                    color=discord.Color.gold()
+                )
+            await ctx.send(embed=embed)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(HelpCog(bot))
