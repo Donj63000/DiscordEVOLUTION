@@ -18,13 +18,11 @@ from cryptography.fernet import Fernet
 URL_REGEX = re.compile(r"(https?://[^\s]+)", re.IGNORECASE)
 
 class DefenderCog(commands.Cog):
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.GOOGLE_SAFE_BROWSING_API_KEY = os.getenv("GSB_API_KEY")
         self.VIRUSTOTAL_API_KEY = os.getenv("VT_API_KEY")
         self.LISTE_BLANCHE_DOMAINE = []
-
         self.KEY_FILE = "secret.key"
         if not os.path.exists(self.KEY_FILE):
             self.key = Fernet.generate_key()
@@ -35,11 +33,9 @@ class DefenderCog(commands.Cog):
             with open(self.KEY_FILE, "rb") as f:
                 self.key = f.read()
             logging.info("Clé de chiffrement chargée (Defender).")
-
         self.fernet = Fernet(self.key)
         self.DB_FILENAME = "historique_defender.db"
         self.LOG_FILENAME = "defender_discord.log"
-
         self.initialiser_logging()
         self.initialiser_db()
         self.securiser_fichiers()
@@ -103,16 +99,13 @@ class DefenderCog(commands.Cog):
             await ctx.message.delete()
         except discord.Forbidden:
             logging.warning("Permission manquante pour supprimer le message de commande.")
-
         if not url:
             await ctx.send("Usage : `!scan <URL>`", delete_after=10)
             return
-
         statut, color, url_affiche = self.analyser_url(url)
         if statut is None:
             await ctx.send(f"URL invalide ou non supportée : {url}", delete_after=10)
             return
-
         embed = self.creer_embed(url_affiche, statut, color)
         await ctx.send(embed=embed)
 
@@ -120,41 +113,34 @@ class DefenderCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-
         ctx = await self.bot.get_context(message)
         if ctx.valid and ctx.command is not None:
+            await self.bot.process_commands(message)
             return
-
         found_urls = URL_REGEX.findall(message.content)
         if not found_urls:
             await self.bot.process_commands(message)
             return
-
         new_content = message.content
         results = []
         worst_status = None
-
         for raw_url in found_urls:
             statut, color, url_affiche = self.analyser_url(raw_url)
             if statut is None:
                 continue
-
             results.append((raw_url, statut, url_affiche))
             if "DANGEREUX" in statut:
                 new_content = new_content.replace(raw_url, "[dangerous link removed]")
-
             severity = 0
             if "INDÉTERMINÉ" in statut:
                 severity = 1
             if "DANGEREUX" in statut:
                 severity = 2
-
             current_worst = 0
             if worst_status == "INDÉTERMINÉ":
                 current_worst = 1
             elif worst_status == "DANGEREUX":
                 current_worst = 2
-
             if severity > current_worst:
                 if severity == 2:
                     worst_status = "DANGEREUX"
@@ -162,11 +148,9 @@ class DefenderCog(commands.Cog):
                     worst_status = "INDÉTERMINÉ"
                 else:
                     worst_status = "SÛR"
-
         if not results:
             await self.bot.process_commands(message)
             return
-
         if new_content != message.content:
             try:
                 await message.edit(content=new_content)
@@ -174,21 +158,18 @@ class DefenderCog(commands.Cog):
                 logging.warning("Impossible d'éditer le message => permissions manquantes.")
             except discord.HTTPException as e:
                 logging.warning(f"Erreur lors de l'édition du message: {e}")
-
         if worst_status == "DANGEREUX":
             final_color = 0xE74C3C
         elif worst_status == "INDÉTERMINÉ":
             final_color = 0xF1C40F
         else:
             final_color = 0x2ECC71
-
         embed = discord.Embed(
             title="Analyse Defender",
             description=f"Détection et analyse de **{len(results)}** URL(s) dans ce message.",
             color=final_color
         )
         embed.set_footer(text="EVO Defender© By Coca - Analysis via Safe Browsing & VirusTotal")
-
         for original_url, statut, url_affiche in results:
             embed.add_field(
                 name=f"URL détectée : {original_url}",
@@ -196,22 +177,18 @@ class DefenderCog(commands.Cog):
                 inline=False
             )
         await message.reply(embed=embed, mention_author=False)
-        await self.bot.process_commands(message)
 
     def analyser_url(self, raw_url: str):
         url_nettoyee, whitelisted = self.valider_et_nettoyer_url(raw_url)
         if not url_nettoyee:
             return None, None, None
-
         if whitelisted:
             statut = "SÛR (Liste Blanche)"
             color = 0x2ECC71
             self.enregistrer_historique(url_nettoyee, statut)
             return statut, color, url_nettoyee
-
         est_sure_sb, _ = self.verifier_url_safe_browsing(url_nettoyee)
         est_sure_vt, _ = self.verifier_url_virustotal(url_nettoyee)
-
         if est_sure_sb is False or est_sure_vt is False:
             statut = "DANGEREUX ⚠️"
             color = 0xE74C3C
@@ -221,7 +198,6 @@ class DefenderCog(commands.Cog):
         else:
             statut = "INDÉTERMINÉ ❓"
             color = 0xF1C40F
-
         self.enregistrer_historique(url_nettoyee, statut)
         url_affiche = self.mask_dangerous(url_nettoyee) if "DANGEREUX" in statut else url_nettoyee
         return statut, color, url_affiche
