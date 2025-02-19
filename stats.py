@@ -10,8 +10,10 @@ def now_iso() -> str:
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
 class StatsCog(commands.Cog):
-Commandes !stats on / !stats off (Staff) pour activer/désactiver la collecte
     """
+    Commandes !stats on / !stats off (Staff) pour activer/désactiver la collecte
+    """
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.stats_enabled = True
