@@ -8,22 +8,11 @@ import discord
 from discord.ext import commands
 from collections import defaultdict
 
-DATA_FILE = "jobs_data.json"
+CONSOLE_CHANNEL_NAME = "console"      # Nom du salon où l'on stocke les données
+DATA_FILE = "jobs_data.json"          # Fichier local (backup, non persistant sur Render gratuit)
+STAFF_ROLE_NAME = "Staff"             # Nom exact du rôle autorisé à faire !clear console
 
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {}
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
-            return {}
-
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-
-def normalize_string(s: str) -> str:
+def normalize_string(s):
     nf = unicodedata.normalize('NFD', s.lower())
     return ''.join(c for c in nf if unicodedata.category(c) != 'Mn')
 
@@ -32,58 +21,98 @@ def chunk_list(lst, chunk_size=25):
         yield lst[i : i + chunk_size]
 
 class JobCog(commands.Cog):
-    """
-    Cog pour gérer la commande !job.
-
-    Usage rapide :
-    - !job
-    - !job me
-    - !job liste
-    - !job liste metier
-    - !job <pseudo>
-    - !job <job_name>
-    - !job <job_name> <niveau>
-    """
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.jobs_data = load_data()
+        self.jobs_data = {}
+        self.initialized = False
+
+    async def cog_load(self):
+        # Méthode appelée en discord.py 2.x pour charger le cog
+        await self.initialize_data()
+
+    async def initialize_data(self):
+        console_channel = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
+        if console_channel:
+            # On parcourt jusqu'à 1000 messages, 
+            # ce qui augmente nos chances de retrouver le dump JSON s'il n'y a pas trop de flood.
+            async for msg in console_channel.history(limit=1000):
+                if msg.author == self.bot.user and "===BOTJOBS===" in msg.content:
+                    try:
+                        start_idx = msg.content.index("```json\n") + len("```json\n")
+                        end_idx = msg.content.rindex("\n```")
+                        raw_json = msg.content[start_idx:end_idx]
+                        self.jobs_data = json.loads(raw_json)
+                        break  # On arrête à la première occurrence
+                    except:
+                        pass
+
+        # Si on n'a pas trouvé dans le salon, on tente un chargement local
+        if not self.jobs_data:
+            if os.path.exists(DATA_FILE):
+                with open(DATA_FILE, "r", encoding="utf-8") as f:
+                    try:
+                        self.jobs_data = json.load(f)
+                    except:
+                        self.jobs_data = {}
+
+        self.initialized = True
+
+    def save_data_local(self):
+        # Sauvegarde en local (inutile en hébergement gratuit sur Render, mais OK en fallback local)
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.jobs_data, f, indent=4, ensure_ascii=False)
+
+    async def dump_data_to_console(self, ctx):
+        # Envoie le JSON dans le salon console sous forme de message ou de fichier
+        console_channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+        if console_channel:
+            data_str = json.dumps(self.jobs_data, indent=4, ensure_ascii=False)
+
+            if len(data_str) < 1900:
+                await console_channel.send(f"===BOTJOBS===\n```json\n{data_str}\n```")
+            else:
+                await console_channel.send(
+                    "===BOTJOBS=== (fichier)",
+                    file=discord.File(fp=self._as_temp_file(data_str), filename="jobs_data.json")
+                )
+
+    def _as_temp_file(self, data_str):
+        # Ecrit le JSON dans un fichier temporaire pour l'envoyer sous forme de fichier
+        with open("temp_jobs_data.json", "w", encoding="utf-8") as tmp:
+            tmp.write(data_str)
+        return "temp_jobs_data.json"
+
+    def get_user_jobs(self, user_id: str):
+        if user_id in self.jobs_data and "jobs" in self.jobs_data[user_id]:
+            return self.jobs_data[user_id]["jobs"]
+        return {}
 
     @commands.command(name="job")
     async def job_command(self, ctx, *args):
+        if not self.initialized:
+            await self.initialize_data()
+
         author = ctx.author
         author_id = str(author.id)
         author_name = author.display_name
 
-        def get_user_jobs(user_id: str):
-            if user_id in self.jobs_data and "jobs" in self.jobs_data[user_id]:
-                return self.jobs_data[user_id]["jobs"]
-            return {}
-
-        # A) Aide si aucun argument
         if len(args) == 0:
             usage_msg = (
                 "**Utilisation de la commande !job :**\n"
                 "- `!job me` : Afficher vos métiers.\n"
-                "- `!job liste` : Afficher la liste complète des métiers et des joueurs.\n"
+                "- `!job liste` : Afficher la liste complète des métiers.\n"
                 "- `!job liste metier` : Afficher la liste de tous les noms de métiers.\n"
-                "- `!job <pseudo>` : Afficher les métiers d'un joueur (par pseudo exact).\n"
-                "- `!job <job_name>` : Afficher toutes les personnes ayant ce job.\n"
+                "- `!job <pseudo>` : Afficher les métiers d'un joueur.\n"
+                "- `!job <job_name>` : Afficher tous les joueurs qui ont ce job.\n"
                 "- `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job.\n"
             )
-            embed_help = discord.Embed(
-                title="Aide commande !job",
-                description=usage_msg,
-                color=discord.Color.blue()
-            )
+            embed_help = discord.Embed(title="Aide commande !job", description=usage_msg, color=discord.Color.blue())
             await ctx.send(embed=embed_help)
             return
 
-        arg1 = args[0].lower()
-
-        # B) !job me
-        if len(args) == 1 and arg1 == "me":
-            user_jobs = get_user_jobs(author_id)
+        # !job me
+        if len(args) == 1 and args[0].lower() == "me":
+            user_jobs = self.get_user_jobs(author_id)
             if not user_jobs:
                 embed_no_jobs = discord.Embed(
                     title="Vos métiers",
@@ -92,72 +121,50 @@ class JobCog(commands.Cog):
                 )
                 await ctx.send(embed=embed_no_jobs)
             else:
-                embed_my_jobs = discord.Embed(
-                    title=f"Métiers de {author_name}",
-                    color=discord.Color.green()
-                )
+                embed_my_jobs = discord.Embed(title=f"Métiers de {author_name}", color=discord.Color.green())
                 for job_name, level in user_jobs.items():
-                    embed_my_jobs.add_field(
-                        name=job_name,
-                        value=f"Niveau {level}",
-                        inline=True
-                    )
+                    embed_my_jobs.add_field(name=job_name, value=f"Niveau {level}", inline=True)
                 await ctx.send(embed=embed_my_jobs)
             return
 
-        # C) !job liste metier
-        if len(args) == 2 and arg1 == "liste" and args[1].lower() == "metier":
+        # !job liste metier
+        if len(args) == 2 and args[0].lower() == "liste" and args[1].lower() == "metier":
             all_jobs = set()
             for uid, user_data in self.jobs_data.items():
                 for job_name in user_data.get("jobs", {}).keys():
                     all_jobs.add(job_name)
-
             if not all_jobs:
                 await ctx.send("Aucun métier enregistré pour l'instant.")
                 return
 
             sorted_jobs = sorted(all_jobs, key=lambda x: normalize_string(x))
-            embed_job_list = discord.Embed(
-                title="Liste de tous les métiers",
-                color=discord.Color.purple()
-            )
-            description_text = "Voici la liste (triée alphabétiquement, sans accents) :\n"
-
-            for jn in sorted_jobs:
-                description_text += f"• {jn}\n"
-
-            if len(description_text) > 4096:
-                # Découpe si trop long
-                parts = []
-                lines = description_text.split("\n")
-                buffer = ""
-                for line in lines:
-                    if len(buffer) + len(line) + 1 > 4096:
-                        parts.append(buffer)
-                        buffer = line + "\n"
+            embed_job_list = discord.Embed(title="Liste de tous les métiers", color=discord.Color.purple())
+            text_jobs = "\n".join(f"• {jn}" for jn in sorted_jobs)
+            if len(text_jobs) > 4096:
+                chunks = []
+                current = ""
+                for line in text_jobs.split("\n"):
+                    if len(current) + len(line) + 1 > 4096:
+                        chunks.append(current)
+                        current = line + "\n"
                     else:
-                        buffer += line + "\n"
-                parts.append(buffer)
-
-                for i, part in enumerate(parts, start=1):
-                    embed_part = discord.Embed(
-                        title=f"Liste de tous les métiers (part {i}/{len(parts)})",
-                        description=part,
-                        color=discord.Color.purple()
-                    )
-                    await ctx.send(embed=embed_part)
+                        current += line + "\n"
+                chunks.append(current)
+                for i, c in enumerate(chunks, start=1):
+                    e = discord.Embed(title=f"Liste de tous les métiers (part {i})", description=c, color=discord.Color.purple())
+                    await ctx.send(embed=e)
             else:
-                embed_job_list.description = description_text
+                embed_job_list.description = text_jobs
                 await ctx.send(embed=embed_job_list)
             return
 
-        # D) !job liste
-        if len(args) == 1 and arg1 == "liste":
+        # !job liste
+        if len(args) == 1 and args[0].lower() == "liste":
             jobs_map = defaultdict(list)
             for uid, user_data in self.jobs_data.items():
                 user_display_name = user_data.get("name", f"ID {uid}")
-                for job_name, level in user_data.get("jobs", {}).items():
-                    jobs_map[job_name].append((user_display_name, level))
+                for job_name, lvl in user_data.get("jobs", {}).items():
+                    jobs_map[job_name].append((user_display_name, lvl))
 
             if not jobs_map:
                 await ctx.send("Aucun métier enregistré pour l'instant.")
@@ -173,13 +180,13 @@ class JobCog(commands.Cog):
                 )
                 for job_name in chunk:
                     listing = ""
-                    for (player_name, lvl) in jobs_map[job_name]:
-                        listing += f"- **{player_name}** : {lvl}\n"
+                    for (player_name, lv) in jobs_map[job_name]:
+                        listing += f"- **{player_name}** : {lv}\n"
                     embed_global.add_field(name=job_name, value=listing, inline=False)
                 await ctx.send(embed=embed_global)
             return
 
-        # E) !job <job_name> <niveau>
+        # !job <job_name> <niveau>
         if len(args) == 2:
             try:
                 level_int = int(args[1])
@@ -190,37 +197,37 @@ class JobCog(commands.Cog):
                     self.jobs_data[author_id]["name"] = author_name
 
                 self.jobs_data[author_id]["jobs"][job_name] = level_int
-                save_data(self.jobs_data)
+                self.save_data_local()
 
                 embed_update = discord.Embed(
                     title="Mise à jour du job",
-                    description=(
-                        f"Le métier **{job_name}** est maintenant défini au niveau **{level_int}** "
-                        f"pour **{author_name}**."
-                    ),
+                    description=f"Le métier **{job_name}** est maintenant défini au niveau **{level_int}** pour **{author_name}**.",
                     color=discord.Color.green()
                 )
                 await ctx.send(embed=embed_update)
-                return
 
+                # On exporte le nouvel état dans le salon console
+                await self.dump_data_to_console(ctx)
+                return
             except ValueError:
                 pass
 
-        # F) Single argument (pseudo ou job)
+        # !job <arg1> => Soit pseudo, soit nom de job partiel
         if len(args) == 1:
-            pseudo_or_job = args[0]
+            pseudo_or_job = args[0].lower()
             found_user_id = None
             found_user_name = None
 
+            # Recherche par pseudo exact (user_data["name"] en minuscules)
             for uid, user_data in self.jobs_data.items():
-                stored_name = user_data.get("name", "")
-                if stored_name.lower() == pseudo_or_job.lower():
+                if user_data.get("name", "").lower() == pseudo_or_job:
                     found_user_id = uid
-                    found_user_name = stored_name
+                    found_user_name = user_data["name"]
                     break
 
             if found_user_id:
-                user_jobs = get_user_jobs(found_user_id)
+                # On affiche les jobs de cet utilisateur
+                user_jobs = self.get_user_jobs(found_user_id)
                 if not user_jobs:
                     await ctx.send(f"{found_user_name} n'a aucun job enregistré.")
                 else:
@@ -233,63 +240,86 @@ class JobCog(commands.Cog):
                     await ctx.send(embed=embed_user_jobs)
                 return
             else:
-                # C'est sûrement un job => on cherche qui le possède
-                job_name_input_norm = normalize_string(pseudo_or_job)
-                all_jobs_map = defaultdict(list)
+                # Recherche par correspondance "substring normalisé" dans les noms de job
+                job_map = defaultdict(list)
                 for uid, data in self.jobs_data.items():
                     display_name = data.get("name", f"ID {uid}")
-                    for jn, lvl in data.get("jobs", {}).items():
-                        all_jobs_map[jn].append((display_name, lvl))
+                    for jn, lv in data.get("jobs", {}).items():
+                        job_map[jn].append((display_name, lv))
 
                 matching_jobs = []
-                for jn in all_jobs_map.keys():
-                    if job_name_input_norm in normalize_string(jn):
+                for jn in job_map.keys():
+                    if normalize_string(pseudo_or_job) in normalize_string(jn):
                         matching_jobs.append(jn)
 
                 if not matching_jobs:
                     await ctx.send(
-                        f"Aucun utilisateur ne porte le pseudo **{pseudo_or_job}**, "
-                        f"et aucun job similaire à **{pseudo_or_job}** n'a été trouvé."
+                        f"Aucun joueur nommé **{pseudo_or_job}** et aucun job similaire."
                     )
                     return
 
                 sorted_matches = sorted(matching_jobs, key=lambda x: normalize_string(x))
-                chunk_index = 0
-                for chunk_of_jobs in chunk_list(sorted_matches, 25):
-                    chunk_index += 1
+                chunk_idx = 0
+                for chunk in chunk_list(sorted_matches, 25):
+                    chunk_idx += 1
                     result_embed = discord.Embed(
-                        title=f"Résultats de la recherche de métier (part {chunk_index})",
-                        description=(
-                            f"Pour votre terme **{pseudo_or_job}**, voici les métiers correspondants "
-                            f"(recherche insensible à la casse et aux accents) :"
-                        ),
+                        title=f"Résultats de la recherche de métier (part {chunk_idx})",
+                        description=f"Recherche : {pseudo_or_job}",
                         color=discord.Color.blue()
                     )
-                    for job_match in chunk_of_jobs:
+                    for jn in chunk:
                         listing = ""
-                        for (player, lvl) in all_jobs_map[job_match]:
-                            listing += f"- **{player}** : {lvl}\n"
-                        result_embed.add_field(name=job_match, value=listing, inline=False)
+                        for (player, lv) in job_map[jn]:
+                            listing += f"- **{player}** : {lv}\n"
+                        result_embed.add_field(name=jn, value=listing, inline=False)
                     await ctx.send(embed=result_embed)
                 return
 
-        # G) Erreur de syntaxe
         usage_msg = (
             "**Utilisation incorrecte**. Référez-vous ci-dessous :\n\n"
             "• `!job me` : Afficher vos métiers\n"
             "• `!job liste` : Afficher la liste de tous les métiers\n"
             "• `!job liste metier` : Afficher la liste de tous les noms de métiers\n"
             "• `!job <pseudo>` : Afficher les métiers d'un joueur\n"
-            "• `!job <job_name>` : Afficher ceux qui ont un métier correspondant (recherche souple)\n"
+            "• `!job <job_name>` : Afficher ceux qui ont un métier correspondant\n"
             "• `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job\n"
         )
-        error_embed = discord.Embed(
-            title="Erreur de syntaxe",
-            description=usage_msg,
-            color=discord.Color.red()
-        )
+        error_embed = discord.Embed(title="Erreur de syntaxe", description=usage_msg, color=discord.Color.red())
         await ctx.send(embed=error_embed)
 
-# Pour les versions 2.x de Discord.py/Py-Cord, on définit setup de manière asynchrone :
+    @commands.command(name="clear")
+    @commands.has_role(STAFF_ROLE_NAME)
+    async def clear_console_command(self, ctx, channel_name=None):
+        """
+        Commande !clear console
+        Seuls les membres ayant le rôle 'Staff' peuvent effectuer cette opération.
+        Supprime tous les messages du canal 'console' (ou un certain nombre, selon la logique).
+        """
+        if not channel_name:
+            await ctx.send("Utilisation : `!clear console`")
+            return
+
+        if channel_name.lower() != "console":
+            await ctx.send("Pour l'instant, seule la commande `!clear console` est disponible.")
+            return
+
+        channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+        if not channel:
+            await ctx.send("Le salon console n'existe pas.")
+            return
+
+        # On supprime tous les messages du bot + éventuellement les messages d'autres membres
+        # Discord permet un bulk_delete uniquement pour des messages de moins de 14 jours.
+        # Ici, on boucle manuellement pour tout effacer.
+        deleted_count = 0
+        async for msg in channel.history(limit=None, oldest_first=True):
+            try:
+                await msg.delete()
+                deleted_count += 1
+            except:
+                pass
+
+        await ctx.send(f"Salon console nettoyé, {deleted_count} messages supprimés.")
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(JobCog(bot))
