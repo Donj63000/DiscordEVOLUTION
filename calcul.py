@@ -30,10 +30,7 @@ PALIER_100 = {
 STATS_SPECIALES = ["pa", "pm", "po", "invocation"]
 
 def estimer_probabilites(stat: str, valeur_jet: int):
-    """
-    Retourne un dictionnaire avec la probabilité (en %) d'obtenir
-    chaque type de rune (normale, Pa, Ra) pour la stat 'stat' et le jet 'valeur_jet'.
-    """
+
     if stat in STATS_SPECIALES:
         return {
             "special": True,
@@ -98,10 +95,6 @@ def estimer_probabilites(stat: str, valeur_jet: int):
     }
 
 class CalculRuneCog(commands.Cog):
-    """
-    Cog permettant la commande !rune pour estimer les probabilités d'obtention de runes
-    à partir d'un jet dans une statistique (selon des formules communautaires).
-    """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -171,7 +164,6 @@ class CalculRuneCog(commands.Cog):
                 break
 
         if not matched_stat:
-            # Fallback : si l'utilisateur a tapé le nom exact "prospection" par ex.
             from_main_keys = (stat_input in PALIER_100 or stat_input in STATS_SPECIALES)
             matched_stat = stat_input if from_main_keys else None
             if not matched_stat:
@@ -208,6 +200,5 @@ class CalculRuneCog(commands.Cog):
         embed.set_footer(text=note)
         await ctx.send(embed=embed)
 
-# Fonction d'installation du cog (asynchrone)
 async def setup(bot: commands.Bot):
     await bot.add_cog(CalculRuneCog(bot))
