@@ -42,13 +42,12 @@ class JobCog(commands.Cog):
                         break
                     except:
                         pass
-        if not self.jobs_data:
-            if os.path.exists(DATA_FILE):
+        if not self.jobs_data and os.path.exists(DATA_FILE):
+            try:
                 with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    try:
-                        self.jobs_data = json.load(f)
-                    except:
-                        self.jobs_data = {}
+                    self.jobs_data = json.load(f)
+            except:
+                self.jobs_data = {}
         self.initialized = True
 
     def save_data_local(self):
@@ -57,15 +56,16 @@ class JobCog(commands.Cog):
 
     async def dump_data_to_console(self, ctx):
         console_channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
-        if console_channel:
-            data_str = json.dumps(self.jobs_data, indent=4, ensure_ascii=False)
-            if len(data_str) < 1900:
-                await console_channel.send(f"===BOTJOBS===\n```json\n{data_str}\n```")
-            else:
-                await console_channel.send(
-                    "===BOTJOBS=== (fichier)",
-                    file=discord.File(fp=self._as_temp_file(data_str), filename="jobs_data.json")
-                )
+        if not console_channel:
+            return
+        data_str = json.dumps(self.jobs_data, indent=4, ensure_ascii=False)
+        if len(data_str) < 1900:
+            await console_channel.send(f"===BOTJOBS===\n```json\n{data_str}\n```")
+        else:
+            await console_channel.send(
+                "===BOTJOBS=== (fichier)",
+                file=discord.File(fp=self._as_temp_file(data_str), filename="jobs_data.json")
+            )
 
     def _as_temp_file(self, data_str):
         with open("temp_jobs_data.json", "w", encoding="utf-8") as tmp:
@@ -114,6 +114,7 @@ class JobCog(commands.Cog):
             embed_help = discord.Embed(title="Aide commande !job", description=usage_msg, color=discord.Color.blue())
             await ctx.send(embed=embed_help)
             return
+
         if len(args) == 1 and args[0].lower() == "me":
             user_jobs = self.get_user_jobs(author_id)
             if not user_jobs:
@@ -129,6 +130,7 @@ class JobCog(commands.Cog):
                     embed_my_jobs.add_field(name=job_name, value=f"Niveau {level}", inline=True)
                 await ctx.send(embed=embed_my_jobs)
             return
+
         if len(args) == 2 and args[0].lower() == "liste" and args[1].lower() == "metier":
             all_jobs = set()
             for uid, user_data in self.jobs_data.items():
@@ -157,6 +159,7 @@ class JobCog(commands.Cog):
                 embed_job_list.description = text_jobs
                 await ctx.send(embed=embed_job_list)
             return
+
         if len(args) == 1 and args[0].lower() == "liste":
             jobs_map = defaultdict(list)
             for uid, user_data in self.jobs_data.items():
@@ -181,6 +184,7 @@ class JobCog(commands.Cog):
                     embed_global.add_field(name=job_name, value=listing, inline=False)
                 await ctx.send(embed=embed_global)
             return
+
         if len(args) == 2:
             try:
                 level_int = int(args[1])
@@ -201,6 +205,7 @@ class JobCog(commands.Cog):
                 return
             except ValueError:
                 pass
+
         if len(args) == 1:
             pseudo_or_job = args[0].lower()
             found_user_id = None
@@ -254,6 +259,7 @@ class JobCog(commands.Cog):
                         result_embed.add_field(name=jn, value=listing, inline=False)
                     await ctx.send(embed=result_embed)
                 return
+
         usage_msg = (
             "**Utilisation incorrecte**. Référez-vous ci-dessous :\n\n"
             "• `!job me` : Afficher vos métiers\n"
