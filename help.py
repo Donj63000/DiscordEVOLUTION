@@ -5,14 +5,9 @@ import discord
 from discord.ext import commands
 
 def chunk_text(text: str, max_size: int = 1024):
-    """
-    Générateur permettant de fractionner une longue chaîne de texte en segments
-    ne dépassant pas max_size caractères, en se basant sur des lignes.
-    """
     lines = text.split('\n')
     current_chunk = ""
     for line in lines:
-        
         if len(current_chunk) + len(line) + 1 > max_size:
             yield current_chunk
             current_chunk = line
@@ -30,9 +25,6 @@ class HelpCog(commands.Cog):
 
     @commands.command(name="aide", aliases=["help"])
     async def aide_command(self, ctx: commands.Context):
-        """
-        Commande d'aide générale listant les commandes disponibles du bot.
-        """
         embed = discord.Embed(
             title="Liste des Commandes du Bot Evolution By Coca©",
             description=(
@@ -189,10 +181,6 @@ class HelpCog(commands.Cog):
 
     @commands.command(name="regles")
     async def regles_command(self, ctx: commands.Context):
-        """
-        Commande pour afficher le "nouveau" règlement simplifié,
-        sous forme d'Embed avec champ par morceaux si trop long.
-        """
         summary_text = (
             "✨ **Mise à jour du Règlement de la Guilde Evolution – Édition du 19/02/2025** ✨\n\n"
             "Bienvenue au sein de la guilde **Evolution** ! Ce règlement a pour but de garantir une ambiance "
@@ -317,7 +305,6 @@ class HelpCog(commands.Cog):
             "*Règlement en vigueur à compter du 19/02/2025.*\n"
         )
 
-
         embed = discord.Embed(
             title="Résumé Simplifié du Règlement d'Evolution",
             description="**Voici le texte mis à jour :**",
@@ -325,21 +312,14 @@ class HelpCog(commands.Cog):
         )
         embed.set_footer(text="Pour plus de détails, consultez le règlement complet ou demandez au Staff.")
 
-
         chunks = list(chunk_text(summary_text, max_size=1024))
-
-
         for i, chunk in enumerate(chunks, start=1):
             embed.add_field(
                 name=f"Règlement (Partie {i})",
                 value=chunk,
                 inline=False
             )
-
         await ctx.send(embed=embed)
 
-def setup(bot: commands.Bot):
-    """
-    Fonction nécessaire à l'architecture de discord.py pour enregistrer la cog.
-    """
-    bot.add_cog(HelpCog(bot))
+async def setup(bot: commands.Bot):
+    await bot.add_cog(HelpCog(bot))
