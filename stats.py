@@ -10,17 +10,7 @@ def now_iso() -> str:
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
 class StatsCog(commands.Cog):
-    """
-    Cog de statistiques exhaustives : messages, éditions, suppressions, réactions,
-    salons vocaux, présence, etc.
-
-    Enregistre :
-      - Des compteurs agrégés (messages par canal, par rôle, par heure, par user…)
-      - Un log détaillé de tous les événements, avec timestamp et métadonnées
-
-    Rajout :
-      - Commande !stats reset (Staff) pour remettre à zéro les compteurs
-      - Commandes !stats on / !stats off (Staff) pour activer/désactiver la collecte
+Commandes !stats on / !stats off (Staff) pour activer/désactiver la collecte
     """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
