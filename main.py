@@ -38,6 +38,7 @@ async def main():
     await bot.load_extension("help")
     await bot.load_extension("welcome")
     await bot.load_extension("entree")
+    await bot.load_extension("up")
     await bot.start(TOKEN)
 
 if __name__ == "__main__":
