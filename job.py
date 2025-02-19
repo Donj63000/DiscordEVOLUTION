@@ -101,6 +101,7 @@ class JobCog(commands.Cog):
         author = ctx.author
         author_id = str(author.id)
         author_name = author.display_name
+
         if len(args) == 0:
             usage_msg = (
                 "**Utilisation de la commande !job :**\n"
@@ -110,6 +111,7 @@ class JobCog(commands.Cog):
                 "- `!job <pseudo>` : Afficher les métiers d'un joueur.\n"
                 "- `!job <job_name>` : Afficher tous les joueurs qui ont ce job.\n"
                 "- `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job.\n"
+                "- `!job add <job_name> <niveau>` : Commande alternative pour ajouter un job."
             )
             embed_help = discord.Embed(title="Aide commande !job", description=usage_msg, color=discord.Color.blue())
             await ctx.send(embed=embed_help)
@@ -185,15 +187,36 @@ class JobCog(commands.Cog):
                 await ctx.send(embed=embed_global)
             return
 
+        if len(args) == 3 and args[0].lower() == "add":
+            job_name = args[1]
+            try:
+                level_int = int(args[2])
+            except ValueError:
+                await ctx.send("Syntaxe invalide. Exemple : `!job add Bucheron 5`")
+                return
+            if author_id not in self.jobs_data:
+                self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
+            else:
+                self.jobs_data[author_id]["name"] = author_name
+            self.jobs_data[author_id]["jobs"][job_name] = level_int
+            self.save_data_local()
+            embed_add = discord.Embed(
+                title="Nouveau job ajouté",
+                description=f"Le métier **{job_name}** (niveau {level_int}) a été ajouté pour **{author_name}**.",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed_add)
+            await self.dump_data_to_console(ctx)
+            return
+
         if len(args) == 2:
             try:
                 level_int = int(args[1])
                 job_name = args[0]
-                if author_id not in self.jobs_data:
-                    self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
-                else:
-                    self.jobs_data[author_id]["name"] = author_name
-                self.jobs_data[author_id]["jobs"][job_name] = level_int
+                author_jobs = self.jobs_data.get(author_id, {"name": author_name, "jobs": {}})
+                author_jobs["name"] = author_name
+                author_jobs["jobs"][job_name] = level_int
+                self.jobs_data[author_id] = author_jobs
                 self.save_data_local()
                 embed_update = discord.Embed(
                     title="Mise à jour du job",
@@ -239,9 +262,7 @@ class JobCog(commands.Cog):
                     if normalize_string(pseudo_or_job) in normalize_string(jn):
                         matching_jobs.append(jn)
                 if not matching_jobs:
-                    await ctx.send(
-                        f"Aucun joueur nommé **{pseudo_or_job}** et aucun job similaire."
-                    )
+                    await ctx.send(f"Aucun joueur nommé **{pseudo_or_job}** et aucun job similaire.")
                     return
                 sorted_matches = sorted(matching_jobs, key=lambda x: normalize_string(x))
                 chunk_idx = 0
@@ -268,6 +289,7 @@ class JobCog(commands.Cog):
             "• `!job <pseudo>` : Afficher les métiers d'un joueur\n"
             "• `!job <job_name>` : Afficher ceux qui ont un métier correspondant\n"
             "• `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job\n"
+            "• `!job add <job_name> <niveau>` : Ajouter un métier (commande alternative)\n"
         )
         error_embed = discord.Embed(title="Erreur de syntaxe", description=usage_msg, color=discord.Color.red())
         await ctx.send(embed=error_embed)
