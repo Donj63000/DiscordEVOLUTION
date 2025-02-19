@@ -5,10 +5,6 @@ import discord
 from discord.ext import commands
 
 def chunk_text(text: str, max_size: int = 3000):
-    """
-    Générateur qui découpe le texte en blocs de taille maximale max_size.
-    Chaque bloc aura au plus 'max_size' caractères.
-    """
     start = 0
     while start < len(text):
         yield text[start:start + max_size]
@@ -302,6 +298,8 @@ class HelpCog(commands.Cog):
 
         chunks = list(chunk_text(summary_text, 3000))
         for i, chunk in enumerate(chunks, start=1):
+            if not chunk.strip():
+                continue
             if i == 1:
                 embed = discord.Embed(
                     title="Résumé Simplifié du Règlement d'Evolution",
