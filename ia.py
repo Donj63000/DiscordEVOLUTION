@@ -131,7 +131,6 @@ class IACog(commands.Cog):
             if query:
                 new_ctx = await self.bot.get_context(message)
                 await self.free_command(new_ctx, user_message=query)
-        await self.bot.process_commands(message)
 
     @commands.command(name="analyse")
     async def analyse_command(self, ctx: commands.Context):
@@ -181,7 +180,7 @@ class IACog(commands.Cog):
             return
         annonce_channel = discord.utils.get(ctx.guild.text_channels, name=self.annonce_channel_name)
         if not annonce_channel:
-            await ctx.send(f"Le canal #{self.annonce_channel_name} est introuvable. Créez-le ou modifiez 'self.annonce_channel_name'.")
+            await ctx.send(f"Le canal #{self.annonce_channel_name} est introuvable.")
             return
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
@@ -221,7 +220,7 @@ class IACog(commands.Cog):
             return
         event_channel = discord.utils.get(ctx.guild.text_channels, name=self.event_channel_name)
         if not event_channel:
-            await ctx.send(f"Le canal #{self.event_channel_name} est introuvable. Créez-le ou modifiez 'self.event_channel_name'.")
+            await ctx.send(f"Le canal #{self.event_channel_name} est introuvable.")
             return
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
@@ -266,7 +265,7 @@ class IACog(commands.Cog):
             return
         pl_channel = discord.utils.get(ctx.guild.text_channels, name=self.pl_channel_name)
         if not pl_channel:
-            await ctx.send(f"Le canal #{self.pl_channel_name} est introuvable. Créez-le ou modifiez 'self.pl_channel_name' dans le code.")
+            await ctx.send(f"Le canal #{self.pl_channel_name} est introuvable.")
             return
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
