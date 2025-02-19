@@ -645,6 +645,5 @@ class ActiviteCog(commands.Cog):
         return any(r.name == VALIDATED_ROLE_NAME for r in member.roles)
 
 
-# CHANGEMENT ICI : fonction asynchrone
 async def setup(bot: commands.Bot):
     await bot.add_cog(ActiviteCog(bot))
