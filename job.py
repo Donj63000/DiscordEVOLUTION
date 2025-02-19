@@ -8,9 +8,9 @@ import discord
 from discord.ext import commands
 from collections import defaultdict
 
-CONSOLE_CHANNEL_NAME = "console"      # Nom du salon où l'on stocke les données
-DATA_FILE = "jobs_data.json"          # Fichier local (backup, non persistant sur Render gratuit)
-STAFF_ROLE_NAME = "Staff"             # Nom exact du rôle autorisé à faire !clear console
+CONSOLE_CHANNEL_NAME = "console"      
+DATA_FILE = "jobs_data.json"          
+STAFF_ROLE_NAME = "Staff"             
 
 def normalize_string(s):
     nf = unicodedata.normalize('NFD', s.lower())
@@ -27,14 +27,11 @@ class JobCog(commands.Cog):
         self.initialized = False
 
     async def cog_load(self):
-        # Méthode appelée en discord.py 2.x pour charger le cog
         await self.initialize_data()
 
     async def initialize_data(self):
         console_channel = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
         if console_channel:
-            # On parcourt jusqu'à 1000 messages, 
-            # ce qui augmente nos chances de retrouver le dump JSON s'il n'y a pas trop de flood.
             async for msg in console_channel.history(limit=1000):
                 if msg.author == self.bot.user and "===BOTJOBS===" in msg.content:
                     try:
@@ -42,11 +39,10 @@ class JobCog(commands.Cog):
                         end_idx = msg.content.rindex("\n```")
                         raw_json = msg.content[start_idx:end_idx]
                         self.jobs_data = json.loads(raw_json)
-                        break  # On arrête à la première occurrence
+                        break 
                     except:
                         pass
 
-        # Si on n'a pas trouvé dans le salon, on tente un chargement local
         if not self.jobs_data:
             if os.path.exists(DATA_FILE):
                 with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -58,12 +54,10 @@ class JobCog(commands.Cog):
         self.initialized = True
 
     def save_data_local(self):
-        # Sauvegarde en local (inutile en hébergement gratuit sur Render, mais OK en fallback local)
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(self.jobs_data, f, indent=4, ensure_ascii=False)
 
     async def dump_data_to_console(self, ctx):
-        # Envoie le JSON dans le salon console sous forme de message ou de fichier
         console_channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
         if console_channel:
             data_str = json.dumps(self.jobs_data, indent=4, ensure_ascii=False)
@@ -77,7 +71,6 @@ class JobCog(commands.Cog):
                 )
 
     def _as_temp_file(self, data_str):
-        # Ecrit le JSON dans un fichier temporaire pour l'envoyer sous forme de fichier
         with open("temp_jobs_data.json", "w", encoding="utf-8") as tmp:
             tmp.write(data_str)
         return "temp_jobs_data.json"
@@ -110,7 +103,6 @@ class JobCog(commands.Cog):
             await ctx.send(embed=embed_help)
             return
 
-        # !job me
         if len(args) == 1 and args[0].lower() == "me":
             user_jobs = self.get_user_jobs(author_id)
             if not user_jobs:
@@ -127,7 +119,6 @@ class JobCog(commands.Cog):
                 await ctx.send(embed=embed_my_jobs)
             return
 
-        # !job liste metier
         if len(args) == 2 and args[0].lower() == "liste" and args[1].lower() == "metier":
             all_jobs = set()
             for uid, user_data in self.jobs_data.items():
@@ -158,7 +149,6 @@ class JobCog(commands.Cog):
                 await ctx.send(embed=embed_job_list)
             return
 
-        # !job liste
         if len(args) == 1 and args[0].lower() == "liste":
             jobs_map = defaultdict(list)
             for uid, user_data in self.jobs_data.items():
@@ -186,7 +176,6 @@ class JobCog(commands.Cog):
                 await ctx.send(embed=embed_global)
             return
 
-        # !job <job_name> <niveau>
         if len(args) == 2:
             try:
                 level_int = int(args[1])
@@ -206,19 +195,16 @@ class JobCog(commands.Cog):
                 )
                 await ctx.send(embed=embed_update)
 
-                # On exporte le nouvel état dans le salon console
                 await self.dump_data_to_console(ctx)
                 return
             except ValueError:
                 pass
 
-        # !job <arg1> => Soit pseudo, soit nom de job partiel
         if len(args) == 1:
             pseudo_or_job = args[0].lower()
             found_user_id = None
             found_user_name = None
 
-            # Recherche par pseudo exact (user_data["name"] en minuscules)
             for uid, user_data in self.jobs_data.items():
                 if user_data.get("name", "").lower() == pseudo_or_job:
                     found_user_id = uid
@@ -226,7 +212,6 @@ class JobCog(commands.Cog):
                     break
 
             if found_user_id:
-                # On affiche les jobs de cet utilisateur
                 user_jobs = self.get_user_jobs(found_user_id)
                 if not user_jobs:
                     await ctx.send(f"{found_user_name} n'a aucun job enregistré.")
@@ -240,7 +225,7 @@ class JobCog(commands.Cog):
                     await ctx.send(embed=embed_user_jobs)
                 return
             else:
-                # Recherche par correspondance "substring normalisé" dans les noms de job
+                
                 job_map = defaultdict(list)
                 for uid, data in self.jobs_data.items():
                     display_name = data.get("name", f"ID {uid}")
@@ -308,9 +293,6 @@ class JobCog(commands.Cog):
             await ctx.send("Le salon console n'existe pas.")
             return
 
-        # On supprime tous les messages du bot + éventuellement les messages d'autres membres
-        # Discord permet un bulk_delete uniquement pour des messages de moins de 14 jours.
-        # Ici, on boucle manuellement pour tout effacer.
         deleted_count = 0
         async for msg in channel.history(limit=None, oldest_first=True):
             try:
