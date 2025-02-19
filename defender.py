@@ -18,12 +18,6 @@ from cryptography.fernet import Fernet
 URL_REGEX = re.compile(r"(https?://[^\s]+)", re.IGNORECASE)
 
 class DefenderCog(commands.Cog):
-    """
-    Analyse des URLs dans les messages Discord.
-    - on_message: analyse automatique de tout message contenant une URL (hors commande).
-    - !scan <URL>: analyse manuelle (embed) et suppression du message de commande.
-    - Historique chiffré en SQLite.
-    """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -349,6 +343,5 @@ class DefenderCog(commands.Cog):
         embed.set_footer(text="EVO Defender© By Coca - Analysis via Safe Browsing & VirusTotal")
         return embed
 
-# Changement vers une config asynchrone pour Discord.py/Py-Cord 2.x
 async def setup(bot: commands.Bot):
     await bot.add_cog(DefenderCog(bot))
