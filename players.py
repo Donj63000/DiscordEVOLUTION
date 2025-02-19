@@ -9,18 +9,14 @@ from typing import Dict, List
 from collections import defaultdict
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "players_data.json")
-
+CONSOLE_CHANNEL_NAME = "console"  # Nom du salon où l'on stocke le JSON
+PLAYERS_MARKER = "===PLAYERSDATA==="  # Marqueur permettant d'identifier le message JSON
 
 def charger_donnees() -> Dict[str, dict]:
-    """
-    Charge le contenu JSON depuis DATA_FILE sous forme de dict.
-    Retourne {} si le fichier n'existe pas ou s'il y a une erreur de lecture.
-    """
     print(f"[DEBUG] Chemin absolu du fichier JSON : {DATA_FILE}")
     if not os.path.exists(DATA_FILE):
         print("[DEBUG] Le fichier JSON n'existe pas. On retourne un dict vide.")
         return {}
-
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -30,75 +26,139 @@ def charger_donnees() -> Dict[str, dict]:
         print(f"[DEBUG] Erreur lors de la lecture du JSON : {e}")
         return {}
 
-
 def sauvegarder_donnees(data: Dict[str, dict]):
-    """
-    Sauvegarde 'data' dans le fichier JSON (players_data.json) avec indentation.
-    """
     print(f"[DEBUG] Sauvegarde de {len(data)} enregistrements dans {DATA_FILE}")
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-
 def chunk_list(lst, chunk_size=25):
-    """
-    Génère des sous-listes de taille maximale 'chunk_size'.
-    Utile pour ne pas dépasser 25 fields par Embed.
-    """
     for i in range(0, len(lst), chunk_size):
         yield lst[i : i + chunk_size]
 
-
 class PlayersCog(commands.Cog):
     """
-    Un Cog gérant l'enregistrement des personnages principaux et mules (alts).
-
-    Commandes principales :
-      - !membre principal <NomPerso>
-      - !membre addmule <NomMule>
-      - !membre delmule <NomMule>
-      - !membre moi
-      - !membre liste
-      - !membre <pseudo_ou_mention> (affiche les infos d'un joueur)
-
-    Commandes Staff :
-      - !recrutement <pseudo> : ajoute un nouveau joueur dans la base
-      - !membre del <pseudo> : supprime un joueur et ses mules
+    Un Cog gérant l'enregistrement des personnages principaux et mules (alts),
+    avec stockage JSON dans le salon #console (marqueur ===PLAYERSDATA===)
+    et en local (players_data.json) en fallback.
     """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.persos_data = charger_donnees()
-        print(f"[DEBUG] PlayersCog initialisé avec {len(self.persos_data)} enregistrements.")
+        self.persos_data = {}     # on initialise à vide
+        self.initialized = False  # pour différer le chargement
+        print("[DEBUG] PlayersCog initialisé (avant lecture console).")
+
+    async def cog_load(self):
+        """
+        Méthode spéciale appelée automatiquement en discord.py 2.x
+        une fois que le cog est chargé par le bot.
+        On tente de recharger les données depuis #console,
+        sinon on se rabat sur le fichier local.
+        """
+        await self.initialize_data()
+
+    async def initialize_data(self):
+        console_channel = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
+        found_in_console = False
+
+        if console_channel:
+            # On parcourt les 1000 derniers messages pour trouver le dernier dump
+            async for msg in console_channel.history(limit=1000):
+                if msg.author == self.bot.user and PLAYERS_MARKER in msg.content:
+                    try:
+                        # On cherche le bloc JSON entre ```json\n et \n```
+                        start_idx = msg.content.index("```json\n") + len("```json\n")
+                        end_idx = msg.content.rindex("\n```")
+                        raw_json = msg.content[start_idx:end_idx]
+                        data_temp = json.loads(raw_json)
+                        self.persos_data = data_temp
+                        print("[DEBUG] Données récupérées depuis le salon #console.")
+                        found_in_console = True
+                        break
+                    except Exception as e:
+                        print(f"[DEBUG] Erreur lors du parsing JSON depuis console: {e}")
+                        pass
+
+        if not found_in_console:
+            # Fallback : on essaye de charger le fichier local
+            self.persos_data = charger_donnees()
+            if self.persos_data:
+                print("[DEBUG] Données chargées depuis le fichier local (fallback).")
+            else:
+                print("[DEBUG] Aucune donnée trouvée ni en console ni en local.")
+
+        self.initialized = True
+        print(f"[DEBUG] initialize_data terminé. {len(self.persos_data)} enregistrements.")
+
+    async def dump_data_to_console(self, ctx: commands.Context = None):
+        """
+        Envoie la version courante de self.persos_data
+        dans le salon #console sous forme de message.
+        Si data > 1900 caractères, on l'envoie en fichier.
+        """
+        # On refait un dump local aussi
+        sauvegarder_donnees(self.persos_data)
+
+        # Si pas de contexte ou pas de guilde, on ne peut pas poster
+        if not ctx or not ctx.guild:
+            return
+
+        console_channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+        if not console_channel:
+            print("[DEBUG] Salon #console introuvable, impossible de publier le JSON.")
+            return
+
+        data_str = json.dumps(self.persos_data, indent=4, ensure_ascii=False)
+
+        if len(data_str) < 1900:
+            # On insère le marqueur ===PLAYERSDATA=== pour repérer ce message
+            message_content = f"{PLAYERS_MARKER}\n```json\n{data_str}\n```"
+            await console_channel.send(message_content)
+        else:
+            # Envoi en fichier si trop long
+            temp_file_path = self._as_temp_file(data_str)
+            await console_channel.send(
+                f"{PLAYERS_MARKER} (fichier)",
+                file=discord.File(fp=temp_file_path, filename="players_data.json")
+            )
+
+    def _as_temp_file(self, data_str: str) -> str:
+        """
+        Écrit data_str dans un fichier temporaire et retourne son chemin.
+        """
+        temp_filename = "temp_players_data.json"
+        with open(temp_filename, "w", encoding="utf-8") as tmp:
+            tmp.write(data_str)
+        return temp_filename
+
+    # -----------------------------------------------------------
+    # Reprise des commandes existantes, en veillant à appeler
+    # dump_data_to_console(ctx) après chaque modification
+    # -----------------------------------------------------------
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         """
-        Événement déclenché quand un membre quitte le serveur.
-        Si le membre est enregistré dans 'persos_data', on le retire de la base,
-        puis on notifie le canal 𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭.
+        Quand un membre quitte le serveur, on le retire de la base si présent.
+        Puis on notifie #𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭.
         """
         member_id = str(member.id)
         if member_id in self.persos_data:
             stored_name = self.persos_data[member_id].get("discord_name", member.display_name)
             del self.persos_data[member_id]
             sauvegarder_donnees(self.persos_data)
-
+            # Pas de 'ctx' ici, donc on ne dump pas dans #console
+            # (ou alors on trouverait un moyen d'avoir un ctx/guild).
+            # On notifie le salon recrutement
             recruitment_channel = discord.utils.get(member.guild.text_channels, name="𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭")
             if recruitment_channel:
                 await recruitment_channel.send(
-                    f"Le membre **{stored_name}** a quitté le serveur. Sa fiche a été supprimée de la base."
+                    f"Le membre **{stored_name}** a quitté le serveur. Sa fiche a été supprimée."
                 )
-            else:
-                print("Canal 𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭 introuvable. Impossible d'envoyer la notification.")
 
     @commands.has_role("Staff")
     @commands.command(name="recrutement")
     async def recrutement_command(self, ctx: commands.Context, *, pseudo: str = None):
-        """
-        Ajoute un nouveau joueur dans la base (players_data.json),
-        même s'il n'est pas (encore) sur le serveur.
-        """
         if not pseudo:
             await ctx.send("Usage : !recrutement <PseudoNouveau>")
             return
@@ -106,7 +166,7 @@ class PlayersCog(commands.Cog):
         for uid, data in self.persos_data.items():
             existing_name = data.get("discord_name", "")
             if existing_name.lower() == pseudo.lower():
-                await ctx.send(f"Le joueur **{pseudo}** existe déjà dans la base de données.")
+                await ctx.send(f"Le joueur **{pseudo}** existe déjà dans la base.")
                 return
 
         new_id = f"recrue_{pseudo.lower()}"
@@ -120,20 +180,13 @@ class PlayersCog(commands.Cog):
             "main": "",
             "mules": []
         }
-        sauvegarder_donnees(self.persos_data)
-
+        await self.dump_data_to_console(ctx)
         await ctx.send(
-            f"Le joueur **{pseudo}** a été créé dans la base de données (ID: {new_id}).\n"
-            "Il pourra être modifié plus tard (perso principal, etc.)."
+            f"Le joueur **{pseudo}** a été créé dans la base (ID: {new_id})."
         )
 
     @commands.group(name="membre", invoke_without_command=True)
     async def membre_group(self, ctx: commands.Context, *, arg: str = None):
-        """
-        Groupe de commandes !membre.
-        Sans argument, affiche l'aide.
-        Sinon, on interprète <arg> comme un pseudo ou une mention pour afficher la fiche.
-        """
         if not arg:
             usage_msg = (
                 "**Commandes disponibles :**\n"
@@ -142,14 +195,15 @@ class PlayersCog(commands.Cog):
                 "`!membre delmule <NomMule>` : Supprime une mule.\n"
                 "`!membre moi` : Affiche votre perso principal + vos mules.\n"
                 "`!membre liste` : Affiche la liste de tous les joueurs et leurs persos.\n"
-                "`!membre <pseudo_ou_mention>` : Affiche les infos d'un joueur.\n\n"
+                "`!membre <pseudo_ou_mention>` : Affiche la fiche d'un joueur.\n\n"
                 "**Commandes Staff :**\n"
                 "`!recrutement <Pseudo>` : Ajoute un nouveau joueur dans la base.\n"
-                "`!membre del <pseudo>` : Supprime un joueur (et ses mules) de la base.\n"
+                "`!membre del <pseudo>` : Supprime un joueur.\n"
             )
             await ctx.send(usage_msg)
             return
 
+        # Si mention
         if len(ctx.message.mentions) == 1:
             mention = ctx.message.mentions[0]
             user_id = str(mention.id)
@@ -167,14 +221,11 @@ class PlayersCog(commands.Cog):
             if found_user_id:
                 await self._afficher_membre_joueur_embed(ctx, found_user_id, found_user_name)
             else:
-                await ctx.send(f"Aucun joueur ne correspond au pseudo **{arg}** dans la base de données.")
+                await ctx.send(f"Aucun joueur ne correspond au pseudo **{arg}** dans la base.")
 
     @membre_group.command(name="del")
     @commands.has_role("Staff")
     async def membre_del_member(self, ctx: commands.Context, *, pseudo: str = None):
-        """
-        !membre del <pseudo> : Supprime un joueur (et ses mules) de la base.
-        """
         if not pseudo:
             await ctx.send("Usage : !membre del <pseudo>")
             return
@@ -200,11 +251,11 @@ class PlayersCog(commands.Cog):
                     break
 
         if not target_id:
-            await ctx.send(f"Impossible de trouver **{pseudo}** dans la base de données.")
+            await ctx.send(f"Impossible de trouver **{pseudo}** dans la base.")
             return
 
         del self.persos_data[target_id]
-        sauvegarder_donnees(self.persos_data)
+        await self.dump_data_to_console(ctx)
         await ctx.send(f"Le joueur **{target_name or pseudo}** (ID: {target_id}) a été supprimé de la base.")
 
     @membre_group.command(name="principal")
@@ -227,7 +278,7 @@ class PlayersCog(commands.Cog):
             self.persos_data[author_id]["discord_name"] = author_name
             self.persos_data[author_id]["main"] = nom_perso
 
-        sauvegarder_donnees(self.persos_data)
+        await self.dump_data_to_console(ctx)
         await ctx.send(f"Votre personnage principal est maintenant **{nom_perso}**.")
 
     @membre_group.command(name="addmule")
@@ -254,7 +305,7 @@ class PlayersCog(commands.Cog):
 
         mules_list.append(nom_mule)
         self.persos_data[author_id]["mules"] = mules_list
-        sauvegarder_donnees(self.persos_data)
+        await self.dump_data_to_console(ctx)
         await ctx.send(f"La mule **{nom_mule}** a été ajoutée pour **{author_name}**.")
 
     @membre_group.command(name="delmule")
@@ -278,7 +329,7 @@ class PlayersCog(commands.Cog):
 
         mules_list.remove(nom_mule)
         self.persos_data[author_id]["mules"] = mules_list
-        sauvegarder_donnees(self.persos_data)
+        await self.dump_data_to_console(ctx)
         await ctx.send(f"La mule **{nom_mule}** a été retirée de votre liste.")
 
     @membre_group.command(name="moi")
@@ -337,7 +388,6 @@ class PlayersCog(commands.Cog):
         if user_id not in self.persos_data:
             await ctx.send(f"{user_name} n'a pas encore enregistré de personnage.")
             return
-
         data = self.persos_data[user_id]
         await self._envoyer_fiche_embed(ctx, user_id, user_name, data)
 
@@ -364,9 +414,11 @@ class PlayersCog(commands.Cog):
         await ctx.send(embed=embed)
 
     def _verifier_et_fusionner_id(self, vrai_id: str, discord_name: str):
+        # Si on a déjà un enregistrement sous ce vrai_id, on ne fait rien
         if vrai_id in self.persos_data:
             return
 
+        # Sinon, on cherche s'il existe un enregistrement 'fictif'
         id_fictif = None
         for uid, data in self.persos_data.items():
             stored_name = data.get("discord_name", "").lower()
@@ -395,7 +447,5 @@ class PlayersCog(commands.Cog):
         sauvegarder_donnees(self.persos_data)
         print(f"[DEBUG] auto_register_member : {discord_display_name} ({author_id}) --> main={dofus_pseudo}")
 
-
-# Pour Discord.py/Py-Cord 2.x, on utilise un setup asynchrone
 async def setup(bot: commands.Bot):
     await bot.add_cog(PlayersCog(bot))
