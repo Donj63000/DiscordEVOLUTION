@@ -275,11 +275,7 @@ class JobCog(commands.Cog):
     @commands.command(name="clear")
     @commands.has_role(STAFF_ROLE_NAME)
     async def clear_console_command(self, ctx, channel_name=None):
-        """
-        Commande !clear console
-        Seuls les membres ayant le rôle 'Staff' peuvent effectuer cette opération.
-        Supprime tous les messages du canal 'console' (ou un certain nombre, selon la logique).
-        """
+        
         if not channel_name:
             await ctx.send("Utilisation : `!clear console`")
             return
