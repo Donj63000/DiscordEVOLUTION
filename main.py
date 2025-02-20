@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from alive import keep_alive
 
-# Petit « verrou » pour éviter de créer plusieurs fois le même Bot
+
 _bot_already_created = False
 
 def create_bot() -> commands.Bot:
@@ -31,11 +31,11 @@ def create_bot() -> commands.Bot:
     intents.message_content = True
     intents.members = True
 
-    # On crée le bot avec le préfixe voulu
+
     new_bot = commands.Bot(command_prefix="!", intents=intents)
     return new_bot
 
-# On crée le bot (ou None, si déjà créé)
+
 bot = create_bot()
 
 @bot.event
@@ -48,17 +48,17 @@ async def ping_cmd(ctx):
 
 async def main():
     if bot is None:
-        # Déjà instancié auparavant ou autre cause ?
+
         print("Bot est None => on skip le lancement pour éviter un second process.")
         return
 
-    # On retire la commande help par défaut
+
     bot.remove_command("help")
 
-    # Lance le mini-serveur keep_alive() pour ping de Render ou autre
+
     keep_alive()
 
-    # Liste de nos extensions
+
     extensions = [
         "job",
         "ia",
@@ -69,14 +69,13 @@ async def main():
         "help",
         "welcome",
         "entree",
-        "up"
-        "defender"
-        "calcul"
+        "up",
+        "defender",
+        "calcul",
 
 
     ]
 
-    # On charge chacune si pas déjà chargée
     for ext in extensions:
         if ext not in bot.extensions:
             try:
@@ -89,8 +88,7 @@ async def main():
     await bot.start(TOKEN)
 
 if __name__ == "__main__":
-    # On vérifie qu’on a bien un bot (pas None),
-    # puis on lance une seule fois asyncio.run
+
     if bot:
         asyncio.run(main())
     else:
