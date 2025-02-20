@@ -94,7 +94,7 @@ class DefenderCog(commands.Cog):
             logging.error(f"Erreur BD (historique): {e}")
 
     @commands.command(name="scan", help="Analyse un lien (Safe Browsing + VirusTotal) et supprime le message de commande.")
-    async def scan_command(self, ctx, *, url: str = None):
+    async def scan_command(self, ctx: commands.Context, *, url: str = None):
         try:
             await ctx.message.delete()
         except discord.Forbidden:
@@ -241,7 +241,7 @@ class DefenderCog(commands.Cog):
     def verifier_url_safe_browsing(self, url: str):
         if not self.GOOGLE_SAFE_BROWSING_API_KEY:
             return None, None
-        endpoint = 'https://safebrowsing.googleapis.com/v4/threatMatches:find'
+        endpoint = "https://safebrowsing.googleapis.com/v4/threatMatches:find"
         payload = {
             "client": {"clientId": "defender_discord_bot", "clientVersion": "1.0"},
             "threatInfo": {
@@ -254,7 +254,7 @@ class DefenderCog(commands.Cog):
                 "threatEntries": [{"url": url}]
             }
         }
-        params = {'key': self.GOOGLE_SAFE_BROWSING_API_KEY}
+        params = {"key": self.GOOGLE_SAFE_BROWSING_API_KEY}
         try:
             resp = requests.post(endpoint, params=params, json=payload, timeout=10)
             resp.raise_for_status()
@@ -271,16 +271,16 @@ class DefenderCog(commands.Cog):
         try:
             url_b64 = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
             endpoint = f"https://www.virustotal.com/api/v3/urls/{url_b64}"
-            headers = {'x-apikey': self.VIRUSTOTAL_API_KEY}
+            headers = {"x-apikey": self.VIRUSTOTAL_API_KEY}
             resp = requests.get(endpoint, headers=headers, timeout=10)
             if resp.status_code == 404:
                 self.soumettre_virustotal(url)
                 return None, None
             resp.raise_for_status()
             data = resp.json()
-            stats = data['data']['attributes']['last_analysis_stats']
-            malicious = stats.get('malicious', 0)
-            suspicious = stats.get('suspicious', 0)
+            stats = data["data"]["attributes"]["last_analysis_stats"]
+            malicious = stats.get("malicious", 0)
+            suspicious = stats.get("suspicious", 0)
             if malicious > 0 or suspicious > 0:
                 return False, data
             return True, None
@@ -290,9 +290,9 @@ class DefenderCog(commands.Cog):
 
     def soumettre_virustotal(self, url: str):
         try:
-            endpoint = 'https://www.virustotal.com/api/v3/urls'
-            headers = {'x-apikey': self.VIRUSTOTAL_API_KEY}
-            data = {'url': url}
+            endpoint = "https://www.virustotal.com/api/v3/urls"
+            headers = {"x-apikey": self.VIRUSTOTAL_API_KEY}
+            data = {"url": url}
             requests.post(endpoint, headers=headers, data=data, timeout=10)
         except Exception as e:
             logging.error(f"Erreur soumission VirusTotal: {e}")
@@ -305,7 +305,10 @@ class DefenderCog(commands.Cog):
             r'(?i)\b((?:https?://)?(?:www\.)?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:/[^\s]*)?'
         )
         return pattern.sub(
-            lambda m: f"{m.group(1).split('.')[0]}***.{'.'.join(m.group(1).split('.')[1:])}",
+            lambda m: (
+                f"{m.group(1).split('.')[0]}***." +
+                ".".join(m.group(1).split('.')[1:])
+            ),
             msg
         )
 
