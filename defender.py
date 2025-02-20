@@ -9,6 +9,7 @@ import sqlite3
 import logging
 from urllib.parse import urlparse
 
+import asyncio  # <-- pour pouvoir faire un sleep asynchrone
 import requests
 import validators
 import discord
@@ -120,7 +121,8 @@ class DefenderCog(commands.Cog):
             await ctx.send("Usage : `!scan <URL>`", delete_after=10)
             return
 
-        statut, color, url_affiche = self.analyser_url(url)
+        # Analyse asynchrone (1er passage + éventuel second passage si besoin)
+        statut, color, url_affiche = await self.analyser_url(url)
         if statut is None:
             await ctx.send(f"URL invalide ou non supportée : {url}", delete_after=10)
             return
@@ -149,9 +151,9 @@ class DefenderCog(commands.Cog):
         results = []
         worst_status = None
 
-        # 3) Analyse de chaque URL
+        # 3) Analyse de chaque URL de manière asynchrone
         for raw_url in found_urls:
-            statut, color, url_affiche = self.analyser_url(raw_url)
+            statut, color, url_affiche = await self.analyser_url(raw_url)
             if statut is None:
                 # L'URL n'est pas valide ou pas supportée
                 continue
@@ -221,9 +223,11 @@ class DefenderCog(commands.Cog):
         # 7) On répond au message original (reply) sans notifier l’auteur
         await message.reply(embed=embed, mention_author=False)
 
-    def analyser_url(self, raw_url: str):
+    async def analyser_url(self, raw_url: str, second_pass: bool = False):
         """
-        Analyse complète d'une URL en s'appuyant sur Google Safe Browsing et VirusTotal.
+        Analyse asynchrone d'une URL en s'appuyant sur Google Safe Browsing et VirusTotal.
+        Fait un second passage après ~5s si le statut est indéterminé (et que ce n'est pas déjà un second passage).
+        
         Retourne (statut, color, url_affiche) ou (None, None, None) si invalide.
         """
         url_nettoyee, whitelisted = self.valider_et_nettoyer_url(raw_url)
@@ -250,8 +254,15 @@ class DefenderCog(commands.Cog):
             statut = "SÛR ✅"
             color = 0x2ECC71
         else:
+            # Cas indéterminé (None, ou un mélange True/None)
             statut = "INDÉTERMINÉ ❓"
             color = 0xF1C40F
+
+        # Si c'est indéterminé au premier passage, on attend 5s et on réessaie une fois
+        if ("INDÉTERMINÉ" in statut) and (not second_pass):
+            logging.info(f"Statut indéterminé pour {url_nettoyee}. Nouvelle tentative dans 5s...")
+            await asyncio.sleep(5)  # On attend 5 secondes
+            return await self.analyser_url(raw_url, second_pass=True)
 
         # Enregistrement en base
         self.enregistrer_historique(url_nettoyee, statut)
