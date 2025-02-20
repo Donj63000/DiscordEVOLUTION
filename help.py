@@ -297,23 +297,28 @@ class HelpCog(commands.Cog):
         )
 
         chunks = list(chunk_text(summary_text, 3000))
-        for i, chunk in enumerate(chunks, start=1):
-            if not chunk.strip():
+        seen = set()
+        part_index = 1
+        for chunk in chunks:
+            clean_chunk = chunk.strip()
+            if not clean_chunk or clean_chunk in seen:
                 continue
-            if i == 1:
+            seen.add(clean_chunk)
+            if part_index == 1:
                 embed = discord.Embed(
                     title="Résumé Simplifié du Règlement d'Evolution",
-                    description=chunk,
+                    description=clean_chunk,
                     color=discord.Color.gold()
                 )
                 embed.set_footer(text="Pour plus de détails, consultez le règlement complet ou demandez au Staff.")
             else:
                 embed = discord.Embed(
-                    title=f"Règlement (suite) [Part {i}]",
-                    description=chunk,
+                    title=f"Règlement (suite) [Part {part_index}]",
+                    description=clean_chunk,
                     color=discord.Color.gold()
                 )
             await ctx.send(embed=embed)
+            part_index += 1
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(HelpCog(bot))
