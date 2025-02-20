@@ -5,6 +5,10 @@ import discord
 from discord.ext import commands
 
 def chunk_text(text: str, max_size: int = 3000):
+    """
+    Génère des segments de 'text' de taille maximale 'max_size'.
+    Cette fonction évite de dépasser la limite d'embed Discord (4096 chars par description).
+    """
     start = 0
     while start < len(text):
         yield text[start:start + max_size]
@@ -16,6 +20,7 @@ class HelpCog(commands.Cog):
 
     @commands.command(name="aide", aliases=["help"])
     async def aide_command(self, ctx: commands.Context):
+        """Affiche la liste complète des commandes du bot."""
         embed = discord.Embed(
             title="Liste des Commandes du Bot Evolution By Coca©",
             description=(
@@ -172,6 +177,10 @@ class HelpCog(commands.Cog):
 
     @commands.command(name="regles")
     async def regles_command(self, ctx: commands.Context):
+        """
+        Affiche le règlement complet dans un ou plusieurs embeds, 
+        sans duplication.
+        """
         summary_text = (
             "✨ **Mise à jour du Règlement de la Guilde Evolution – Édition du 19/02/2025** ✨\n\n"
             "Bienvenue au sein de la guilde **Evolution** ! Ce règlement a pour but de garantir une ambiance "
@@ -296,29 +305,43 @@ class HelpCog(commands.Cog):
             "*Règlement en vigueur à compter du 19/02/2025.*\n"
         )
 
-        chunks = list(chunk_text(summary_text, 3000))
-        seen = set()
-        part_index = 1
-        for chunk in chunks:
-            clean_chunk = chunk.strip()
-            if not clean_chunk or clean_chunk in seen:
-                continue
-            seen.add(clean_chunk)
-            if part_index == 1:
-                embed = discord.Embed(
-                    title="Résumé Simplifié du Règlement d'Evolution",
-                    description=clean_chunk,
-                    color=discord.Color.gold()
-                )
-                embed.set_footer(text="Pour plus de détails, consultez le règlement complet ou demandez au Staff.")
-            else:
-                embed = discord.Embed(
-                    title=f"Règlement (suite) [Part {part_index}]",
-                    description=clean_chunk,
-                    color=discord.Color.gold()
-                )
+        # 1) Vérifier si tout tient dans un seul embed (limite 4096 pour la description)
+        if len(summary_text) <= 4096:
+            embed = discord.Embed(
+                title="Résumé Simplifié du Règlement d'Evolution",
+                description=summary_text,
+                color=discord.Color.gold()
+            )
+            embed.set_footer(text="Pour plus de détails, consultez le règlement complet ou demandez au Staff.")
             await ctx.send(embed=embed)
-            part_index += 1
+
+        else:
+            # 2) Si le texte est trop long, on le découpe en plusieurs parties
+            chunks = list(chunk_text(summary_text, 3000))
+            for index, chunk in enumerate(chunks, start=1):
+                # Nettoie les espaces inutiles
+                chunk_clean = chunk.strip()
+                if not chunk_clean:
+                    continue  # ignore les éventuels blocs vides
+
+                if index == 1:
+                    # Premier embed
+                    embed = discord.Embed(
+                        title="Résumé Simplifié du Règlement d'Evolution",
+                        description=chunk_clean,
+                        color=discord.Color.gold()
+                    )
+                    embed.set_footer(text="Pour plus de détails, consultez le règlement complet ou demandez au Staff.")
+                else:
+                    # Embeds suivants
+                    embed = discord.Embed(
+                        title=f"Règlement (suite) [Part {index}]",
+                        description=chunk_clean,
+                        color=discord.Color.gold()
+                    )
+
+                await ctx.send(embed=embed)
 
 async def setup(bot: commands.Bot):
+    """Ajoute la classe HelpCog au bot."""
     await bot.add_cog(HelpCog(bot))
