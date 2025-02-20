@@ -69,7 +69,7 @@ async def main():
         "help",
         "welcome",
         "entree",
-        "up
+        "up"
 
 
     ]
