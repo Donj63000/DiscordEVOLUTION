@@ -13,12 +13,18 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-from datetime import datetime, timedelta
+from datetime import datetime
 from calendrier import gen_cal
 
-DATA_FILE = "activities_data.json"
+# -- Paramètres et constantes
 ORGA_CHANNEL_NAME = "organisation"
+CONSOLE_CHANNEL_NAME = "console"  # <-- Salon où l'on stocke et lit le JSON
+PINNED_JSON_FILENAME = "activities_data.json"
+
 VALIDATED_ROLE_NAME = "Membre validé d'Evolution"
+DATA_FILE = "activities_data.json"  # <-- N'est plus utilisé localement, conservé si besoin fallback
+DATE_TIME_REGEX = re.compile(r"(?P<date>\d{2}/\d{2}/\d{4})\s*(?:;|\s+)\s*(?P<time>\d{2}:\d{2})(?P<desc>.*)$")
+
 LETTER_EMOJIS = [
     "🇦", "🇧", "🇨", "🇩", "🇪", "🇫", "🇬", "🇭",
     "🇮", "🇯", "🇰", "🇱", "🇲", "🇳", "🇴", "🇵",
@@ -27,10 +33,6 @@ LETTER_EMOJIS = [
 ]
 SINGLE_EVENT_EMOJI = "✅"
 MAX_GROUP_SIZE = 8
-
-DATE_TIME_REGEX = re.compile(
-    r"(?P<date>\d{2}/\d{2}/\d{4})\s*(?:;|\s+)\s*(?P<time>\d{2}:\d{2})(?P<desc>.*)$"
-)
 
 
 def parse_date_time(date_str, time_str):
@@ -43,12 +45,18 @@ def parse_date_time(date_str, time_str):
 
 
 def parse_date_time_via_regex(line):
+    """
+    Extrait <titre> (optionnel), date, heure et description d'une ligne
+    via le pattern : <...> 15/03/2025 20:30 <description éventuelle...>
+    Retourne (titre, datetime, reste)
+    """
     mat = DATE_TIME_REGEX.search(line)
     if not mat:
         return None, None, None
     ds = mat.group("date").strip()
     ts = mat.group("time").strip()
     leftover = mat.group("desc").strip()
+    # Tout ce qui est avant la date dans la ligne peut être considéré comme titre
     title_part = line[:mat.start()].strip()
     dt = parse_date_time(ds, ts)
     if not dt:
@@ -59,6 +67,9 @@ def parse_date_time_via_regex(line):
 
 
 class ActiviteData:
+    """
+    Représente une activité planifiée.
+    """
     def __init__(self, i, t, dt, desc, cid, rid=None):
         self.id = i
         self.titre = t
@@ -96,51 +107,143 @@ class ActiviteData:
 class ActiviteCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+        # Structure interne : { "next_id": <int>, "events": {id_string: ActiviteData, ...} }
         self.data = {"next_id": 1, "events": {}}
+
+        # Mappings pour gérer les réactions
         self.liste_message_map = {}
         self.single_event_msg_map = {}
         self.unsub_map = {}
-        self.load_data()
+
+        # Au lieu de charger depuis un fichier local, on va lancer
+        # un chargement asynchrone depuis le salon "console".
+        # On ne peut pas faire 'await' ici dans __init__, donc on programmera un "on_ready".
+        self.data_is_loaded = False
+
+        # Tâche de vérification périodique
         self.check_events_loop.start()
 
-    def cog_unload(self):
-        self.check_events_loop.cancel()
+    # ----------------------------------------------------------
+    #  Méthodes de chargement / sauvegarde sur Discord
+    # ----------------------------------------------------------
 
-    def load_data(self):
-        if os.path.isfile(DATA_FILE):
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-                self.data["next_id"] = raw.get("next_id", 1)
-                self.data["events"] = {}
-                for k, v in raw.get("events", {}).items():
-                    if "date_str" not in v:
-                        continue
-                    try:
-                        e = ActiviteData.from_dict(v)
-                        self.data["events"][k] = e
-                    except:
-                        pass
-        else:
-            self.data = {"next_id": 1, "events": {}}
+    async def load_data_from_discord(self):
+        """
+        Récupère le message épinglé dans le salon `console` qui contient
+        le fichier `activities_data.json`. Le télécharge, parse, et remplit self.data.
+        S'il n'existe pas, laisse self.data avec des valeurs par défaut.
+        """
+        if self.data_is_loaded:  # Évite de double-charger
+            return
 
-    def save_data(self):
+        console_chan = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
+        if not console_chan:
+            # Pas de salon => on garde data vide
+            print(f"[ActiviteCog] Impossible de trouver le salon '{CONSOLE_CHANNEL_NAME}'.")
+            return
+
+        pinned = await console_chan.pins()
+        pinned_json_message = None
+
+        # On recherche un message épinglé du bot, avec une PJ nommée "activities_data.json"
+        for msg in pinned:
+            if msg.author == self.bot.user and msg.attachments:
+                for att in msg.attachments:
+                    if att.filename == PINNED_JSON_FILENAME:
+                        pinned_json_message = msg
+                        break
+            if pinned_json_message:
+                break
+
+        if not pinned_json_message:
+            # Aucune donnée dans le channel => data vide
+            print("[ActiviteCog] Aucune donnée JSON épinglée trouvée dans #console. Démarrage avec data vide.")
+            self.data_is_loaded = True
+            return
+
+        # Téléchargement du fichier
+        attachment = pinned_json_message.attachments[0]  # On sait que c'est 'activities_data.json'
+        data_bytes = await attachment.read()
+        try:
+            raw_json = json.loads(data_bytes)
+            self.data["next_id"] = raw_json.get("next_id", 1)
+            self.data["events"] = {}
+            for k, v in raw_json.get("events", {}).items():
+                # On essaie de recréer ActiviteData
+                e = ActiviteData.from_dict(v)
+                self.data["events"][k] = e
+            print("[ActiviteCog] Données d'activités restaurées depuis #console.")
+        except Exception as e:
+            print(f"[ActiviteCog] Erreur lors du parse du JSON : {e}")
+            # On garde la data vide
+        self.data_is_loaded = True
+
+    async def save_data_to_discord(self):
+        """
+        Convertit self.data en JSON, puis l'envoie en PJ dans le salon `console`,
+        épingle ce message, et supprime l'ancien message épinglé pour éviter les doublons.
+        """
+        # Au cas où on ne veut pas écraser avant d'avoir chargé
+        if not self.data_is_loaded:
+            return
+
+        console_chan = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
+        if not console_chan:
+            print(f"[ActiviteCog] Impossible de trouver le salon '{CONSOLE_CHANNEL_NAME}' pour sauvegarder.")
+            return
+
+        # On convertit la structure self.data en JSON
         es = {}
         for k, v in self.data["events"].items():
             es[k] = v.to_dict()
-        s = {
+        payload = {
             "next_id": self.data["next_id"],
             "events": es
         }
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(s, f, indent=2, ensure_ascii=False)
+        json_str = json.dumps(payload, indent=2, ensure_ascii=False)
+        data_bytes = json_str.encode("utf-8")
 
-    def get_next_id(self):
-        i = self.data["next_id"]
-        self.data["next_id"] += 1
-        return i
+        # On supprime l'ancien message épinglé du bot
+        pinned = await console_chan.pins()
+        for msg in pinned:
+            if msg.author == self.bot.user and msg.attachments:
+                for att in msg.attachments:
+                    if att.filename == PINNED_JSON_FILENAME:
+                        # On retire l'épinglage puis on supprime le message
+                        await msg.unpin(reason="Nouveau snapshot d'activités.")
+                        try:
+                            await msg.delete()
+                        except:
+                            pass
+                        break
+
+        # On envoie un nouveau message avec la PJ
+        file_to_send = discord.File(io.BytesIO(data_bytes), filename=PINNED_JSON_FILENAME)
+        new_msg = await console_chan.send(
+            content="**Snapshot des activités** (sauvegarde automatique)",
+            file=file_to_send
+        )
+        await new_msg.pin(reason="Sauvegarde activités")
+
+        print("[ActiviteCog] Données d'activités sauvegardées dans #console.")
+
+    # ----------------------------------------------------------
+    #  Méthodes standard du Cog
+    # ----------------------------------------------------------
 
     @tasks.loop(minutes=5)
     async def check_events_loop(self):
+        """
+        Toutes les 5 minutes, on vérifie si une activité est dépassée,
+        ou si on doit envoyer des rappels.
+        """
+        # On attend que le bot soit prêt et qu'on ait chargé les données
+        if not self.bot.is_ready():
+            return
+        if not self.data_is_loaded:
+            return
+
         now = datetime.now()
         c = discord.utils.get(self.bot.get_all_channels(), name=ORGA_CHANNEL_NAME)
         if not c:
@@ -151,7 +254,9 @@ class ActiviteCog(commands.Cog):
                 continue
             d = (e.date_obj - now).total_seconds()
 
+            # Si c'est dans le passé => on supprime l'activité
             if d < 0:
+                # Supprimer le rôle associé si nécessaire
                 if e.role_id:
                     g = c.guild
                     rr = g.get_role(e.role_id)
@@ -161,9 +266,10 @@ class ActiviteCog(commands.Cog):
                         except:
                             pass
                 self.data["events"].pop(k, None)
-                self.save_data()
+                await self.save_data_to_discord()
                 continue
 
+            # Système de rappels (24h & 1h avant)
             h = d / 3600.0
             if not hasattr(e, "reminder_24_sent"):
                 e.reminder_24_sent = False
@@ -178,7 +284,8 @@ class ActiviteCog(commands.Cog):
                 await self.envoyer_rappel(c, e, "1h")
                 e.reminder_1_sent = True
 
-        self.save_data()
+        # Après la boucle, on sauvegarde si jamais on a modifié des champs
+        await self.save_data_to_discord()
 
     async def envoyer_rappel(self, channel, e, t):
         mention = f"<@&{e.role_id}>" if e.role_id else ""
@@ -195,8 +302,27 @@ class ActiviteCog(commands.Cog):
             )
         await channel.send(message)
 
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """
+        Quand le bot est prêt, on charge pour la première fois les données depuis #console,
+        si ce n'est pas déjà fait.
+        """
+        if not self.data_is_loaded:
+            print("[ActiviteCog] Chargement des données depuis le salon console...")
+            await self.load_data_from_discord()
+
+    def cog_unload(self):
+        self.check_events_loop.cancel()
+
+    # ----------------------------------------------------------
+    #  Commandes principales
+    # ----------------------------------------------------------
+
     @commands.command(name="activite")
     async def activite_main(self, ctx, action=None, *, args=None):
+        if not self.data_is_loaded:
+            return await ctx.send("Données en cours de chargement, réessaye dans quelques instants.")
         if not action:
             await ctx.send("Actions disponibles: guide, creer, liste, info, join, leave, annuler, modifier.")
             return
@@ -331,10 +457,12 @@ class ActiviteCog(commands.Cog):
         if not dt:
             return await ctx.send("La date/heure est invalide (JJ/MM/AAAA HH:MM)")
 
+        # Vérification qu'il n'y a pas déjà une activité similaire
         for e_id, eobj in self.data["events"].items():
             if eobj.cancelled:
                 continue
             if eobj.titre.lower() == t.lower():
+                # Vérif si la date est "proche"
                 if abs((eobj.date_obj - dt).days) < 3:
                     await ctx.send(f"Une activité similaire '{t}' existe déjà à des dates proches.")
                     break
@@ -346,11 +474,14 @@ class ActiviteCog(commands.Cog):
         except Exception as ex:
             return await ctx.send(f"Impossible de créer le rôle : {ex}")
 
-        i = str(self.get_next_id())
+        i = str(self.data["next_id"])
+        self.data["next_id"] += 1
+
         a = ActiviteData(i, t, dt, de, ctx.author.id, ro.id)
         self.data["events"][i] = a
-        self.save_data()
+        await self.save_data_to_discord()
 
+        # Assigner le rôle de l'activité au créateur
         try:
             await ctx.author.add_roles(ro)
         except:
@@ -366,6 +497,7 @@ class ActiviteCog(commands.Cog):
         em.add_field(name="ID de l’activité", value=i, inline=True)
         await ctx.send(embed=em)
 
+        # Petit message dans #organisation
         c = discord.utils.get(g.text_channels, name=ORGA_CHANNEL_NAME)
         if c:
             val = discord.utils.get(g.roles, name=VALIDATED_ROLE_NAME)
@@ -477,7 +609,7 @@ class ActiviteCog(commands.Cog):
         if ctx.author.id in e.participants:
             return await ctx.send("Tu es déjà inscrit(e) à cette activité.")
         e.participants.append(ctx.author.id)
-        self.save_data()
+        await self.save_data_to_discord()
         if e.role_id:
             r = ctx.guild.get_role(e.role_id)
             if r:
@@ -496,7 +628,7 @@ class ActiviteCog(commands.Cog):
         if ctx.author.id not in e.participants:
             return await ctx.send("Tu n’étais pas inscrit(e) à cette activité.")
         e.participants.remove(ctx.author.id)
-        self.save_data()
+        await self.save_data_to_discord()
         if e.role_id:
             r = ctx.guild.get_role(e.role_id)
             if r:
@@ -515,7 +647,7 @@ class ActiviteCog(commands.Cog):
         if not self.can_modify(ctx, e):
             return await ctx.send("Tu n’as pas l’autorisation d’annuler cette activité.")
         e.cancelled = True
-        self.save_data()
+        await self.save_data_to_discord()
         if e.role_id:
             r = ctx.guild.get_role(e.role_id)
             if r:
@@ -551,7 +683,7 @@ class ActiviteCog(commands.Cog):
             return await ctx.send("Date invalide. Format JJ/MM/AAAA HH:MM")
         e.date_obj = dt
         e.description = nd
-        self.save_data()
+        await self.save_data_to_discord()
         await ctx.send(
             f"Activité « {e.titre} » (ID={i}) mise à jour.\n"
             f"Nouvelle date/heure : {dt.strftime('%d/%m/%Y %H:%M')}\n"
@@ -560,6 +692,7 @@ class ActiviteCog(commands.Cog):
 
     @commands.command(name="calendrier")
     async def afficher_calendrier(self, ctx):
+        # Simple affichage d’un calendrier généré (déjà présent dans votre code initial)
         now = datetime.now()
         an = now.year
         mo = now.month
@@ -567,6 +700,7 @@ class ActiviteCog(commands.Cog):
             bg = mpimg.imread("calendrier1.png")
         except:
             bg = None
+
         buf = gen_cal(self.data["events"], bg, an, mo)
         fil = discord.File(fp=buf, filename="calendrier.png")
         msg = await ctx.send(file=fil)
@@ -614,6 +748,10 @@ class ActiviteCog(commands.Cog):
                 await msg.add_reaction("⬅️")
                 await msg.add_reaction("➡️")
 
+    # ----------------------------------------------------------
+    #  Gestion des réactions
+    # ----------------------------------------------------------
+
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction, user):
         if user.bot:
@@ -626,13 +764,19 @@ class ActiviteCog(commands.Cog):
             await self.handle_unsubscribe_dm(reaction, user)
 
     async def handle_reaction_list(self, reaction, user):
+        # À implémenter si besoin : logique de "join" via réactions
         pass
 
     async def handle_reaction_single_event(self, reaction, user):
+        # À implémenter si besoin : logique de "join" via ✅
         pass
 
     async def handle_unsubscribe_dm(self, reaction, user):
         pass
+
+    # ----------------------------------------------------------
+    #  Utilitaires
+    # ----------------------------------------------------------
 
     def can_modify(self, ctx, e):
         if ctx.author.id == e.creator_id:
@@ -646,4 +790,12 @@ class ActiviteCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(ActiviteCog(bot))
+    """
+    Méthode d'initialisation asynchrone du Cog.
+    Discord.py appelle cette fonction lors d'un load_extension.
+    """
+    cog = ActiviteCog(bot)
+    bot.add_cog(cog)
+    # Optionnel : on peut forcer un chargement tout de suite,
+    # mais on_ready le fera déjà.
+    # await cog.load_data_from_discord()
