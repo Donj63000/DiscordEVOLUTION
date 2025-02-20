@@ -61,7 +61,6 @@ async def main():
     # Liste de nos extensions
     extensions = [
         "activite",
-        "ia",
         "ticket",
         "players",
         "defender",
