@@ -63,9 +63,7 @@ async def main():
         "activite",
         "ticket",
         "players",
-        "defender",
-        "calcul",
-        "sondage",
+
 
     ]
 
