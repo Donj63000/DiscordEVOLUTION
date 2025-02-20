@@ -71,6 +71,7 @@ async def main():
         "entree",
         "up"
         "defender"
+        "calcul"
 
 
     ]
