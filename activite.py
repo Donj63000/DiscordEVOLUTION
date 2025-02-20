@@ -40,7 +40,7 @@ def parse_date_time(date_str, time_str):
         d, m, y = date_str.split("/")
         h, mi = time_str.split(":")
         return datetime(int(y), int(m), int(d), int(h), int(mi))
-    except:
+    except ValueError:
         return None
 
 
@@ -116,9 +116,7 @@ class ActiviteCog(commands.Cog):
         self.single_event_msg_map = {}
         self.unsub_map = {}
 
-        # Au lieu de charger depuis un fichier local, on va lancer
-        # un chargement asynchrone depuis le salon "console".
-        # On ne peut pas faire 'await' ici dans __init__, donc on programmera un "on_ready".
+        # Indicateur de chargement des données
         self.data_is_loaded = False
 
         # Tâche de vérification périodique
@@ -139,11 +137,16 @@ class ActiviteCog(commands.Cog):
 
         console_chan = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
         if not console_chan:
-            # Pas de salon => on garde data vide
-            print(f"[ActiviteCog] Impossible de trouver le salon '{CONSOLE_CHANNEL_NAME}'.")
+            print(f"[ActiviteCog] Impossible de trouver le salon '{CONSOLE_CHANNEL_NAME}'. Lancement avec data vide.")
+            self.data_is_loaded = True
             return
 
-        pinned = await console_chan.pins()
+        try:
+            pinned = await console_chan.pins()
+        except discord.Forbidden:
+            print("[ActiviteCog] Pas la permission de voir les pins dans #console.")
+            pinned = []
+
         pinned_json_message = None
 
         # On recherche un message épinglé du bot, avec une PJ nommée "activities_data.json"
@@ -163,20 +166,19 @@ class ActiviteCog(commands.Cog):
             return
 
         # Téléchargement du fichier
-        attachment = pinned_json_message.attachments[0]  # On sait que c'est 'activities_data.json'
+        attachment = pinned_json_message.attachments[0]
         data_bytes = await attachment.read()
         try:
             raw_json = json.loads(data_bytes)
             self.data["next_id"] = raw_json.get("next_id", 1)
             self.data["events"] = {}
             for k, v in raw_json.get("events", {}).items():
-                # On essaie de recréer ActiviteData
                 e = ActiviteData.from_dict(v)
                 self.data["events"][k] = e
             print("[ActiviteCog] Données d'activités restaurées depuis #console.")
         except Exception as e:
-            print(f"[ActiviteCog] Erreur lors du parse du JSON : {e}")
-            # On garde la data vide
+            print(f"[ActiviteCog] Erreur lors du parse du JSON : {e}\nDémarrage avec data vide.")
+
         self.data_is_loaded = True
 
     async def save_data_to_discord(self):
@@ -184,8 +186,8 @@ class ActiviteCog(commands.Cog):
         Convertit self.data en JSON, puis l'envoie en PJ dans le salon `console`,
         épingle ce message, et supprime l'ancien message épinglé pour éviter les doublons.
         """
-        # Au cas où on ne veut pas écraser avant d'avoir chargé
         if not self.data_is_loaded:
+            # Évite de sauvegarder tant que rien n'a été chargé
             return
 
         console_chan = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
@@ -205,13 +207,20 @@ class ActiviteCog(commands.Cog):
         data_bytes = json_str.encode("utf-8")
 
         # On supprime l'ancien message épinglé du bot
-        pinned = await console_chan.pins()
+        try:
+            pinned = await console_chan.pins()
+        except discord.Forbidden:
+            pinned = []
+            print("[ActiviteCog] Pas la permission de voir/supprimer les pins dans #console.")
+
         for msg in pinned:
             if msg.author == self.bot.user and msg.attachments:
                 for att in msg.attachments:
                     if att.filename == PINNED_JSON_FILENAME:
-                        # On retire l'épinglage puis on supprime le message
-                        await msg.unpin(reason="Nouveau snapshot d'activités.")
+                        try:
+                            await msg.unpin(reason="Nouveau snapshot d'activités.")
+                        except:
+                            pass
                         try:
                             await msg.delete()
                         except:
@@ -220,13 +229,15 @@ class ActiviteCog(commands.Cog):
 
         # On envoie un nouveau message avec la PJ
         file_to_send = discord.File(io.BytesIO(data_bytes), filename=PINNED_JSON_FILENAME)
-        new_msg = await console_chan.send(
-            content="**Snapshot des activités** (sauvegarde automatique)",
-            file=file_to_send
-        )
-        await new_msg.pin(reason="Sauvegarde activités")
-
-        print("[ActiviteCog] Données d'activités sauvegardées dans #console.")
+        try:
+            new_msg = await console_chan.send(
+                content="**Snapshot des activités** (sauvegarde automatique)",
+                file=file_to_send
+            )
+            await new_msg.pin(reason="Sauvegarde activités")
+            print("[ActiviteCog] Données d'activités sauvegardées dans #console.")
+        except Exception as e:
+            print(f"[ActiviteCog] Erreur lors de l'envoi du snapshot JSON : {e}")
 
     # ----------------------------------------------------------
     #  Méthodes standard du Cog
@@ -249,9 +260,11 @@ class ActiviteCog(commands.Cog):
         if not c:
             return
 
+        # Copie de la liste car on va modifier self.data["events"] en suppr.
         for k, e in list(self.data["events"].items()):
             if e.cancelled:
                 continue
+
             d = (e.date_obj - now).total_seconds()
 
             # Si c'est dans le passé => on supprime l'activité
@@ -262,9 +275,10 @@ class ActiviteCog(commands.Cog):
                     rr = g.get_role(e.role_id)
                     if rr:
                         try:
-                            await rr.delete()
-                        except:
-                            pass
+                            await rr.delete(reason="Activité terminée")
+                        except Exception as ex:
+                            print(f"[ActiviteCog] Erreur lors de la suppression du rôle {rr.name} : {ex}")
+
                 self.data["events"].pop(k, None)
                 await self.save_data_to_discord()
                 continue
@@ -276,6 +290,7 @@ class ActiviteCog(commands.Cog):
             if not hasattr(e, "reminder_1_sent"):
                 e.reminder_1_sent = False
 
+            # Tolérance +/- 0.1 h (6 minutes) pour l'envoi
             if 23.9 < h < 24.1 and not e.reminder_24_sent:
                 await self.envoyer_rappel(c, e, "24h")
                 e.reminder_24_sent = True
@@ -284,7 +299,7 @@ class ActiviteCog(commands.Cog):
                 await self.envoyer_rappel(c, e, "1h")
                 e.reminder_1_sent = True
 
-        # Après la boucle, on sauvegarde si jamais on a modifié des champs
+        # Après la boucle, on sauvegarde au cas où on aurait modifié un champ
         await self.save_data_to_discord()
 
     async def envoyer_rappel(self, channel, e, t):
@@ -300,7 +315,10 @@ class ActiviteCog(commands.Cog):
                 f"⏰ **Rappel 1h** : {e.titre} démarre dans 1h.\n"
                 f"{mention}\nDébut le {ds}."
             )
-        await channel.send(message)
+        try:
+            await channel.send(message)
+        except discord.Forbidden:
+            print("[ActiviteCog] Pas la permission d'envoyer un rappel dans #organisation.")
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -309,7 +327,7 @@ class ActiviteCog(commands.Cog):
         si ce n'est pas déjà fait.
         """
         if not self.data_is_loaded:
-            print("[ActiviteCog] Chargement des données depuis le salon console...")
+            print("[ActiviteCog] on_ready => chargement initial depuis #console...")
             await self.load_data_from_discord()
 
     def cog_unload(self):
@@ -326,6 +344,7 @@ class ActiviteCog(commands.Cog):
         if not action:
             await ctx.send("Actions disponibles: guide, creer, liste, info, join, leave, annuler, modifier.")
             return
+
         a = action.lower()
 
         if a == "guide":
@@ -453,7 +472,7 @@ class ActiviteCog(commands.Cog):
         if not line or line.strip() == "":
             return await ctx.send("Syntaxe: !activite creer <titre> <JJ/MM/AAAA HH:MM> <description>")
 
-        t, dt, de = parse_date_time_via_regex(line)
+        titre, dt, description = parse_date_time_via_regex(line)
         if not dt:
             return await ctx.send("La date/heure est invalide (JJ/MM/AAAA HH:MM)")
 
@@ -461,14 +480,16 @@ class ActiviteCog(commands.Cog):
         for e_id, eobj in self.data["events"].items():
             if eobj.cancelled:
                 continue
-            if eobj.titre.lower() == t.lower():
+            if eobj.titre.lower() == titre.lower():
                 # Vérif si la date est "proche"
-                if abs((eobj.date_obj - dt).days) < 3:
-                    await ctx.send(f"Une activité similaire '{t}' existe déjà à des dates proches.")
+                delta_days = abs((eobj.date_obj - dt).days)
+                if delta_days < 3:
+                    print(f"[ActiviteCog] Activité similaire détectée : {eobj.titre} (ID={e_id}), date proche.")
+                    await ctx.send(f"Une activité similaire '{titre}' existe déjà à des dates proches.")
                     break
 
         g = ctx.guild
-        rn = f"Sortie - {t}"
+        rn = f"Sortie - {titre}"
         try:
             ro = await g.create_role(name=rn)
         except Exception as ex:
@@ -477,7 +498,7 @@ class ActiviteCog(commands.Cog):
         i = str(self.data["next_id"])
         self.data["next_id"] += 1
 
-        a = ActiviteData(i, t, dt, de, ctx.author.id, ro.id)
+        a = ActiviteData(i, titre, dt, description, ctx.author.id, ro.id)
         self.data["events"][i] = a
         await self.save_data_to_discord()
 
@@ -489,8 +510,8 @@ class ActiviteCog(commands.Cog):
 
         ds = dt.strftime("%d/%m/%Y à %H:%M")
         em = discord.Embed(
-            title=f"Création de l’activité : {t}",
-            description=de or "Aucune description spécifiée",
+            title=f"Création de l’activité : {titre}",
+            description=description or "Aucune description spécifiée",
             color=0x00FF00
         )
         em.add_field(name="Date/Heure", value=ds, inline=False)
@@ -503,10 +524,10 @@ class ActiviteCog(commands.Cog):
             val = discord.utils.get(g.roles, name=VALIDATED_ROLE_NAME)
             mention = f"<@&{val.id}>" if val else "@everyone"
             ev = discord.Embed(
-                title=f"Nouvelle proposition : {t}",
+                title=f"Nouvelle proposition : {titre}",
                 description=(
                     f"Date : {ds}\n"
-                    f"Description : {de or '(aucune)'}\n"
+                    f"Description : {description or '(aucune)'}\n"
                     f"Réagissez avec {SINGLE_EVENT_EMOJI}\n"
                     f"ID = {i}"
                 ),
@@ -692,12 +713,14 @@ class ActiviteCog(commands.Cog):
 
     @commands.command(name="calendrier")
     async def afficher_calendrier(self, ctx):
-        # Simple affichage d’un calendrier généré (déjà présent dans votre code initial)
+        """
+        Simple affichage d’un calendrier généré (déjà présent dans votre code initial).
+        """
         now = datetime.now()
         an = now.year
         mo = now.month
         try:
-            bg = mpimg.imread("calendrier1.png")
+            bg = mpimg.imread("calendrier1.png")  # Image de fond, si vous en avez une
         except:
             bg = None
 
@@ -796,6 +819,11 @@ async def setup(bot: commands.Bot):
     """
     cog = ActiviteCog(bot)
     bot.add_cog(cog)
-    # Optionnel : on peut forcer un chargement tout de suite,
-    # mais on_ready le fera déjà.
-    # await cog.load_data_from_discord()
+
+    # On force le chargement depuis Discord immédiatement,
+    # si le bot est déjà prêt (sinon on_ready fera un second check).
+    try:
+        await bot.wait_until_ready()
+        await cog.load_data_from_discord()
+    except Exception as e:
+        print(f"[ActiviteCog] Exception au setup : {e}")
