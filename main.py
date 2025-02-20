@@ -64,8 +64,6 @@ async def main():
         "ia",
         "ticket",
         "players",
-        "defender",
-        "calcul",
         "sondage",
         "stats",
         "help",
