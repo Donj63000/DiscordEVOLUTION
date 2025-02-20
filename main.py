@@ -70,6 +70,7 @@ async def main():
         "welcome",
         "entree",
         "up"
+        "defender"
 
 
     ]
