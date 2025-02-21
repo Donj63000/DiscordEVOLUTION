@@ -79,8 +79,12 @@ class ActiviteData:
     def from_dict(d):
         dt = datetime.strptime(d["date_str"], "%Y-%m-%d %H:%M:%S")
         o = ActiviteData(
-            i=d["id"], t=d["titre"], dt=dt, desc=d["description"],
-            cid=d["creator_id"], rid=d["role_id"],
+            i=d["id"],
+            t=d["titre"],
+            dt=dt,
+            desc=d["description"],
+            cid=d["creator_id"],
+            rid=d["role_id"],
             reminder_24_sent=d.get("reminder_24_sent", False),
             reminder_1_sent=d.get("reminder_1_sent", False)
         )
@@ -97,6 +101,7 @@ class ActiviteCog(commands.Cog):
         self.unsub_map = {}
         self.data_is_loaded = False
         self.check_events_loop.start()
+
     async def load_data_from_discord(self):
         if self.data_is_loaded:
             return
@@ -132,6 +137,7 @@ class ActiviteCog(commands.Cog):
         except:
             pass
         self.data_is_loaded = True
+
     async def save_data_to_discord(self):
         if not self.data_is_loaded:
             return
@@ -163,10 +169,14 @@ class ActiviteCog(commands.Cog):
                         break
         file_to_send = discord.File(io.BytesIO(data_bytes), filename=PINNED_JSON_FILENAME)
         try:
-            new_msg = await console_chan.send(content="**Snapshot des activités** (sauvegarde automatique)", file=file_to_send)
+            new_msg = await console_chan.send(
+                content="**Snapshot des activités** (sauvegarde automatique)",
+                file=file_to_send
+            )
             await new_msg.pin(reason="Sauvegarde activités")
         except:
             pass
+
     @tasks.loop(minutes=5)
     async def check_events_loop(self):
         if not self.bot.is_ready():
@@ -201,6 +211,7 @@ class ActiviteCog(commands.Cog):
                 await self.envoyer_rappel(org_channel, e, "1h")
                 e.reminder_1_sent = True
         await self.save_data_to_discord()
+
     async def envoyer_rappel(self, channel, e, t):
         mention = f"<@&{e.role_id}>" if e.role_id else ""
         ds = e.date_obj.strftime("%d/%m/%Y à %H:%M")
@@ -212,12 +223,15 @@ class ActiviteCog(commands.Cog):
             await channel.send(message)
         except:
             pass
+
     @commands.Cog.listener()
     async def on_ready(self):
         if not self.data_is_loaded:
             await self.load_data_from_discord()
+
     def cog_unload(self):
         self.check_events_loop.cancel()
+
     @commands.command(name="activite")
     async def activite_main(self, ctx, action=None, *, args=None):
         if not self.data_is_loaded:
@@ -254,6 +268,7 @@ class ActiviteCog(commands.Cog):
             await self.command_modifier(ctx, args)
         else:
             await ctx.send("Action inconnue.")
+
     async def command_guide(self, ctx):
         em = discord.Embed(
             title="Guide !activite",
@@ -261,17 +276,13 @@ class ActiviteCog(commands.Cog):
             color=0x00AAFF
         )
         await ctx.send(embed=em)
+
     async def command_creer(self, ctx, line):
         if not line or line.strip() == "":
             return await ctx.send("Syntaxe: !activite creer <titre> <JJ/MM/AAAA HH:MM> <desc>")
         titre, dt, description = parse_date_time_via_regex(line)
         if not dt:
             return await ctx.send("Date/heure invalide.")
-        for e_id, eobj in self.data["events"].items():
-            if eobj.cancelled:
-                continue
-            if eobj.titre.lower() == titre.lower():
-                pass
         guild = ctx.guild
         role_name = f"Sortie - {titre}"
         try:
@@ -288,11 +299,7 @@ class ActiviteCog(commands.Cog):
         except:
             pass
         ds = dt.strftime("%d/%m/%Y à %H:%M")
-        em = discord.Embed(
-            title=f"Création: {titre}",
-            description=description or "Aucune description",
-            color=0x00FF00
-        )
+        em = discord.Embed(title=f"Création: {titre}", description=description or "Aucune description", color=0x00FF00)
         em.add_field(name="Date/Heure", value=ds, inline=False)
         em.add_field(name="ID", value=event_id, inline=True)
         await ctx.send(embed=em)
@@ -311,6 +318,7 @@ class ActiviteCog(commands.Cog):
             )
             await msg.add_reaction(SINGLE_EVENT_EMOJI)
             self.single_event_msg_map[msg.id] = event_id
+
     async def command_liste(self, ctx):
         now = datetime.now()
         upcoming = []
@@ -331,17 +339,17 @@ class ActiviteCog(commands.Cog):
             ds = ev.date_obj.strftime("%d/%m %H:%M")
             pc = len(ev.participants)
             org = ctx.guild.get_member(ev.creator_id)
-            org_name = org.display_name if org else "Inconnu"
+            on = org.display_name if org else "Inconnu"
             ro = f"<@&{ev.role_id}>" if ev.role_id else "Aucun"
-            participant_names = []
+            plist = []
             for p_id in ev.participants:
                 mem = ctx.guild.get_member(p_id)
-                participant_names.append(mem.display_name if mem else f"<@{p_id}>")
-            pstr = ", ".join(participant_names) if participant_names else "Aucun"
+                plist.append(mem.display_name if mem else f"<@{p_id}>")
+            pstr = ", ".join(plist) if plist else "Aucun"
             txt = (
                 f"ID : {ev.id}\n"
                 f"Date : {ds}\n"
-                f"Organisateur : {org_name}\n"
+                f"Organisateur : {on}\n"
                 f"Participants ({pc}/{MAX_GROUP_SIZE}) : {pstr}\n"
                 f"Rôle : {ro}\n"
                 f"---\n{ev.description or '*Aucune description*'}"
@@ -354,6 +362,7 @@ class ActiviteCog(commands.Cog):
                 break
             await msg_sent.add_reaction(LETTER_EMOJIS[i])
         self.liste_message_map[msg_sent.id] = emoji_to_event_id
+
     async def command_info(self, ctx, args):
         if not args:
             return await ctx.send("Syntaxe : !activite info <id>")
@@ -365,18 +374,19 @@ class ActiviteCog(commands.Cog):
         em.add_field(name="Annulée", value="Oui" if e.cancelled else "Non", inline=True)
         em.add_field(name="Description", value=e.description or "Aucune", inline=False)
         org = ctx.guild.get_member(e.creator_id)
-        org_name = org.display_name if org else "Inconnu"
-        em.add_field(name="Organisateur", value=org_name, inline=False)
-        participant_names = []
+        on = org.display_name if org else "Inconnu"
+        em.add_field(name="Organisateur", value=on, inline=False)
+        plist = []
         for p_id in e.participants:
             mem = ctx.guild.get_member(p_id)
-            participant_names.append(mem.display_name if mem else f"<@{p_id}>")
-        pstr = ", ".join(participant_names) if participant_names else "Aucun"
-        pc = len(participant_names)
+            plist.append(mem.display_name if mem else f"<@{p_id}>")
+        pc = len(plist)
+        pstr = ", ".join(plist) if plist else "Aucun"
         em.add_field(name=f"Participants ({pc}/{MAX_GROUP_SIZE})", value=pstr, inline=False)
         if e.role_id:
             em.add_field(name="Rôle", value=f"<@&{e.role_id}>", inline=True)
         await ctx.send(embed=em)
+
     async def command_join(self, ctx, args):
         if not args:
             return await ctx.send("Syntaxe: !activite join <id>")
@@ -399,6 +409,7 @@ class ActiviteCog(commands.Cog):
                 except:
                     pass
         await ctx.send(f"{ctx.author.mention} rejoint {e.titre} (ID={args}).")
+
     async def command_leave(self, ctx, args):
         if not args:
             return await ctx.send("Syntaxe: !activite leave <id>")
@@ -417,6 +428,7 @@ class ActiviteCog(commands.Cog):
                 except:
                     pass
         await ctx.send(f"{ctx.author.mention} se retire de {e.titre} (ID={args}).")
+
     async def command_annuler(self, ctx, args):
         if not args:
             return await ctx.send("Syntaxe: !activite annuler <id>")
@@ -435,6 +447,7 @@ class ActiviteCog(commands.Cog):
                 except:
                     pass
         await ctx.send(f"{e.titre} annulée.")
+
     async def command_modifier(self, ctx, args):
         if not args:
             return await ctx.send("Syntaxe: !activite modifier <id> <JJ/MM/AAAA HH:MM> <desc>")
@@ -463,6 +476,7 @@ class ActiviteCog(commands.Cog):
         e.description = nd
         await self.save_data_to_discord()
         await ctx.send(f"{e.titre} (ID={event_id}) modifiée. Nouvelle date: {dt.strftime('%d/%m/%Y %H:%M')}")
+
     @commands.command(name="calendrier")
     async def afficher_calendrier(self, ctx):
         now = datetime.now()
@@ -512,6 +526,7 @@ class ActiviteCog(commands.Cog):
                 msg = await ctx.send(file=new_file_cal)
                 await msg.add_reaction("⬅️")
                 await msg.add_reaction("➡️")
+
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction, user):
         if user.bot:
@@ -522,6 +537,7 @@ class ActiviteCog(commands.Cog):
             await self.handle_reaction_single_event(reaction, user)
         elif reaction.message.id in self.unsub_map:
             await self.handle_unsubscribe_dm(reaction, user)
+
     async def handle_reaction_list(self, reaction, user):
         mapping = self.liste_message_map[reaction.message.id]
         emj = str(reaction.emoji)
@@ -548,6 +564,7 @@ class ActiviteCog(commands.Cog):
                 except:
                     pass
         await reaction.message.channel.send(f"{user.mention} rejoint {e.titre} (ID={e.id}).")
+
     async def handle_reaction_single_event(self, reaction, user):
         if str(reaction.emoji) != SINGLE_EVENT_EMOJI:
             return
@@ -575,14 +592,17 @@ class ActiviteCog(commands.Cog):
                 except:
                     pass
         await reaction.message.channel.send(f"{user.mention} rejoint {e.titre} (ID={e.id}).")
+
     async def handle_unsubscribe_dm(self, reaction, user):
         pass
+
     def can_modify(self, ctx, e):
         if ctx.author.id == e.creator_id:
             return True
         if ctx.author.guild_permissions.administrator:
             return True
         return False
+
     def has_validated_role(self, member):
         return any(r.name == VALIDATED_ROLE_NAME for r in member.roles)
 
@@ -594,3 +614,4 @@ async def setup(bot: commands.Bot):
         await cog.load_data_from_discord()
     except:
         pass
+
