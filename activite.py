@@ -7,12 +7,16 @@ import json
 import re
 import asyncio
 import io
+import logging
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from datetime import datetime
 from calendrier import gen_cal
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 ORGA_CHANNEL_NAME = "organisation"
 CONSOLE_CHANNEL_NAME = "console"
@@ -62,6 +66,7 @@ class ActiviteData:
         self.cancelled = False
         self.reminder_24_sent = reminder_24_sent
         self.reminder_1_sent = reminder_1_sent
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -75,6 +80,7 @@ class ActiviteData:
             "reminder_24_sent": self.reminder_24_sent,
             "reminder_1_sent": self.reminder_1_sent
         }
+
     @staticmethod
     def from_dict(d):
         dt = datetime.strptime(d["date_str"], "%Y-%m-%d %H:%M:%S")
@@ -107,11 +113,13 @@ class ActiviteCog(commands.Cog):
             return
         console_chan = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
         if not console_chan:
+            logger.info("Salon 'console' introuvable, démarrage sans données.")
             self.data_is_loaded = True
             return
         try:
             pinned = await console_chan.pins()
-        except discord.Forbidden:
+        except discord.Forbidden as e:
+            logger.warning(f"Impossible de récupérer les pins dans '#console': {e}")
             pinned = []
         pinned_json_message = None
         for msg in pinned:
@@ -123,6 +131,7 @@ class ActiviteCog(commands.Cog):
             if pinned_json_message:
                 break
         if not pinned_json_message:
+            logger.info("Aucun JSON épinglé trouvé, démarrage sans données.")
             self.data_is_loaded = True
             return
         attachment = pinned_json_message.attachments[0]
@@ -134,8 +143,9 @@ class ActiviteCog(commands.Cog):
             for k, v in raw_json.get("events", {}).items():
                 e = ActiviteData.from_dict(v)
                 self.data["events"][k] = e
-        except:
-            pass
+            logger.info("Données d'activités chargées depuis '#console'.")
+        except Exception as e:
+            logger.error(f"Erreur de parsing JSON, démarrage sans données: {e}")
         self.data_is_loaded = True
 
     async def save_data_to_discord(self):
@@ -143,6 +153,7 @@ class ActiviteCog(commands.Cog):
             return
         console_chan = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
         if not console_chan:
+            logger.warning("Salon 'console' introuvable, impossible de sauvegarder.")
             return
         es = {}
         for k, v in self.data["events"].items():
@@ -152,7 +163,8 @@ class ActiviteCog(commands.Cog):
         data_bytes = json_str.encode("utf-8")
         try:
             pinned = await console_chan.pins()
-        except discord.Forbidden:
+        except discord.Forbidden as e:
+            logger.warning(f"Impossible de gérer les pins dans '#console': {e}")
             pinned = []
         for msg in pinned:
             if msg.author == self.bot.user and msg.attachments:
@@ -160,12 +172,12 @@ class ActiviteCog(commands.Cog):
                     if att.filename == PINNED_JSON_FILENAME:
                         try:
                             await msg.unpin(reason="Nouveau snapshot d'activités.")
-                        except:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"Impossible de détacher l'ancien pin: {e}")
                         try:
                             await msg.delete()
-                        except:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"Impossible de supprimer l'ancien message: {e}")
                         break
         file_to_send = discord.File(io.BytesIO(data_bytes), filename=PINNED_JSON_FILENAME)
         try:
@@ -174,8 +186,9 @@ class ActiviteCog(commands.Cog):
                 file=file_to_send
             )
             await new_msg.pin(reason="Sauvegarde activités")
-        except:
-            pass
+            logger.info("Données d'activités sauvegardées dans '#console'.")
+        except Exception as e:
+            logger.error(f"Erreur lors de l'envoi du snapshot JSON: {e}")
 
     @tasks.loop(minutes=5)
     async def check_events_loop(self):
@@ -198,8 +211,8 @@ class ActiviteCog(commands.Cog):
                     if rr:
                         try:
                             await rr.delete(reason="Activité terminée")
-                        except:
-                            pass
+                        except Exception as ex:
+                            logger.warning(f"Erreur lors de la suppression du rôle {rr.name}: {ex}")
                 self.data["events"].pop(k, None)
                 await self.save_data_to_discord()
                 continue
@@ -221,8 +234,8 @@ class ActiviteCog(commands.Cog):
             message = f"⏰ **Rappel 1h** : {e.titre} démarre dans 1h.\n{mention}\nDébut le {ds}."
         try:
             await channel.send(message)
-        except:
-            pass
+        except Exception as e2:
+            logger.warning(f"Impossible d'envoyer le rappel dans #{channel}: {e2}")
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -296,10 +309,14 @@ class ActiviteCog(commands.Cog):
         await self.save_data_to_discord()
         try:
             await ctx.author.add_roles(new_role)
-        except:
-            pass
+        except Exception as ex:
+            logger.warning(f"Impossible d'ajouter le rôle au créateur: {ex}")
         ds = dt.strftime("%d/%m/%Y à %H:%M")
-        em = discord.Embed(title=f"Création: {titre}", description=description or "Aucune description", color=0x00FF00)
+        em = discord.Embed(
+            title=f"Création: {titre}",
+            description=description or "Aucune description",
+            color=0x00FF00
+        )
         em.add_field(name="Date/Heure", value=ds, inline=False)
         em.add_field(name="ID", value=event_id, inline=True)
         await ctx.send(embed=em)
@@ -309,7 +326,12 @@ class ActiviteCog(commands.Cog):
             mention = f"<@&{val_role.id}>" if val_role else "@everyone"
             ev_embed = discord.Embed(
                 title=f"Nouvelle proposition : {titre}",
-                description=f"Date : {ds}\nDesc : {description or '(aucune)'}\nRéagissez avec {SINGLE_EVENT_EMOJI}\nID = {event_id}",
+                description=(
+                    f"Date : {ds}\n"
+                    f"Desc : {description or '(aucune)'}\n"
+                    f"Réagissez avec {SINGLE_EVENT_EMOJI}\n"
+                    f"ID = {event_id}"
+                ),
                 color=0x44DD55
             )
             msg = await org_chan.send(
@@ -406,8 +428,8 @@ class ActiviteCog(commands.Cog):
             if r:
                 try:
                     await ctx.author.add_roles(r)
-                except:
-                    pass
+                except Exception as ex:
+                    logger.warning(f"Impossible d'ajouter le rôle à {ctx.author}: {ex}")
         await ctx.send(f"{ctx.author.mention} rejoint {e.titre} (ID={args}).")
 
     async def command_leave(self, ctx, args):
@@ -425,8 +447,8 @@ class ActiviteCog(commands.Cog):
             if r:
                 try:
                     await ctx.author.remove_roles(r)
-                except:
-                    pass
+                except Exception as ex:
+                    logger.warning(f"Impossible de retirer le rôle à {ctx.author}: {ex}")
         await ctx.send(f"{ctx.author.mention} se retire de {e.titre} (ID={args}).")
 
     async def command_annuler(self, ctx, args):
@@ -444,8 +466,8 @@ class ActiviteCog(commands.Cog):
             if r:
                 try:
                     await r.delete(reason="Annulation.")
-                except:
-                    pass
+                except Exception as ex:
+                    logger.warning(f"Impossible de supprimer le rôle pour annulation: {ex}")
         await ctx.send(f"{e.titre} annulée.")
 
     async def command_modifier(self, ctx, args):
@@ -484,29 +506,36 @@ class ActiviteCog(commands.Cog):
         mois = now.month
         try:
             bg = mpimg.imread("calendrier1.png")
-        except:
+        except Exception as e:
+            logger.info(f"Impossible de charger 'calendrier1.png': {e}")
             bg = None
         buf = gen_cal(self.data["events"], bg, annee, mois)
         file_cal = discord.File(fp=buf, filename="calendrier.png")
         msg = await ctx.send(file=file_cal)
         await msg.add_reaction("⬅️")
         await msg.add_reaction("➡️")
+
         def check(reaction, user):
-            return user == ctx.author and reaction.message.id == msg.id and str(reaction.emoji) in ["⬅️","➡️"]
+            return (
+                user == ctx.author
+                and reaction.message.id == msg.id
+                and str(reaction.emoji) in ["⬅️", "➡️"]
+            )
+
         while True:
             try:
                 reac, usr = await self.bot.wait_for("reaction_add", timeout=60, check=check)
             except asyncio.TimeoutError:
                 try:
                     await msg.clear_reactions()
-                except:
-                    pass
+                except Exception as ex:
+                    logger.warning(f"Impossible de clear_reactions: {ex}")
                 break
             else:
                 try:
                     await msg.remove_reaction(reac.emoji, usr)
-                except:
-                    pass
+                except Exception as ex:
+                    logger.warning(f"Impossible de remove_reaction: {ex}")
                 if str(reac.emoji) == "➡️":
                     mois += 1
                     if mois > 12:
@@ -519,8 +548,8 @@ class ActiviteCog(commands.Cog):
                         annee -= 1
                 try:
                     await msg.delete()
-                except:
-                    pass
+                except Exception as ex:
+                    logger.warning(f"Impossible de supprimer l'ancien message de calendrier: {ex}")
                 new_buf = gen_cal(self.data["events"], bg, annee, mois)
                 new_file_cal = discord.File(fp=new_buf, filename="calendrier.png")
                 msg = await ctx.send(file=new_file_cal)
@@ -543,6 +572,9 @@ class ActiviteCog(commands.Cog):
         emj = str(reaction.emoji)
         if emj not in mapping:
             return
+        if not self.has_validated_role(user):
+            await reaction.message.channel.send(f"{user.mention} : Rôle invalide.")
+            return
         event_id = mapping[emj]
         e = self.data["events"].get(event_id)
         if not e or e.cancelled:
@@ -561,8 +593,8 @@ class ActiviteCog(commands.Cog):
             if role:
                 try:
                     await user.add_roles(role)
-                except:
-                    pass
+                except Exception as ex:
+                    logger.warning(f"Impossible d'ajouter le rôle à {user}: {ex}")
         await reaction.message.channel.send(f"{user.mention} rejoint {e.titre} (ID={e.id}).")
 
     async def handle_reaction_single_event(self, reaction, user):
@@ -589,8 +621,8 @@ class ActiviteCog(commands.Cog):
             if role:
                 try:
                     await user.add_roles(role)
-                except:
-                    pass
+                except Exception as ex:
+                    logger.warning(f"Impossible d'ajouter le rôle (event unique) à {user}: {ex}")
         await reaction.message.channel.send(f"{user.mention} rejoint {e.titre} (ID={e.id}).")
 
     async def handle_unsubscribe_dm(self, reaction, user):
@@ -612,6 +644,5 @@ async def setup(bot: commands.Bot):
     try:
         await bot.wait_until_ready()
         await cog.load_data_from_discord()
-    except:
-        pass
-
+    except Exception as e:
+        logger.error(f"Erreur lors du setup du Cog: {e}")
