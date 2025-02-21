@@ -62,6 +62,7 @@ async def main():
     extensions = [
         "job",
         "ia",
+        "activite",
         "ticket",
         "players",
         "sondage",
