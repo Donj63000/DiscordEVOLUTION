@@ -107,7 +107,7 @@ class ActiviteData:
 class ActiviteCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.activities_data = { "next_id": 1, "events": {} }
+        self.activities_data = {"next_id": 1, "events": {}}
         self.initialized = False
         self.liste_message_map = {}
         self.single_event_msg_map = {}
@@ -120,7 +120,6 @@ class ActiviteCog(commands.Cog):
     async def initialize_data(self):
         console_channel = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
         if console_channel:
-            # Lecture du dernier message contenant le marqueur MARKER_TEXT
             async for msg in console_channel.history(limit=1000, oldest_first=False):
                 if msg.author == self.bot.user and MARKER_TEXT in msg.content:
                     try:
@@ -132,9 +131,7 @@ class ActiviteCog(commands.Cog):
                         break
                     except Exception as e:
                         logger.warning(f"Impossible de parser le JSON dans un message console: {e}")
-                        pass
 
-        # Si on n'a rien trouvé, on essaye un fallback local
         if (self.activities_data.get("events") is None or len(self.activities_data["events"]) == 0) and os.path.exists(DATA_FILE):
             try:
                 with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -156,9 +153,17 @@ class ActiviteCog(commands.Cog):
         console_channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
         if not console_channel:
             return
+        await self._dump_data_to_console_channel(console_channel)
+
+    async def dump_data_to_console_no_ctx(self, guild: discord.Guild):
+        console_channel = discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+        if not console_channel:
+            return
+        await self._dump_data_to_console_channel(console_channel)
+
+    async def _dump_data_to_console_channel(self, console_channel: discord.TextChannel):
         data_str = json.dumps(self.activities_data, indent=4, ensure_ascii=False)
         marker = MARKER_TEXT
-        # Envoi sous forme de code-block JSON si assez court
         if len(data_str) < 1900:
             await console_channel.send(f"{marker}\n```json\n{data_str}\n```")
         else:
@@ -192,10 +197,10 @@ class ActiviteCog(commands.Cog):
             return
 
         to_delete = []
+        modified = False
         for k, e_data in self.activities_data["events"].items():
             if e_data["cancelled"]:
                 continue
-            # Reconstruction sous forme d'ActiviteData (pour la logique)
             evt = ActiviteData.from_dict(e_data)
             delta_seconds = (evt.date_obj - now).total_seconds()
             if delta_seconds < 0:
@@ -213,16 +218,21 @@ class ActiviteCog(commands.Cog):
             if 23.9 < hours_left < 24.1 and not evt.reminder_24_sent:
                 await self.envoyer_rappel(org_channel, evt, "24h")
                 e_data["reminder_24_sent"] = True
+                modified = True
             if 0.9 < hours_left < 1.1 and not evt.reminder_1_sent:
                 await self.envoyer_rappel(org_channel, evt, "1h")
                 e_data["reminder_1_sent"] = True
+                modified = True
 
         for kdel in to_delete:
             del self.activities_data["events"][kdel]
+            modified = True
 
-        if to_delete or any(e_data["reminder_24_sent"] or e_data["reminder_1_sent"] 
-                            for e_data in self.activities_data["events"].values()):
+        if modified:
             self.save_data_local()
+            # Pour le cas où pas de ctx ici, on dump dans console en "no_ctx"
+            if org_channel:
+                await self.dump_data_to_console_no_ctx(org_channel.guild)
 
     async def envoyer_rappel(self, channel, e: ActiviteData, t: str):
         mention = f"<@&{e.role_id}>" if e.role_id else ""
@@ -238,7 +248,6 @@ class ActiviteCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        # Au cas où cog_load ne se déclenche pas selon votre version de discord.py
         if not self.initialized:
             await self.initialize_data()
 
@@ -285,12 +294,28 @@ class ActiviteCog(commands.Cog):
             await ctx.send("Action inconnue.")
 
     async def command_guide(self, ctx):
-        em = discord.Embed(
-            title="Guide !activite",
-            description="Actions: creer, liste, info, join, leave, annuler, modifier.",
-            color=0x00AAFF
+        txt = (
+            "**Guide d’utilisation de la commande !activite**\n\n"
+            "**1) !activite creer <titre> <JJ/MM/AAAA HH:MM> <description>**\n"
+            "→ Crée une nouvelle activité. Exemple : `!activite creer Donjon 01/04/2025 20:30 Préparez vos potions!`\n"
+            "\n"
+            "**2) !activite liste**\n"
+            "→ Liste toutes les activités à venir.\n"
+            "\n"
+            "**3) !activite info <id>**\n"
+            "→ Affiche les détails d’une activité. Exemple : `!activite info 3`\n"
+            "\n"
+            "**4) !activite join <id>** / **!activite leave <id>**\n"
+            "→ Rejoindre ou quitter une activité donnée. Exemple : `!activite join 3`\n"
+            "\n"
+            "**5) !activite annuler <id>**\n"
+            "→ Annuler une activité (si vous êtes le créateur ou un administrateur).\n"
+            "\n"
+            "**6) !activite modifier <id> <JJ/MM/AAAA HH:MM> <description>**\n"
+            "→ Modifier la date ou la description d’une activité.\n"
         )
-        await ctx.send(embed=em)
+        embed = discord.Embed(title="Guide Complet : !activite", description=txt, color=0x00AAFF)
+        await ctx.send(embed=embed)
 
     async def command_creer(self, ctx, line):
         if not line or line.strip() == "":
@@ -571,7 +596,6 @@ class ActiviteCog(commands.Cog):
             logger.info(f"Impossible de charger 'calendrier1.png': {e}")
             bg = None
 
-        # On recrée les objets ActiviteData pour la fonction gen_cal
         all_events = {}
         if "events" in self.activities_data:
             for k, v in self.activities_data["events"].items():
@@ -644,6 +668,7 @@ class ActiviteCog(commands.Cog):
             await reaction.message.channel.send(f"{user.mention} : Rôle invalide.")
             return
         event_id = mapping[emj]
+        guild = reaction.message.guild
         if "events" not in self.activities_data or event_id not in self.activities_data["events"]:
             await reaction.message.channel.send("Annulée ou introuvable.")
             return
@@ -664,9 +689,10 @@ class ActiviteCog(commands.Cog):
         self.activities_data["events"][event_id] = e.to_dict()
 
         self.save_data_local()
+        await self.dump_data_to_console_no_ctx(guild)
 
         if e.role_id:
-            role = reaction.message.guild.get_role(e.role_id)
+            role = guild.get_role(e.role_id)
             if role:
                 try:
                     await user.add_roles(role)
@@ -679,6 +705,7 @@ class ActiviteCog(commands.Cog):
         if str(reaction.emoji) != SINGLE_EVENT_EMOJI:
             return
         event_id = self.single_event_msg_map[reaction.message.id]
+        guild = reaction.message.guild
         if "events" not in self.activities_data or event_id not in self.activities_data["events"]:
             await reaction.message.channel.send("Annulée ou introuvable.")
             return
@@ -702,9 +729,10 @@ class ActiviteCog(commands.Cog):
         self.activities_data["events"][event_id] = e.to_dict()
 
         self.save_data_local()
+        await self.dump_data_to_console_no_ctx(guild)
 
         if e.role_id:
-            role = reaction.message.guild.get_role(e.role_id)
+            role = guild.get_role(e.role_id)
             if role:
                 try:
                     await user.add_roles(role)
