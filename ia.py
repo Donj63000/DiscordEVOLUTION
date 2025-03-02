@@ -11,10 +11,17 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 
 def chunkify(text: str, max_size: int = 2000):
+    """
+    Découpe le texte en morceaux de taille max_size.
+    """
     for i in range(0, len(text), max_size):
         yield text[i : i + max_size]
 
 def check_quota(func):
+    """
+    Décorateur pour vérifier la quota de l'IA avant l'exécution d'une commande.
+    Si le quota est dépassé, la commande n'est pas exécutée.
+    """
     async def wrapper(self, ctx, *args, **kwargs):
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
@@ -38,6 +45,9 @@ class IACog(commands.Cog):
         self.configure_gemini()
 
     def configure_logging(self):
+        """
+        Configure le logging avec le niveau DEBUG en mode debug.
+        """
         logging.basicConfig(
             level=logging.DEBUG if self.debug_mode else logging.INFO,
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -45,6 +55,9 @@ class IACog(commands.Cog):
         self.logger = logging.getLogger("IACog")
 
     def configure_gemini(self):
+        """
+        Charge la clé API Gemini depuis le fichier .env et configure les modèles.
+        """
         load_dotenv()
         self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
@@ -55,6 +68,9 @@ class IACog(commands.Cog):
         self.model_flash = genai.GenerativeModel("gemini-1.5-flash")
 
     async def generate_content_async(self, model, prompt: str) -> str:
+        """
+        Appelle le modèle de génération de contenu de manière asynchrone.
+        """
         loop = asyncio.get_running_loop()
         def sync_call():
             return model.generate_content(prompt)
@@ -67,6 +83,9 @@ class IACog(commands.Cog):
             raise e
 
     async def get_ia_response(self, model, prompt: str, ctx: commands.Context) -> str:
+        """
+        Gère la génération de réponse IA avec gestion d'erreurs (quota, etc.).
+        """
         self.logger.debug(f"[DEBUG] Longueur du prompt = {len(prompt)}")
         try:
             reply_text = await self.generate_content_async(model, prompt)
@@ -82,6 +101,9 @@ class IACog(commands.Cog):
             return ""
 
     def build_system_prompt(self, context_label: str) -> str:
+        """
+        Construit le prompt système en fonction du contexte de la commande.
+        """
         base_prompt = (
             "Tu es EvolutionBOT, l'assistant IA de la guilde Evolution sur Dofus Retro. "
             "Tu réponds de manière claire et amicale, tout en restant précis, rigoureux et utile. "
@@ -104,6 +126,9 @@ class IACog(commands.Cog):
 
     @commands.command(name="ia")
     async def ia_help_command(self, ctx: commands.Context):
+        """
+        Affiche la liste des commandes IA disponibles.
+        """
         help_text = (
             "**Commandes IA disponibles :**\n"
             "`!annonce <texte>` : (Staff) Annonce stylée (#annonces)\n"
@@ -121,6 +146,10 @@ class IACog(commands.Cog):
     @commands.command(name="bot")
     @check_quota
     async def free_command(self, ctx: commands.Context, *, user_message: str = None):
+        """
+        Commande pour poser une question libre à l'IA.
+        Récupère l'historique des messages pour fournir un contexte.
+        """
         if not user_message:
             await ctx.send("Veuillez préciser un message après la commande. Par exemple : `!bot Explique-moi comment fonctionne l'intelligence artificielle.`")
             return
@@ -147,6 +176,9 @@ class IACog(commands.Cog):
     @commands.command(name="botflash")
     @check_quota
     async def flash_command(self, ctx: commands.Context, *, user_message: str = None):
+        """
+        Commande pour une réponse rapide (flash) de l'IA.
+        """
         if not user_message:
             await ctx.send("Veuillez préciser un message après la commande. Par exemple : `!botflash Combien coûtent les potions de vitalité ?`")
             return
@@ -162,20 +194,40 @@ class IACog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        """
+        Listener pour les messages.
+        Si le bot est mentionné dans un message qui n'est pas une commande,
+        il répond en appelant la commande free_command.
+        Ensuite, on appelle process_commands pour permettre le traitement normal des commandes.
+        """
+        # Ne pas traiter les messages provenant des bots
         if message.author.bot:
             return
+
+        # Récupère le contexte de la commande
         ctx = await self.bot.get_context(message)
+
+        # Si le message est une commande, on la laisse être traitée normalement
         if ctx.valid and ctx.command is not None:
+            await self.bot.process_commands(message)
             return
-        if self.bot.user.mention in message.content:
+
+        # Si le bot est mentionné, traite le message comme une question pour l'IA
+        if self.bot.user and self.bot.user.mention in message.content:
             query = message.content.replace(self.bot.user.mention, "").strip()
             if query:
                 new_ctx = await self.bot.get_context(message)
                 await self.free_command(new_ctx, user_message=query)
 
+        # Finalement, on s'assure que toutes les commandes sont traitées
+        await self.bot.process_commands(message)
+
     @commands.command(name="analyse")
     @check_quota
     async def analyse_command(self, ctx: commands.Context):
+        """
+        Commande pour générer un rapport d'analyse des messages récents du salon.
+        """
         limit_messages = 100
         history_messages = []
         async for msg in ctx.channel.history(limit=limit_messages):
@@ -200,6 +252,9 @@ class IACog(commands.Cog):
     @commands.command(name="annonce")
     @check_quota
     async def annonce_command(self, ctx: commands.Context, *, user_message: str = None):
+        """
+        Commande (Staff) pour générer et envoyer une annonce stylée dans le canal approprié.
+        """
         if not user_message:
             await ctx.send("Veuillez préciser le contenu de l'annonce. Ex : `!annonce Evénement captures Tot samedi soir à 21h.`")
             return
@@ -223,6 +278,9 @@ class IACog(commands.Cog):
     @commands.command(name="event")
     @check_quota
     async def event_command(self, ctx: commands.Context, *, user_message: str = None):
+        """
+        Commande (Staff) pour organiser et annoncer un événement.
+        """
         if not user_message:
             await ctx.send("Veuillez préciser le contenu de l'événement. Ex : `!event Proposition de donjon, sortie, raid, etc.`")
             return
@@ -250,6 +308,9 @@ class IACog(commands.Cog):
     @commands.command(name="pl")
     @check_quota
     async def pl_command(self, ctx: commands.Context, *, user_message: str = None):
+        """
+        Commande pour envoyer une annonce de PL/ronde sasa dans le canal dédié.
+        """
         if not user_message:
             await ctx.send("Veuillez préciser le contenu de votre annonce PL. Par exemple : `!pl Ronde Kimbo x10 captures, tarif 100.000k la place, départ samedi 15/02 à 14h.`")
             return
