@@ -5,7 +5,6 @@ import os
 import time
 import logging
 import asyncio
-
 import discord
 from discord.ext import commands
 import google.generativeai as genai
@@ -14,6 +13,15 @@ from dotenv import load_dotenv
 def chunkify(text: str, max_size: int = 2000):
     for i in range(0, len(text), max_size):
         yield text[i : i + max_size]
+
+def check_quota(func):
+    async def wrapper(self, ctx, *args, **kwargs):
+        if time.time() < self.quota_exceeded_until:
+            wait_secs = int(self.quota_exceeded_until - time.time())
+            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
+            return
+        return await func(self, ctx, *args, **kwargs)
+    return wrapper
 
 class IACog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -46,11 +54,53 @@ class IACog(commands.Cog):
         self.model_pro = genai.GenerativeModel("gemini-1.5-pro")
         self.model_flash = genai.GenerativeModel("gemini-1.5-flash")
 
-    async def generate_content_async(self, model, prompt: str):
+    async def generate_content_async(self, model, prompt: str) -> str:
         loop = asyncio.get_running_loop()
         def sync_call():
             return model.generate_content(prompt)
-        return await loop.run_in_executor(None, sync_call)
+        try:
+            response = await loop.run_in_executor(None, sync_call)
+            if response and hasattr(response, "text"):
+                return response.text.strip() or "**(Réponse vide)**"
+            return "**(Réponse vide)**"
+        except Exception as e:
+            raise e
+
+    async def get_ia_response(self, model, prompt: str, ctx: commands.Context) -> str:
+        self.logger.debug(f"[DEBUG] Longueur du prompt = {len(prompt)}")
+        try:
+            reply_text = await self.generate_content_async(model, prompt)
+            return reply_text
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str:
+                self.quota_exceeded_until = time.time() + self.quota_block_duration
+                await ctx.send(f":warning: **Erreur 429** - Quota atteint ou ressource épuisée. Réessayez dans ~{self.quota_block_duration // 60} minutes.")
+            else:
+                await ctx.send(f"Une erreur s'est produite lors de la génération du contenu. (Détails: {e})")
+            self.logger.error(f"Erreur lors de l'appel IA : {e}")
+            return ""
+
+    def build_system_prompt(self, context_label: str) -> str:
+        base_prompt = (
+            "Tu es EvolutionBOT, l'assistant IA de la guilde Evolution sur Dofus Retro. "
+            "Tu réponds de manière claire et amicale, tout en restant précis, rigoureux et utile. "
+            "Adapte toujours ton ton et ta formulation au contexte, et reste concis si le texte est trop long. "
+            "Si tu manques d'informations, indique-le poliment. "
+        )
+        if context_label == "general":
+            base_prompt += "Réponds aux questions libres en intégrant le contexte récent du salon."
+        elif context_label == "analysis":
+            base_prompt += "Analyse les derniers messages pour en faire un résumé pertinent et expliquer l'ambiance."
+        elif context_label == "annonce":
+            base_prompt += "Rédige une annonce pour la guilde, commence par @everyone, mets de l'enthousiasme et incite les membres à participer."
+        elif context_label == "event":
+            base_prompt += "Rédige une annonce d'événement avec titre, date, heure et motivation pour la guilde."
+        elif context_label == "pl":
+            base_prompt += "Propose une annonce pour un PL ou une ronde sasa, en décrivant clairement les détails."
+        else:
+            base_prompt += "Réponds simplement de façon informative."
+        return base_prompt
 
     @commands.command(name="ia")
     async def ia_help_command(self, ctx: commands.Context):
@@ -59,6 +109,7 @@ class IACog(commands.Cog):
             "`!annonce <texte>` : (Staff) Annonce stylée (#annonces)\n"
             "`!analyse`        : Rapport complet du salon (Gemini 1.5 Pro)\n"
             "`!bot <message>`  : Poser une question libre (Gemini 1.5 Pro)\n"
+            "`!botflash <msg>` : Version flash du bot (Gemini 1.5 Flash)\n"
             "`!event <texte>`  : (Staff) Organiser une sortie (#organisation)\n"
             "`!pl <texte>`     : Annonce de PL/ronde sasa (#xplock-rondesasa-ronde)\n"
             "\n"
@@ -68,19 +119,12 @@ class IACog(commands.Cog):
         await ctx.send(help_text)
 
     @commands.command(name="bot")
+    @check_quota
     async def free_command(self, ctx: commands.Context, *, user_message: str = None):
         if not user_message:
-            await ctx.send("Veuillez préciser un message après la commande. Par exemple :\n`!bot Explique-moi comment fonctionne l'intelligence artificielle.`")
+            await ctx.send("Veuillez préciser un message après la commande. Par exemple : `!bot Explique-moi comment fonctionne l'intelligence artificielle.`")
             return
-        if time.time() < self.quota_exceeded_until:
-            wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
-            return
-        system_text = (
-            "Tu es EvolutionBOT, l'assistant IA du serveur Discord de la guilde Evolution sur Dofus Retro. "
-            "Tu réponds de manière professionnelle et chaleureuse aux questions posées. "
-            "Si le contexte est trop volumineux, concentre-toi sur la dernière question posée."
-        )
+        system_text = self.build_system_prompt("general")
         history_messages = []
         async for msg in ctx.channel.history(limit=self.history_limit):
             if msg.author.bot:
@@ -88,36 +132,33 @@ class IACog(commands.Cog):
             history_messages.append(msg)
         history_messages.sort(key=lambda m: m.created_at)
         history_text = "".join(f"{msg.author.display_name}: {msg.content.replace(chr(10), ' ')}\n" for msg in history_messages)
-        combined_prompt = (
-            f"{system_text}\n\nContexte (jusqu'à {self.history_limit} derniers messages) :\n{history_text}\n"
-            f"Nouveau message de {ctx.author.display_name}: {user_message}"
-        )
+        combined_prompt = f"{system_text}\nVoici l'historique (jusqu'à {self.history_limit} derniers messages) :\n{history_text}\nNouveau message de {ctx.author.display_name}: {user_message}\n"
         if len(combined_prompt) > self.max_prompt_size:
             surplus = len(combined_prompt) - self.max_prompt_size
             needed_len = len(history_text) - surplus
             history_text = history_text[-needed_len:] if needed_len >= 0 else ""
-            combined_prompt = (
-                f"{system_text}\n\nContexte (jusqu'à {self.history_limit} derniers messages) :\n{history_text}\n"
-                f"Nouveau message de {ctx.author.display_name}: {user_message}"
-            )
-        self.logger.debug(f"[Bot Command] {ctx.author}: {user_message}")
-        self.logger.debug(f"[DEBUG] Longueur finale du prompt = {len(combined_prompt)}")
-        try:
-            response = await self.generate_content_async(self.model_pro, combined_prompt)
-            if response and hasattr(response, "text"):
-                reply_text = response.text.strip() or "**(Réponse vide)**"
-                await ctx.send("**Réponse IA :**")
-                for chunk in chunkify(reply_text, 2000):
-                    await ctx.send(chunk)
-            else:
-                await ctx.send("Aucune réponse valide n'a été reçue du modèle Gemini.")
-        except Exception as e:
-            if "429" in str(e):
-                self.quota_exceeded_until = time.time() + self.quota_block_duration
-                await ctx.send(f":warning: **Erreur 429** - Quota atteint ou ressource épuisée. Réessayez dans ~{self.quota_block_duration // 60} minutes.")
-            else:
-                await ctx.send(f"Une erreur s'est produite lors de la génération du contenu. (Détails: {e})")
-            self.logger.error(f"Erreur lors de l'appel IA (Pro) pour !bot: {e}")
+            combined_prompt = f"{system_text}\nVoici l'historique (trunc) :\n{history_text}\nNouveau message de {ctx.author.display_name}: {user_message}\n"
+        reply_text = await self.get_ia_response(self.model_pro, combined_prompt, ctx)
+        if reply_text:
+            await ctx.send("**Réponse IA :**")
+            for chunk in chunkify(reply_text, 2000):
+                await ctx.send(chunk)
+
+    @commands.command(name="botflash")
+    @check_quota
+    async def flash_command(self, ctx: commands.Context, *, user_message: str = None):
+        if not user_message:
+            await ctx.send("Veuillez préciser un message après la commande. Par exemple : `!botflash Combien coûtent les potions de vitalité ?`")
+            return
+        system_text = self.build_system_prompt("general")
+        combined_prompt = f"{system_text}\nQuestion de l'utilisateur : {user_message}"
+        if len(combined_prompt) > self.max_prompt_size:
+            combined_prompt = combined_prompt[:self.max_prompt_size]
+        reply_text = await self.get_ia_response(self.model_flash, combined_prompt, ctx)
+        if reply_text:
+            await ctx.send("**Réponse IA (flash) :**")
+            for chunk in chunkify(reply_text, 2000):
+                await ctx.send(chunk)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -133,6 +174,7 @@ class IACog(commands.Cog):
                 await self.free_command(new_ctx, user_message=query)
 
     @commands.command(name="analyse")
+    @check_quota
     async def analyse_command(self, ctx: commands.Context):
         limit_messages = 100
         history_messages = []
@@ -142,162 +184,90 @@ class IACog(commands.Cog):
             history_messages.append(msg)
         history_messages.sort(key=lambda m: m.created_at)
         history_text = "".join(f"{msg.author.display_name}: {msg.content.replace(chr(10), ' ')}\n" for msg in history_messages)
-        system_text = (
-            "Tu es EvolutionBOT, une IA chargée de faire un rapport sur l'activité récente. "
-            "Analyse les sujets importants, l'ambiance générale, etc."
-        )
+        system_text = self.build_system_prompt("analysis")
         combined_prompt = f"{system_text}\n\n{history_text}"
         try:
             await ctx.message.delete()
         except Exception:
             pass
-        if time.time() < self.quota_exceeded_until:
-            wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
-            return
-        try:
-            response = await self.generate_content_async(self.model_pro, combined_prompt)
-            if response and hasattr(response, "text"):
-                reply_text = response.text.strip() or "**(Rapport vide)**"
-                await ctx.send("**Rapport d'analyse :**")
-                for chunk in chunkify(reply_text, 2000):
-                    await ctx.send(chunk)
-            else:
-                await ctx.send("Aucune réponse produite par l’IA.")
-        except Exception as e:
-            if "429" in str(e):
-                self.quota_exceeded_until = time.time() + self.quota_block_duration
-                await ctx.send(":warning: Erreur 429 - Quota atteint. Réessayez plus tard.")
-            else:
-                await ctx.send("Erreur lors de l'analyse. " + str(e))
-            self.logger.error(f"Erreur IA (Pro) pour !analyse : {e}")
+        reply_text = await self.get_ia_response(self.model_pro, combined_prompt, ctx)
+        if reply_text:
+            await ctx.send("**Rapport d'analyse :**")
+            for chunk in chunkify(reply_text, 2000):
+                await ctx.send(chunk)
 
     @commands.has_role("Staff")
     @commands.command(name="annonce")
+    @check_quota
     async def annonce_command(self, ctx: commands.Context, *, user_message: str = None):
         if not user_message:
-            await ctx.send("Veuillez préciser le contenu de l'annonce. Ex :\n!annonce Evénement captures Tot samedi soir à 21h.")
+            await ctx.send("Veuillez préciser le contenu de l'annonce. Ex : `!annonce Evénement captures Tot samedi soir à 21h.`")
             return
         annonce_channel = discord.utils.get(ctx.guild.text_channels, name=self.annonce_channel_name)
         if not annonce_channel:
             await ctx.send(f"Le canal #{self.annonce_channel_name} est introuvable.")
             return
-        if time.time() < self.quota_exceeded_until:
-            wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
-            return
-        system_text = (
-            "Tu dois rédiger une annonce pour la guilde Evolution (Dofus Retro). "
-            "Commence l'annonce par '@everyone'. Rends-la dynamique et chaleureuse."
-        )
-        combined_prompt = f"{system_text}\n\nContenu de l'annonce : {user_message}"
+        system_text = self.build_system_prompt("annonce")
+        combined_prompt = f"{system_text}\nContenu de l'annonce : {user_message}"
         try:
             await ctx.message.delete()
         except (discord.Forbidden, discord.HTTPException):
             pass
-        try:
-            response = await self.generate_content_async(self.model_pro, combined_prompt)
-            if response and hasattr(response, "text"):
-                reply_text = response.text.strip() or "**(Annonce vide)**"
-                await annonce_channel.send("**Annonce :**")
-                for chunk in chunkify(reply_text, 2000):
-                    await annonce_channel.send(chunk)
-            else:
-                await ctx.send("Aucune annonce n'a pu être générée.")
-        except Exception as e:
-            if "429" in str(e):
-                self.quota_exceeded_until = time.time() + self.quota_block_duration
-                await ctx.send(f":warning: **Erreur 429** - Quota atteint. Réessayez dans ~{self.quota_block_duration // 60} minutes.")
-            else:
-                await ctx.send("Une erreur est survenue lors de la génération de l'annonce.")
-            self.logger.error(f"Erreur IA (Pro) pour !annonce : {e}")
+        reply_text = await self.get_ia_response(self.model_pro, combined_prompt, ctx)
+        if reply_text:
+            await annonce_channel.send("**Annonce :**")
+            for chunk in chunkify(reply_text, 2000):
+                await annonce_channel.send(chunk)
 
     @commands.has_role("Staff")
     @commands.command(name="event")
+    @check_quota
     async def event_command(self, ctx: commands.Context, *, user_message: str = None):
         if not user_message:
-            await ctx.send("Veuillez préciser le contenu de l'événement. Ex :\n!event Proposition de donjon, sortie, raid, etc.")
+            await ctx.send("Veuillez préciser le contenu de l'événement. Ex : `!event Proposition de donjon, sortie, raid, etc.`")
             return
         event_channel = discord.utils.get(ctx.guild.text_channels, name=self.event_channel_name)
         if not event_channel:
             await ctx.send(f"Le canal #{self.event_channel_name} est introuvable.")
             return
-        if time.time() < self.quota_exceeded_until:
-            wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
-            return
-        system_text = (
-            "Tu es une IA experte en rédaction d'annonces d'événements pour la guilde Evolution (Dofus Retro). "
-            "Rédige un message final percutant incitant les membres à participer. "
-            "Inclure un titre, détails (date, heure) et invitation à rejoindre."
-        )
-        combined_prompt = f"{system_text}\n\nContenu fourni : {user_message}"
+        system_text = self.build_system_prompt("event")
+        combined_prompt = f"{system_text}\nContenu fourni : {user_message}"
         try:
             await ctx.message.delete()
         except (discord.Forbidden, discord.HTTPException):
             pass
-        try:
-            response = await self.generate_content_async(self.model_pro, combined_prompt)
-            if response and hasattr(response, "text"):
-                reply_text = response.text.strip() or "**(Événement vide)**"
-                await event_channel.send("**Nouvel Événement :**")
-                for chunk in chunkify(reply_text, 2000):
-                    await event_channel.send(chunk)
-                role_valide = discord.utils.get(ctx.guild.roles, name="Membre validé d'Evolution")
-                if role_valide:
-                    await event_channel.send(role_valide.mention)
-                else:
-                    await event_channel.send("*Rôle 'Membre validé d'Evolution' introuvable.*")
+        reply_text = await self.get_ia_response(self.model_pro, combined_prompt, ctx)
+        if reply_text:
+            await event_channel.send("**Nouvel Événement :**")
+            for chunk in chunkify(reply_text, 2000):
+                await event_channel.send(chunk)
+            role_valide = discord.utils.get(ctx.guild.roles, name="Membre validé d'Evolution")
+            if role_valide:
+                await event_channel.send(role_valide.mention)
             else:
-                await ctx.send("Aucun événement n'a pu être généré par l'IA.")
-        except Exception as e:
-            if "429" in str(e):
-                self.quota_exceeded_until = time.time() + self.quota_block_duration
-                await ctx.send(f":warning: **Erreur 429** - Quota atteint. Réessayez dans ~{self.quota_block_duration // 60} minutes.")
-            else:
-                await ctx.send("Une erreur est survenue lors de la génération de l'événement.")
-            self.logger.error(f"Erreur IA (Pro) pour !event : {e}")
+                await event_channel.send("*Rôle 'Membre validé d'Evolution' introuvable.*")
 
     @commands.command(name="pl")
+    @check_quota
     async def pl_command(self, ctx: commands.Context, *, user_message: str = None):
         if not user_message:
-            await ctx.send("Veuillez préciser le contenu de votre annonce PL. Par exemple :\n!pl Ronde Kimbo x10 captures, tarif 100.000k la place, départ samedi 15/02 à 14h.")
+            await ctx.send("Veuillez préciser le contenu de votre annonce PL. Par exemple : `!pl Ronde Kimbo x10 captures, tarif 100.000k la place, départ samedi 15/02 à 14h.`")
             return
         pl_channel = discord.utils.get(ctx.guild.text_channels, name=self.pl_channel_name)
         if not pl_channel:
             await ctx.send(f"Le canal #{self.pl_channel_name} est introuvable.")
             return
-        if time.time() < self.quota_exceeded_until:
-            wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
-            return
-        system_text = (
-            "Tu es EvolutionBOT, une IA experte en rédaction d'annonces de PL ou Ronde Sasa "
-            "pour la guilde Evolution (Dofus Retro). Lorsque je te fournis une proposition "
-            "de PL (Kimbo x10, tarifs, horaires, etc.), rédige un message d'annonce unique, clair, "
-            "incitant à s'inscrire ou réagir avec un emoji. Le message doit être prêt à poster."
-        )
-        combined_prompt = f"{system_text}\n\nContenu fourni : {user_message}"
+        system_text = self.build_system_prompt("pl")
+        combined_prompt = f"{system_text}\nContenu fourni : {user_message}"
         try:
             await ctx.message.delete()
         except (discord.Forbidden, discord.HTTPException):
             pass
-        try:
-            response = await self.generate_content_async(self.model_pro, combined_prompt)
-            if response and hasattr(response, "text"):
-                reply_text = response.text.strip() or "**(Annonce PL vide ou non générée)**"
-                await pl_channel.send("**Nouvelle Annonce PL :**")
-                for chunk in chunkify(reply_text, 2000):
-                    await pl_channel.send(chunk)
-            else:
-                await ctx.send("L'IA n'a pas pu générer d'annonce PL.")
-        except Exception as e:
-            if "429" in str(e):
-                self.quota_exceeded_until = time.time() + self.quota_block_duration
-                await ctx.send(f":warning: **Erreur 429** - Quota atteint. Réessayez dans ~{self.quota_block_duration // 60} minutes.")
-            else:
-                await ctx.send("Une erreur est survenue lors de la génération de l'annonce PL.")
-            self.logger.error(f"Erreur IA (Pro) pour !pl : {e}")
+        reply_text = await self.get_ia_response(self.model_pro, combined_prompt, ctx)
+        if reply_text:
+            await pl_channel.send("**Nouvelle Annonce PL :**")
+            for chunk in chunkify(reply_text, 2000):
+                await pl_channel.send(chunk)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(IACog(bot))
