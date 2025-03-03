@@ -67,7 +67,7 @@ def parse_date_time(date_str, time_str):
 
 def parse_date_time_via_regex(line):
     """
-    Cherche dans une ligne complète un motif <titre> ... JJ/MM/AAAA HH:MM ... <desc>.
+    Cherche dans une ligne un motif <titre> ... JJ/MM/AAAA HH:MM ... <desc>.
     Retourne (titre, datetime, description) ou (None, None, None) si échec.
     """
     mat = DATE_TIME_REGEX.search(line)
@@ -158,34 +158,56 @@ class ActiviteCog(commands.Cog):
 
     async def initialize_data(self):
         """
-        Tente de charger les données depuis le channel console, puis depuis le fichier local.
+        1) On tente de charger le fichier local d’abord (source de vérité).
+        2) Puis, si on trouve un bloc JSON plus récent dans le channel console, on peut surdéfinir.
+        3) On gère aussi la possibilité d’un fichier joint .json dans le channel console.
         """
-        console_channel = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
-        if console_channel:
-            async for msg in console_channel.history(limit=1000, oldest_first=False):
-                if msg.author == self.bot.user and MARKER_TEXT in msg.content:
-                    try:
-                        start_idx = msg.content.index("```json\n") + len("```json\n")
-                        end_idx = msg.content.rindex("\n```")
-                        raw_json = msg.content[start_idx:end_idx]
-                        data_loaded = json.loads(raw_json)
-                        self.activities_data = data_loaded
-                        logger.info("Données chargées depuis le channel console.")
-                        break
-                    except Exception as e:
-                        logger.warning(f"Impossible de parser le JSON console: {e}")
-
-        if (
-            (self.activities_data.get("events") is None or len(self.activities_data["events"]) == 0)
-            and os.path.exists(DATA_FILE)
-        ):
+        # 1) Charger d'abord depuis le fichier local, s'il existe
+        if os.path.exists(DATA_FILE):
             try:
                 with open(DATA_FILE, "r", encoding="utf-8") as f:
                     self.activities_data = json.load(f)
                 logger.info("Données chargées depuis le fichier local.")
             except Exception as e:
                 logger.warning(f"Impossible de charger {DATA_FILE} : {e}")
+        else:
+            logger.info("Pas de fichier local trouvé, on part sur des données vierges.")
 
+        # 2) Chercher éventuellement dans le channel console pour un message plus récent
+        console_channel = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
+        if console_channel:
+            # On va scroller l'historique en commençant par le plus récent
+            async for msg in console_channel.history(limit=1000, oldest_first=False):
+                if msg.author == self.bot.user and MARKER_TEXT in msg.content:
+                    # Priorité 1 : s'il y a un attachement .json
+                    if msg.attachments:
+                        for att in msg.attachments:
+                            if att.filename.endswith(".json"):
+                                try:
+                                    file_bytes = await att.read()
+                                    data_loaded = json.loads(file_bytes.decode("utf-8"))
+                                    self.activities_data = data_loaded
+                                    logger.info("Données surchargées depuis un fichier joint JSON dans console.")
+                                    raise StopAsyncIteration  # On force la sortie
+                                except Exception as ex:
+                                    logger.warning(f"Impossible de parser le fichier JSON joint : {ex}")
+                        # Si on n’a pas pu lire d’attachement JSON valide, on check le bloc inline
+                    # Priorité 2 : bloc ```json ... ```
+                    if "```json\n" in msg.content:
+                        try:
+                            start_idx = msg.content.index("```json\n") + len("```json\n")
+                            end_idx = msg.content.rindex("\n```")
+                            raw_json = msg.content[start_idx:end_idx]
+                            data_loaded = json.loads(raw_json)
+                            self.activities_data = data_loaded
+                            logger.info("Données surchargées depuis le console (bloc texte JSON).")
+                            raise StopAsyncIteration
+                        except Exception as e:
+                            logger.warning(f"Impossible de parser le JSON console inline: {e}")
+        else:
+            logger.info("Channel console introuvable, on reste sur le fichier local.")
+
+        # Si on arrive ici sans StopAsyncIteration, c'est qu’on n’a pas trouvé de JSON plus récent
         self.initialized = True
         logger.info("ActiviteCog: données initialisées.")
 
@@ -201,7 +223,7 @@ class ActiviteCog(commands.Cog):
                     json.dump(self.activities_data, f, indent=4, ensure_ascii=False)
                 # Rename atomique
                 os.replace(temp_file, DATA_FILE)
-                logger.info("Sauvegarde OK.")
+                logger.info("Sauvegarde OK (fichier local).")
             except Exception as e:
                 logger.warning(f"Erreur lors de la sauvegarde : {e}")
                 if os.path.exists(temp_file):
@@ -211,7 +233,10 @@ class ActiviteCog(commands.Cog):
                         pass
 
     async def dump_data_to_console(self, ctx):
-        """Envoie les données dans le channel console, après une opération critique."""
+        """
+        Envoie les données dans le channel console, après une opération critique.
+        Les données peuvent être trop volumineuses => on envoie un fichier joint.
+        """
         console_channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
         if not console_channel:
             return
@@ -226,9 +251,12 @@ class ActiviteCog(commands.Cog):
 
     async def _dump_data(self, console_channel: discord.TextChannel):
         data_str = json.dumps(self.activities_data, indent=4, ensure_ascii=False)
+        content_prefix = f"{MARKER_TEXT}"
         if len(data_str) < 1900:
-            await console_channel.send(f"{MARKER_TEXT}\n```json\n{data_str}\n```")
+            # On peut poster directement en code-block
+            await console_channel.send(f"{content_prefix}\n```json\n{data_str}\n```")
         else:
+            # Fichier trop gros, on envoie en pièce jointe
             temp_file_path = "temp_activities_data.json"
             try:
                 with open(temp_file_path, "w", encoding="utf-8") as tmp:
@@ -238,7 +266,7 @@ class ActiviteCog(commands.Cog):
                 return
 
             await console_channel.send(
-                f"{MARKER_TEXT} (fichier)",
+                f"{content_prefix} (fichier)",
                 file=discord.File(fp=temp_file_path, filename="activities_data.json")
             )
 
@@ -267,7 +295,7 @@ class ActiviteCog(commands.Cog):
             evt = ActiviteData.from_dict(e_data)
             time_left = (evt.date_obj - now).total_seconds()
 
-            # Si passé
+            # Si l'activité est passée
             if time_left < 0:
                 if evt.role_id:
                     rr = org_channel.guild.get_role(evt.role_id)
@@ -291,6 +319,7 @@ class ActiviteCog(commands.Cog):
                 e_data["reminder_1_sent"] = True
                 modified = True
 
+        # Suppression des events passés
         for kdel in to_delete:
             del self.activities_data["events"][kdel]
             modified = True
@@ -396,7 +425,11 @@ class ActiviteCog(commands.Cog):
         event_id = str(self.activities_data.get("next_id", 1))
         self.activities_data["next_id"] = int(event_id) + 1
 
+        # Création de l'activité
         a = ActiviteData(event_id, titre, dt, description, ctx.author.id, new_role.id)
+        # On inscrit directement le créateur
+        a.participants.append(ctx.author.id)
+
         if "events" not in self.activities_data:
             self.activities_data["events"] = {}
         self.activities_data["events"][event_id] = a.to_dict()
@@ -405,7 +438,8 @@ class ActiviteCog(commands.Cog):
         await self.save_data_local()
         await self.dump_data_to_console(ctx)
 
-        # Ajout du rôle au créateur
+        # Ajout du rôle au créateur (logique redondante, 
+        # mais permet de donner les perms ou l'identifiant visuel)
         try:
             await ctx.author.add_roles(new_role)
         except Exception as ex:
@@ -460,6 +494,7 @@ class ActiviteCog(commands.Cog):
         if not upcoming:
             return await ctx.send("Aucune activité à venir.")
 
+        # Tri chronologique
         upcoming.sort(key=lambda x: x.date_obj)
 
         events_per_page = 10
@@ -675,6 +710,10 @@ class ActiviteCog(commands.Cog):
 
         e.date_obj = dt
         e.description = nd
+        # On réinitialise éventuellement les rappels (si on veut)
+        e.reminder_24_sent = False
+        e.reminder_1_sent = False
+
         self.activities_data["events"][event_id] = e.to_dict()
 
         await self.save_data_local()
@@ -767,20 +806,21 @@ class ActiviteCog(commands.Cog):
         if user.bot:
             return
 
-        # Si c'est un message de liste paginée
+        # 1) Si c'est un message de liste paginée
         if reaction.message.id in self.liste_message_map:
             await self.handle_reaction_list_pagination(reaction, user)
             return
 
-        # Si c'est un message unique (créé par !activite creer)
+        # 2) Si c'est un message unique (créé par !activite creer)
         if reaction.message.id in self.single_event_msg_map:
             await self.handle_reaction_single_event(reaction, user)
             return
 
     async def handle_reaction_list_pagination(self, reaction, user):
         """
-        ICI on gère aussi la possibilité de réagir avec ✅ / ❌ pour s'inscrire ou se désinscrire
+        Possibilité de réagir avec ✅ / ❌ pour s'inscrire ou se désinscrire
         depuis la liste paginée, puis re-dump dans la console.
+        Mais seulement si la page contient un seul événement.
         """
         data = self.liste_message_map[reaction.message.id]
         pages = data["pages"]
@@ -789,13 +829,13 @@ class ActiviteCog(commands.Cog):
 
         emj = str(reaction.emoji)
 
-        # 1) On retire la réaction pour éviter qu'elle reste
+        # Retirer la réaction tout de suite
         try:
             await reaction.message.remove_reaction(emj, user)
         except Exception as ex:
             logger.warning(f"Impossible de retirer la réaction pagination: {ex}")
 
-        # 2) Cas pagination
+        # Navigation pages
         if emj in ["⬅️", "➡️"]:
             if emj == "➡️":
                 current_page += 1
@@ -809,7 +849,7 @@ class ActiviteCog(commands.Cog):
             data["current_page"] = current_page
             self.liste_message_map[reaction.message.id] = data
 
-            # On reconstruit l'embed
+            # Reconstruit l'embed
             page_events = pages[current_page]
             embed = discord.Embed(
                 title=f"Activités à venir (page {current_page+1}/{total_pages})",
@@ -841,34 +881,28 @@ class ActiviteCog(commands.Cog):
             await reaction.message.edit(embed=embed)
             return
 
-        # 3) Cas inscription/désinscription (si on veut le gérer sur la liste paginée)
+        # Inscription/désinscription sur la page ?
         if emj not in [SINGLE_EVENT_EMOJI, UNSUB_EMOJI]:
             return
 
-        # On va demander à l'utilisateur de préciser l'ID ?
-        # Ou bien on suppose qu'il n'y a qu'un seul event par page => Dans l'exemple,
-        # on gère un scenario simplifié : si la page contient un seul event, on l'utilise.
-        # S'il y en a plusieurs, ce code est moins précis, on pourrait demander de cliquer sur la lettre correspondante.
         page_events = pages[current_page]
         if len(page_events) != 1:
+            # On ne peut pas savoir quel event viser si plusieurs
             await reaction.message.channel.send(
-                f"{user.mention} : Ici, il y a plusieurs événements sur la page. "
-                f"Le bot ne sait pas lequel tu vises. Utilise plutôt `!activite join <id>`."
+                f"{user.mention} : Cette page contient plusieurs événements. "
+                f"Utilise plutôt `!activite join <id>` ou `!activite leave <id>`."
             )
             return
 
         ev = page_events[0]
-        # Vérification rôle validé
         if not self.has_validated_role(user):
             await reaction.message.channel.send(f"{user.mention} : rôle invalide.")
             return
-
-        # Si l'événement est annulé, on stoppe
         if ev.cancelled:
             await reaction.message.channel.send("Activité annulée.")
             return
 
-        # On récupère l'objet "dict" pour l'event
+        # On récupère l'ActiviteData à jour
         e_dict = self.activities_data["events"].get(ev.id)
         if not e_dict:
             return
@@ -922,7 +956,7 @@ class ActiviteCog(commands.Cog):
             await reaction.message.channel.send(f"{user.mention} se retire de {e_data.titre} (ID={e_data.id}).")
 
     async def handle_reaction_single_event(self, reaction, user):
-        """Inscription / désinscription sur un seul event (message unique)."""
+        """Inscription / désinscription sur un seul event (message unique créé par !activite creer)."""
         emj = str(reaction.emoji)
         event_id = self.single_event_msg_map[reaction.message.id]
         guild = reaction.message.guild
@@ -941,13 +975,14 @@ class ActiviteCog(commands.Cog):
             await reaction.message.channel.send(f"{user.mention} rôle invalide.")
             return
 
+        # On retire la réaction pour éviter qu'elle reste
         try:
             await reaction.message.remove_reaction(emj, user)
         except Exception as ex:
             logger.warning(f"Impossible de retirer la réaction {emj}: {ex}")
 
-        # Join
         if emj == SINGLE_EVENT_EMOJI:
+            # Join
             if len(e.participants) >= MAX_GROUP_SIZE:
                 await reaction.message.channel.send("Groupe complet.")
                 return
@@ -970,8 +1005,8 @@ class ActiviteCog(commands.Cog):
 
             await reaction.message.channel.send(f"{user.mention} rejoint {e.titre} (ID={e.id}).")
 
-        # Leave
         elif emj == UNSUB_EMOJI:
+            # Leave
             if user.id not in e.participants:
                 await reaction.message.channel.send("Vous n'êtes pas inscrit.")
                 return
