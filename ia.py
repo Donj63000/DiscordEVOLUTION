@@ -227,10 +227,13 @@ class IACog(commands.Cog):
         Tente d'appeler d'abord le modèle Pro.
         En cas de quota dépassé (429) ou indisponibilité, on tente Flash.
         Si Flash échoue aussi avec 429, on bloque le bot.
+        
+        Retourne un tuple (response_obj, model_label) où model_label ∈ {"PRO", "FLASH"}.
         """
         # 1) Tentative avec PRO
         try:
-            return await self.generate_content_async(self.model_pro, prompt)
+            response_obj = await self.generate_content_async(self.model_pro, prompt)
+            return response_obj, "PRO"
         except Exception as e_pro:
             self.logger.warning(f"[Fallback] Échec Pro : {e_pro}")
 
@@ -239,7 +242,8 @@ class IACog(commands.Cog):
                 # 2) Fallback : on tente le modèle FLASH
                 self.logger.info("[Fallback] Tentative avec Flash...")
                 try:
-                    return await self.generate_content_async(self.model_flash, prompt)
+                    response_obj = await self.generate_content_async(self.model_flash, prompt)
+                    return response_obj, "FLASH"
                 except Exception as e_flash:
                     self.logger.error(f"[Fallback] Échec Flash également : {e_flash}")
                     # Si Flash échoue aussi avec 429 => on bloque
@@ -339,11 +343,12 @@ class IACog(commands.Cog):
         self.logger.debug(f"[DEBUG] Longueur finale du prompt = {len(combined_prompt)}")
 
         try:
-            # Appel de la fonction avec fallback
-            response = await self.generate_content_with_fallback_async(combined_prompt)
+            # Appel de la fonction avec fallback (renvoie (response_obj, model_label))
+            response, model_used = await self.generate_content_with_fallback_async(combined_prompt)
             if response and hasattr(response, "text"):
                 reply_text = response.text.strip() or "**(Réponse vide)**"
-                await ctx.send("**Réponse IA :**")
+                # On affiche [PRO] ou [FLASH] dans le titre de la réponse
+                await ctx.send(f"**Réponse IA [{model_used}] :**")
                 for chunk in chunkify(reply_text, 2000):
                     await ctx.send(chunk)
             else:
@@ -416,10 +421,10 @@ class IACog(commands.Cog):
             return
 
         try:
-            response = await self.generate_content_with_fallback_async(combined_prompt)
+            response, model_used = await self.generate_content_with_fallback_async(combined_prompt)
             if response and hasattr(response, "text"):
                 reply_text = response.text.strip() or "**(Rapport vide)**"
-                await ctx.send("**Rapport d'analyse :**")
+                await ctx.send(f"**Rapport d'analyse [{model_used}] :**")
                 for chunk in chunkify(reply_text, 2000):
                     await ctx.send(chunk)
             else:
@@ -469,10 +474,10 @@ class IACog(commands.Cog):
             pass
 
         try:
-            response = await self.generate_content_with_fallback_async(combined_prompt)
+            response, model_used = await self.generate_content_with_fallback_async(combined_prompt)
             if response and hasattr(response, "text"):
                 reply_text = response.text.strip() or "**(Annonce vide)**"
-                await annonce_channel.send("**Annonce :**")
+                await annonce_channel.send(f"**Annonce [{model_used}] :**")
                 for chunk in chunkify(reply_text, 2000):
                     await annonce_channel.send(chunk)
             else:
@@ -524,10 +529,10 @@ class IACog(commands.Cog):
             pass
 
         try:
-            response = await self.generate_content_with_fallback_async(combined_prompt)
+            response, model_used = await self.generate_content_with_fallback_async(combined_prompt)
             if response and hasattr(response, "text"):
                 reply_text = response.text.strip() or "**(Événement vide)**"
-                await event_channel.send("**Nouvel Événement :**")
+                await event_channel.send(f"**Nouvel Événement [{model_used}] :**")
                 for chunk in chunkify(reply_text, 2000):
                     await event_channel.send(chunk)
 
@@ -586,10 +591,10 @@ class IACog(commands.Cog):
             pass
 
         try:
-            response = await self.generate_content_with_fallback_async(combined_prompt)
+            response, model_used = await self.generate_content_with_fallback_async(combined_prompt)
             if response and hasattr(response, "text"):
                 reply_text = response.text.strip() or "**(Annonce PL vide ou non générée)**"
-                await pl_channel.send("**Nouvelle Annonce PL :**")
+                await pl_channel.send(f"**Nouvelle Annonce PL [{model_used}] :**")
                 for chunk in chunkify(reply_text, 2000):
                     await pl_channel.send(chunk)
             else:
