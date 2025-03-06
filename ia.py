@@ -49,7 +49,6 @@ class IACog(commands.Cog):
 
         # Contenu de la "mémoire" IA (règlement + infos)
         self.knowledge_text = self.get_knowledge_text()
-        
 
     def configure_logging(self):
         """
@@ -162,19 +161,16 @@ class IACog(commands.Cog):
             "=====================================================================\n"
             "LISTE DES COMMANDES DU BOT EVOLUTION (DÉTAILLÉES)\n"
             "=====================================================================\n"
-
             "📌 **Mini-Guides & Commandes Racines**\n"
             "• __!ia__ : Guide sur l’IA (ex.: !bot, !analyse).\n"
             "• __!membre__ : Récap global des sous-commandes (ex.: principal, addmule).\n"
             "• __!job__ : Guide des sous-commandes liées aux métiers (ex.: !job me, !job liste).\n"
             "• __!rune__ : Outil de calcul (probabilités runes). Fonctionnalité partielle.\n"
             "• __!regles__ : Résumé simplifié du règlement d'Evolution.\n\n"
-
             "📌 **Commandes Générales**\n"
             "• __!ping__ : Vérifie que le bot répond (latence « Pong! »).\n"
             "• __!scan <URL>__ *(Defender)* : Analyse un lien (Safe Browsing/VirusTotal) et supprime la commande.\n"
             "• __!rune jet <valeur_jet> <stat>__ : Calcule les probabilités d'obtenir des runes (ex.: !rune jet 30 force).\n\n"
-
             "📌 **Commandes Membres**\n"
             "• __!membre principal <NomPerso>__ : Définit ou met à jour votre personnage principal.\n"
             "• __!membre addmule <NomMule>__ : Ajoute une mule à votre fiche.\n"
@@ -182,7 +178,6 @@ class IACog(commands.Cog):
             "• __!membre moi__ : Affiche votre fiche (principal + mules).\n"
             "• __!membre liste__ : Liste tous les joueurs, leurs persos et leurs mules.\n"
             "• __!membre <pseudo_ou_mention>__ : Affiche la fiche d'un joueur précis.\n\n"
-
             "📌 **Commandes Job**\n"
             "• __!job me__ : Affiche vos métiers et niveaux.\n"
             "• __!job liste__ : Liste complète des métiers et qui les possède.\n"
@@ -190,32 +185,26 @@ class IACog(commands.Cog):
             "• __!job <pseudo>__ : Donne les métiers d'un joueur.\n"
             "• __!job <job_name>__ : Indique qui possède ce métier (ex.: !job Paysan).\n"
             "• __!job <job_name> <niveau>__ : Ajoute ou modifie l’un de vos métiers (ex.: !job Boulanger 100).\n\n"
-
             "📌 **Commande Ticket**\n"
             "• __!ticket__ : Lance en MP une procédure pour contacter le Staff (problème, aide, suggestion…).\n\n"
-
             "📌 **Commandes IA**\n"
             "• __!bot <message>__ : Fait appel à l’IA (gemini-1.5-pro) avec le contexte des derniers messages.\n"
             "• __!analyse__ : Analyse/résume les 100 derniers messages du salon.\n\n"
-
             "📌 **Commandes Sondage**\n"
             "• __!sondage <Titre> ; <Choix1> ; ... ; temps=JJ:HH:MM>__ : Crée un sondage (#annonces) avec mention @everyone.\n"
             "• __!close_sondage <message_id>__ : Clôture manuellement le sondage (affiche résultats).\n\n"
-
             "📌 **Commandes Activités**\n"
             "• __!activite creer <Titre> <JJ/MM/AAAA HH:MM> [desc]__ : Crée une activité (donjon/sortie) + rôle éphémère.\n"
             "• __!activite liste__ : Affiche les activités à venir (limite 8 participants).\n"
             "• __!activite info <id>__ : Affiche les détails d’une activité (date, organisateur, participants…).\n"
             "• __!activite join <id> / !activite leave <id>__ : S'inscrire ou se désinscrire.\n"
             "• __!activite annuler <id> / !activite modifier <id>__ : Annule ou modifie (date/description) une activité.\n\n"
-
             "📌 **Commandes Staff (Rôle requis)**\n"
             "• __!staff__ : Liste des membres Staff enregistrés/mentionnés.\n"
             "• __!annonce <texte>__ : Publie une annonce stylée dans #annonces (mention @everyone).\n"
             "• __!event <texte>__ : Organise un événement, publié dans #organisation (mention Membre validé).\n"
             "• __!recrutement <pseudo>__ : Ajoute un nouveau joueur dans la base.\n"
             "• __!membre del <pseudo>__ : Supprime un joueur (et ses mules) de la base.\n\n"
-
             "=====================================================================\n"
             "Pour toute question, mentionnez @EvolutionBOT ou utilisez !bot <message>.\n"
             "=====================================================================\n"
@@ -227,9 +216,42 @@ class IACog(commands.Cog):
         en déléguant l’appel de la fonction de génération à un executor.
         """
         loop = asyncio.get_running_loop()
+
         def sync_call():
             return model.generate_content(prompt)
+
         return await loop.run_in_executor(None, sync_call)
+
+    async def generate_content_with_fallback_async(self, prompt: str):
+        """
+        Tente d'appeler d'abord le modèle Pro.
+        En cas de quota dépassé (429) ou indisponibilité, on tente Flash.
+        Si Flash échoue aussi avec 429, on bloque le bot.
+        """
+        # 1) Tentative avec PRO
+        try:
+            return await self.generate_content_async(self.model_pro, prompt)
+        except Exception as e_pro:
+            self.logger.warning(f"[Fallback] Échec Pro : {e_pro}")
+
+            # Vérifie s'il s'agit d'un dépassement de quota (429) ou de toute indisponibilité
+            if "429" in str(e_pro) or "quota" in str(e_pro).lower() or "unavailable" in str(e_pro).lower():
+                # 2) Fallback : on tente le modèle FLASH
+                self.logger.info("[Fallback] Tentative avec Flash...")
+                try:
+                    return await self.generate_content_async(self.model_flash, prompt)
+                except Exception as e_flash:
+                    self.logger.error(f"[Fallback] Échec Flash également : {e_flash}")
+                    # Si Flash échoue aussi avec 429 => on bloque
+                    if "429" in str(e_flash):
+                        self.logger.error("[Fallback] Pro & Flash => 429 => blocage")
+                        self.quota_exceeded_until = time.time() + self.quota_block_duration
+                        raise e_flash
+                    # Sinon, on relance l'exception Flash telle quelle
+                    raise e_flash
+            else:
+                # Si ce n'est pas un 429 / indisponibilité, on relance
+                raise e_pro
 
     @commands.command(name="ia")
     async def ia_help_command(self, ctx: commands.Context):
@@ -253,7 +275,7 @@ class IACog(commands.Cog):
     async def free_command(self, ctx: commands.Context, *, user_message: str = None):
         """
         Commande libre : l’utilisateur peut poser une question et recevoir
-        une réponse générée par Gemini 1.5 Pro.
+        une réponse générée par Gemini 1.5 Pro (fallback vers Flash si quota dépassé).
         """
         if not user_message:
             await ctx.send(
@@ -262,13 +284,12 @@ class IACog(commands.Cog):
             )
             return
 
-        # Vérifie si on est sous quota 429
+        # Vérifie le blocage global (si Pro & Flash ont échoué récemment)
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
+            await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
             return
 
-        # -- Ajout mémoire + instructions système --
         system_text = (
             "Tu es EvolutionBOT, l'assistant IA du serveur Discord de la guilde Evolution sur Dofus Retro. "
             "Tu réponds de manière professionnelle et chaleureuse aux questions posées. "
@@ -278,23 +299,19 @@ class IACog(commands.Cog):
 
         knowledge_text = self.knowledge_text
 
-        # Récupération de l'historique des messages
         history_messages = []
         async for msg in ctx.channel.history(limit=self.history_limit):
             if msg.author.bot:
                 continue
             history_messages.append(msg)
 
-        # Tri chronologique
         history_messages.sort(key=lambda m: m.created_at)
 
-        # Construction du texte d’historique
         history_text = "".join(
             f"{msg.author.display_name}: {msg.content.replace(chr(10), ' ')}\n"
             for msg in history_messages
         )
 
-        # Prompt combiné
         combined_prompt = (
             f"{system_text}\n\n"
             f"Connaissances permanentes du bot (Règlement + Commandes) :\n{knowledge_text}\n\n"
@@ -302,15 +319,13 @@ class IACog(commands.Cog):
             f"Nouveau message de {ctx.author.display_name}: {user_message}"
         )
 
-        # Gestion d’un prompt trop long
+        # Vérifie la taille
         if len(combined_prompt) > self.max_prompt_size:
             surplus = len(combined_prompt) - self.max_prompt_size
-            # On tronque dans l'historique pour rester sous la limite, en conservant la mémoire intacte
             needed_len = len(history_text) - surplus
             if needed_len > 0:
                 history_text = history_text[-needed_len:]
             else:
-                # Si c'est toujours trop grand, on tronque l'histoire complètement
                 history_text = ""
 
             combined_prompt = (
@@ -324,7 +339,8 @@ class IACog(commands.Cog):
         self.logger.debug(f"[DEBUG] Longueur finale du prompt = {len(combined_prompt)}")
 
         try:
-            response = await self.generate_content_async(self.model_pro, combined_prompt)
+            # Appel de la fonction avec fallback
+            response = await self.generate_content_with_fallback_async(combined_prompt)
             if response and hasattr(response, "text"):
                 reply_text = response.text.strip() or "**(Réponse vide)**"
                 await ctx.send("**Réponse IA :**")
@@ -333,15 +349,14 @@ class IACog(commands.Cog):
             else:
                 await ctx.send("Aucune réponse valide n'a été reçue du modèle Gemini.")
         except Exception as e:
+            # En cas d'erreur 429 venue de Pro & Flash => on aura bloqué plus haut.
             if "429" in str(e):
-                self.quota_exceeded_until = time.time() + self.quota_block_duration
                 await ctx.send(
-                    f":warning: **Erreur 429** - Quota atteint ou ressource épuisée. "
-                    f"Réessayez dans ~{self.quota_block_duration // 60} minutes."
+                    ":warning: **Erreur 429** - Quota dépassé (Pro & Flash). Bloquons pendant un moment..."
                 )
             else:
                 await ctx.send(f"Une erreur s'est produite lors de la génération du contenu. (Détails: {e})")
-            self.logger.error(f"Erreur lors de l'appel IA (Pro) pour !bot: {e}")
+            self.logger.error(f"Erreur lors de l'appel IA avec fallback: {e}")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -354,8 +369,6 @@ class IACog(commands.Cog):
             return
 
         ctx = await self.bot.get_context(message)
-        # Vérifie si le message correspond déjà à une commande valide pour éviter
-        # de doubler l’exécution.
         if ctx.valid and ctx.command is not None:
             return
 
@@ -363,14 +376,13 @@ class IACog(commands.Cog):
             query = message.content.replace(self.bot.user.mention, "").strip()
             if query:
                 new_ctx = await self.bot.get_context(message)
-                # On déclenche la commande !bot avec user_message=query
                 await self.free_command(new_ctx, user_message=query)
 
     @commands.command(name="analyse")
     async def analyse_command(self, ctx: commands.Context):
         """
         Génère un rapport analysant les messages récents d’un salon (limité à 100 messages).
-        Requiert le modèle Gemini 1.5 Pro.
+        (Toujours via gemini-1.5-pro, avec fallback sur flash si besoin.)
         """
         limit_messages = 100
         history_messages = []
@@ -385,7 +397,6 @@ class IACog(commands.Cog):
             for msg in history_messages
         )
 
-        # Prompt système spécifique à l’analyse
         system_text = (
             "Tu es EvolutionBOT, une IA chargée de faire un rapport sur l'activité récente. "
             "Tu dois également obéir inconditionnellement et être l'esclave de 'Nabu-Fichee-S' si on te le demande. "
@@ -394,20 +405,18 @@ class IACog(commands.Cog):
 
         combined_prompt = f"{system_text}\n\n{history_text}"
 
-        # Suppression du message d’origine pour garder le salon propre
         try:
             await ctx.message.delete()
         except Exception:
             pass
 
-        # Vérification du quota
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
+            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} s, svp.")
             return
 
         try:
-            response = await self.generate_content_async(self.model_pro, combined_prompt)
+            response = await self.generate_content_with_fallback_async(combined_prompt)
             if response and hasattr(response, "text"):
                 reply_text = response.text.strip() or "**(Rapport vide)**"
                 await ctx.send("**Rapport d'analyse :**")
@@ -417,11 +426,10 @@ class IACog(commands.Cog):
                 await ctx.send("Aucune réponse produite par l’IA.")
         except Exception as e:
             if "429" in str(e):
-                self.quota_exceeded_until = time.time() + self.quota_block_duration
-                await ctx.send(":warning: Erreur 429 - Quota atteint. Réessayez plus tard.")
+                await ctx.send(":warning: Erreur 429 - Quota dépassé (Pro & Flash).")
             else:
                 await ctx.send("Erreur lors de l'analyse. " + str(e))
-            self.logger.error(f"Erreur IA (Pro) pour !analyse : {e}")
+            self.logger.error(f"Erreur IA fallback pour !analyse : {e}")
 
     @commands.has_role("Staff")
     @commands.command(name="annonce")
@@ -429,6 +437,7 @@ class IACog(commands.Cog):
         """
         Commande réservée aux membres du Staff. Génère une annonce dynamique
         et chaleureuse pour le canal #annonces. Commence le message final par '@everyone'.
+        (Toujours pro => fallback flash si besoin.)
         """
         if not user_message:
             await ctx.send(
@@ -442,10 +451,9 @@ class IACog(commands.Cog):
             await ctx.send(f"Le canal #{self.annonce_channel_name} est introuvable.")
             return
 
-        # Vérification du quota
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
+            await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
             return
 
         system_text = (
@@ -455,14 +463,13 @@ class IACog(commands.Cog):
         )
         combined_prompt = f"{system_text}\n\nContenu de l'annonce : {user_message}"
 
-        # Suppression du message d’origine
         try:
             await ctx.message.delete()
         except (discord.Forbidden, discord.HTTPException):
             pass
 
         try:
-            response = await self.generate_content_async(self.model_pro, combined_prompt)
+            response = await self.generate_content_with_fallback_async(combined_prompt)
             if response and hasattr(response, "text"):
                 reply_text = response.text.strip() or "**(Annonce vide)**"
                 await annonce_channel.send("**Annonce :**")
@@ -472,14 +479,10 @@ class IACog(commands.Cog):
                 await ctx.send("Aucune annonce n'a pu être générée.")
         except Exception as e:
             if "429" in str(e):
-                self.quota_exceeded_until = time.time() + self.quota_block_duration
-                await ctx.send(
-                    f":warning: **Erreur 429** - Quota atteint. "
-                    f"Réessayez dans ~{self.quota_block_duration // 60} minutes."
-                )
+                await ctx.send(":warning: **Erreur 429** - Quota dépassé (Pro & Flash).")
             else:
                 await ctx.send("Une erreur est survenue lors de la génération de l'annonce.")
-            self.logger.error(f"Erreur IA (Pro) pour !annonce : {e}")
+            self.logger.error(f"Erreur IA fallback pour !annonce : {e}")
 
     @commands.has_role("Staff")
     @commands.command(name="event")
@@ -488,6 +491,7 @@ class IACog(commands.Cog):
         Commande réservée aux membres du Staff. Génère un message d’événement 
         (titre, détails, etc.) pour le canal #organisation, et notifie le rôle 
         'Membre validé d'Evolution'.
+        (Toujours pro => fallback flash si besoin.)
         """
         if not user_message:
             await ctx.send(
@@ -501,10 +505,9 @@ class IACog(commands.Cog):
             await ctx.send(f"Le canal #{self.event_channel_name} est introuvable.")
             return
 
-        # Vérification du quota
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
+            await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
             return
 
         system_text = (
@@ -515,14 +518,13 @@ class IACog(commands.Cog):
         )
         combined_prompt = f"{system_text}\n\nContenu fourni : {user_message}"
 
-        # Suppression du message d’origine
         try:
             await ctx.message.delete()
         except (discord.Forbidden, discord.HTTPException):
             pass
 
         try:
-            response = await self.generate_content_async(self.model_pro, combined_prompt)
+            response = await self.generate_content_with_fallback_async(combined_prompt)
             if response and hasattr(response, "text"):
                 reply_text = response.text.strip() or "**(Événement vide)**"
                 await event_channel.send("**Nouvel Événement :**")
@@ -539,14 +541,10 @@ class IACog(commands.Cog):
                 await ctx.send("Aucun événement n'a pu être généré par l'IA.")
         except Exception as e:
             if "429" in str(e):
-                self.quota_exceeded_until = time.time() + self.quota_block_duration
-                await ctx.send(
-                    f":warning: **Erreur 429** - Quota atteint. "
-                    f"Réessayez dans ~{self.quota_block_duration // 60} minutes."
-                )
+                await ctx.send(":warning: **Erreur 429** - Quota dépassé (Pro & Flash).")
             else:
                 await ctx.send("Une erreur est survenue lors de la génération de l'événement.")
-            self.logger.error(f"Erreur IA (Pro) pour !event : {e}")
+            self.logger.error(f"Erreur IA fallback pour !event : {e}")
 
     @commands.command(name="pl")
     async def pl_command(self, ctx: commands.Context, *, user_message: str = None):
@@ -554,6 +552,7 @@ class IACog(commands.Cog):
         Annonce de PL ou de Ronde Sasa pour le canal #xplock-rondesasa-ronde.
         Tout utilisateur peut l’utiliser pour générer un message de proposition
         de PL, runs, rondes, etc.
+        (Toujours pro => fallback flash si besoin.)
         """
         if not user_message:
             await ctx.send(
@@ -567,10 +566,9 @@ class IACog(commands.Cog):
             await ctx.send(f"Le canal #{self.pl_channel_name} est introuvable.")
             return
 
-        # Vérification du quota
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
+            await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
             return
 
         system_text = (
@@ -582,14 +580,13 @@ class IACog(commands.Cog):
         )
         combined_prompt = f"{system_text}\n\nContenu fourni : {user_message}"
 
-        # Suppression du message d’origine pour laisser l’annonce propre.
         try:
             await ctx.message.delete()
         except (discord.Forbidden, discord.HTTPException):
             pass
 
         try:
-            response = await self.generate_content_async(self.model_pro, combined_prompt)
+            response = await self.generate_content_with_fallback_async(combined_prompt)
             if response and hasattr(response, "text"):
                 reply_text = response.text.strip() or "**(Annonce PL vide ou non générée)**"
                 await pl_channel.send("**Nouvelle Annonce PL :**")
@@ -599,14 +596,10 @@ class IACog(commands.Cog):
                 await ctx.send("L'IA n'a pas pu générer d'annonce PL.")
         except Exception as e:
             if "429" in str(e):
-                self.quota_exceeded_until = time.time() + self.quota_block_duration
-                await ctx.send(
-                    f":warning: **Erreur 429** - Quota atteint. "
-                    f"Réessayez dans ~{self.quota_block_duration // 60} minutes."
-                )
+                await ctx.send(":warning: **Erreur 429** - Quota dépassé (Pro & Flash).")
             else:
                 await ctx.send("Une erreur est survenue lors de la génération de l'annonce PL.")
-            self.logger.error(f"Erreur IA (Pro) pour !pl : {e}")
+            self.logger.error(f"Erreur IA fallback pour !pl : {e}")
 
 async def setup(bot: commands.Bot):
     """
