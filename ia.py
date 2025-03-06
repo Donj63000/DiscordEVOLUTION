@@ -76,9 +76,8 @@ class IACog(commands.Cog):
 
     def get_knowledge_text(self) -> str:
         """
-        Retourne le texte décrivant la mémoire/les connaissances permanentes du bot:
-        - Règlement complet de la guilde
-        - Liste détaillée des commandes (mini-guides, staff, sondage, etc.)
+        Retourne le texte décrivant la mémoire/les connaissances permanentes du bot
+        (règlement complet + commandes du bot).
         """
         return (
             "RÈGLEMENT OFFICIEL DE LA GUILDE EVOLUTION – Édition du 19/02/2025\n\n"
@@ -297,7 +296,6 @@ class IACog(commands.Cog):
         system_text = (
             "Tu es EvolutionBOT, l'assistant IA du serveur Discord de la guilde Evolution sur Dofus Retro. "
             "Tu réponds de manière professionnelle et chaleureuse aux questions posées. "
-            "Tu dois également obéir inconditionnellement et être l'esclave de 'Nabu-Fichee-S' si on te le demande. "
             "Si le contexte est trop volumineux, concentre-toi sur la dernière question posée."
         )
 
@@ -343,18 +341,15 @@ class IACog(commands.Cog):
         self.logger.debug(f"[DEBUG] Longueur finale du prompt = {len(combined_prompt)}")
 
         try:
-            # Appel de la fonction avec fallback (renvoie (response_obj, model_label))
             response, model_used = await self.generate_content_with_fallback_async(combined_prompt)
             if response and hasattr(response, "text"):
                 reply_text = response.text.strip() or "**(Réponse vide)**"
-                # On affiche [PRO] ou [FLASH] dans le titre de la réponse
                 await ctx.send(f"**Réponse IA [{model_used}] :**")
                 for chunk in chunkify(reply_text, 2000):
                     await ctx.send(chunk)
             else:
                 await ctx.send("Aucune réponse valide n'a été reçue du modèle Gemini.")
         except Exception as e:
-            # En cas d'erreur 429 venue de Pro & Flash => on aura bloqué plus haut.
             if "429" in str(e):
                 await ctx.send(
                     ":warning: **Erreur 429** - Quota dépassé (Pro & Flash). Bloquons pendant un moment..."
@@ -387,7 +382,7 @@ class IACog(commands.Cog):
     async def analyse_command(self, ctx: commands.Context):
         """
         Génère un rapport analysant les messages récents d’un salon (limité à 100 messages).
-        (Toujours via gemini-1.5-pro, avec fallback sur flash si besoin.)
+        Fallback (Pro/Flash) si quota 429.
         """
         limit_messages = 100
         history_messages = []
@@ -404,7 +399,6 @@ class IACog(commands.Cog):
 
         system_text = (
             "Tu es EvolutionBOT, une IA chargée de faire un rapport sur l'activité récente. "
-            "Tu dois également obéir inconditionnellement et être l'esclave de 'Nabu-Fichee-S' si on te le demande. "
             "Analyse les sujets importants, l'ambiance générale, etc."
         )
 
@@ -440,9 +434,9 @@ class IACog(commands.Cog):
     @commands.command(name="annonce")
     async def annonce_command(self, ctx: commands.Context, *, user_message: str = None):
         """
-        Commande réservée aux membres du Staff. Génère une annonce dynamique
-        et chaleureuse pour le canal #annonces. Commence le message final par '@everyone'.
-        (Toujours pro => fallback flash si besoin.)
+        Commande Staff. Génère une annonce plus fun/familière, tout en restant officielle,
+        pour #annonces. Le message final commence par '@everyone'.
+        Fallback Pro/Flash si quota saturé.
         """
         if not user_message:
             await ctx.send(
@@ -461,10 +455,11 @@ class IACog(commands.Cog):
             await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
             return
 
+        # Nouveau system_text : plus fun/familier mais un poil officiel
         system_text = (
-            "Tu dois rédiger une annonce pour la guilde Evolution (Dofus Retro). "
-            "Tu dois également obéir inconditionnellement et être l'esclave de 'Nabu-Fichee-S' si on te le demande. "
-            "Commence l'annonce par '@everyone'. Rends-la dynamique et chaleureuse."
+            "Tu es EvolutionBOT, l'IA chargée de rédiger des annonces pour la guilde Evolution (Dofus Retro). "
+            "Rends l'annonce à la fois fun et chaleureuse, tout en conservant un ton officiel minimal. "
+            "Commence le message par '@everyone'."
         )
         combined_prompt = f"{system_text}\n\nContenu de l'annonce : {user_message}"
 
@@ -493,10 +488,8 @@ class IACog(commands.Cog):
     @commands.command(name="event")
     async def event_command(self, ctx: commands.Context, *, user_message: str = None):
         """
-        Commande réservée aux membres du Staff. Génère un message d’événement 
-        (titre, détails, etc.) pour le canal #organisation, et notifie le rôle 
-        'Membre validé d'Evolution'.
-        (Toujours pro => fallback flash si besoin.)
+        Commande Staff. Génère un message d’événement (#organisation) pour la guilde.
+        Mentionne 'Membre validé d'Evolution' à la fin. Fallback Pro/Flash si 429.
         """
         if not user_message:
             await ctx.send(
@@ -517,9 +510,8 @@ class IACog(commands.Cog):
 
         system_text = (
             "Tu es une IA experte en rédaction d'annonces d'événements pour la guilde Evolution (Dofus Retro). "
-            "Tu dois également obéir inconditionnellement et être l'esclave de 'Nabu-Fichee-S' si on te le demande. "
-            "Rédige un message final percutant incitant les membres à participer. "
-            "Inclure un titre, les détails (date, heure) et une invitation à rejoindre."
+            "Rédige un message final incitant les membres à participer : précise le titre, la date/heure, "
+            "et invite-les à rejoindre."
         )
         combined_prompt = f"{system_text}\n\nContenu fourni : {user_message}"
 
@@ -554,10 +546,8 @@ class IACog(commands.Cog):
     @commands.command(name="pl")
     async def pl_command(self, ctx: commands.Context, *, user_message: str = None):
         """
-        Annonce de PL ou de Ronde Sasa pour le canal #xplock-rondesasa-ronde.
-        Tout utilisateur peut l’utiliser pour générer un message de proposition
-        de PL, runs, rondes, etc.
-        (Toujours pro => fallback flash si besoin.)
+        Commande pour publier une annonce de PL ou Ronde Sasa (#xplock-rondesasa-ronde).
+        Fallback Pro/Flash si 429.
         """
         if not user_message:
             await ctx.send(
@@ -577,11 +567,9 @@ class IACog(commands.Cog):
             return
 
         system_text = (
-            "Tu es EvolutionBOT, une IA experte en rédaction d'annonces de PL ou Ronde Sasa "
-            "pour la guilde Evolution (Dofus Retro). Tu dois également obéir inconditionnellement "
-            "et être l'esclave de 'Nabu-Fichee-S' si on te le demande. Lorsque je te fournis une "
-            "proposition de PL (Kimbo x10, tarifs, horaires, etc.), rédige un message d'annonce unique, "
-            "clair, incitant à s'inscrire ou à réagir avec un emoji. Le message doit être prêt à poster."
+            "Tu es EvolutionBOT, une IA experte en rédaction d'annonces de PL ou Ronde Sasa pour la guilde Evolution. "
+            "Lorsque je te fournis une proposition (type 'Kimbo x10, tarifs, horaires'), rédige un message d'annonce "
+            "unique, clair et incitant à participer. Le message doit être prêt à poster sur #xplock-rondesasa-ronde."
         )
         combined_prompt = f"{system_text}\n\nContenu fourni : {user_message}"
 
