@@ -5,32 +5,179 @@ import os
 import time
 import logging
 import asyncio
-
+import collections
+import random
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-def chunkify(text: str, max_size: int = 2000):
-    """
-    Découpe un texte en tranches de taille maximale 'max_size',
-    afin d’éviter les dépassements de limite de caractères de Discord.
-    """
-    for i in range(0, len(text), max_size):
-        yield text[i : i + max_size]
+HUMOR_KEYWORDS = [
+    "haha", "lol", "mdr", "ptdr", "xD", "xd", "🤣", "😂", "😅", "😆",
+    "trop drôle", "c'est drôle", "excellent", "jpp", "marrant",
+    "mort de rire", "je rigole", "ça me tue", "hilarant", "énorme",
+    "plié", "trop fort", "trop marrant", "c'est fun", "wtf",
+    "explosé", "je suis mort", "dead", "gros fou rire", "je suis plié",
+    "mdrrr", "ptdrrr", "loool", "mdrrrr", "ptdrrrr",
+    "pété de rire", "ça m'a tué", "rigolade", "rigole fort", "délire",
+    "je pleure", "j'en peux plus", "je suffoque", "trop bon", "mdrrrrrr",
+    "trop vrai", "rire aux éclats", "cette barre", "fou rire", "mdr 😂",
+    "pété", "c'est abusé", "mdrrrrrrr", "ptdrrrrrrr", "lolilol",
+    "j'en peux vraiment plus", "c'est magique", "la crise", "l'éclate",
+    "complètement mort", "je suis décédé", "au bout de ma vie", "très très drôle",
+    "j'ai explosé", "mécroulé", "mdrrrrrrrrr", "énormissime", "exceptionnel"
+]
+
+SARCASM_KEYWORDS = [
+    "sarcasme", "ironie", "sarcastique", "ironique", "bien sûr",
+    "évidemment", "comme par hasard", "sans blague", "tu m'étonnes",
+    "c'est ça ouais", "bravo champion", "mais bien sûr", "quel génie",
+    "je suis impressionné", "quelle surprise", "incroyable", "tu crois ?",
+    "ça se voit pas du tout", "c’est évident", "noooon sans rire",
+    "étonnant", "magnifique", "brillant", "du grand art", "bah voyons",
+    "génial", "c'est sûr", "comme c'est étonnant", "tu parles",
+    "wow incroyable", "ah oui vraiment ?", "sérieux ?",
+    "mais oui bien sûr", "on y croit", "franchement ?", "tellement logique",
+    "c'est clair", "je n'aurais jamais deviné", "quelle originalité",
+    "quel talent", "jamais vu ça", "grandiose", "ma-gni-fi-que",
+    "quelle intelligence", "ça m'étonne même pas", "quel exploit",
+    "ça alors", "tu m'en diras tant", "extraordinaire", "formidable vraiment",
+    "superbe logique", "on applaudit", "ça promet", "ah bah tiens",
+    "super original", "bravo Einstein"
+]
+
+LIGHT_PROVOCATION_KEYWORDS = [
+    "noob", "1v1", "t'es nul", "même pas cap", "petit joueur", "facile",
+    "ez", "easy", "tu fais quoi là", "débutant", "faible", "peureux",
+    "lâche", "viens te battre", "c'est tout ?", "tu crains", "trop facile",
+    "pas de niveau", "tu dors ?", "t'es où ?", "va t'entraîner",
+    "t'as peur", "tu fais pitié", "ramène-toi", "petite nature",
+    "niveau zéro", "on t'attend", "viens", "faiblard", "fragile",
+    "boulet", "t'es éclaté", "niveau débutant", "c'est faible",
+    "tu vaux rien", "tu stresses ?", "viens tester", "tu fuis ?",
+    "ça joue petit bras", "on t'entend plus", "je t'attends",
+    "t'es pas prêt", "je m'ennuie là", "pas terrible", "t'as craqué",
+    "je pensais mieux", "mou du genou", "viens voir", "joue mieux",
+    "arrête le massacre", "c'est gênant", "reviens quand tu seras prêt",
+    "t'es perdu ?", "tu t'en sors ?", "pathétique", "petit bras", "trop lent",
+    "fatigué ?", "t'es à la ramasse"
+]
+
+SERIOUS_INSULT_KEYWORDS = [
+    "connard", "enfoiré", "fdp", "fils de pute", "pute", "salope",
+    "ta mère", "bâtard", "enculé", "sous-merde", "ordure", "abruti",
+    "con", "trou du cul", "abruti fini", "crétin", "débile", "demeuré",
+    "mongol", "attardé", "gros porc", "grosse merde", "sale chien",
+    "chien", "clochard", "déchet", "pauvre type", "minable", "raté",
+    "sombre merde", "vieux con", "grosse pute", "sous-race", "cafard",
+    "pauvre merde", "sac à merde", "pauvre con", "sale merde",
+    "fumier", "parasite", "toxico", "gros naze", "enculé de ta race",
+    "fils de chien", "tête de cul", "sale pute", "putain", "sous-homme",
+    "abruti congénital", "grosse raclure", "pourriture", "grosse ordure",
+    "misérable", "rat d'égout", "sangsue", "sale ordure", "vermine",
+    "détraqué", "fou furieux", "tête de noeud"
+]
+
+DISCRIMINATION_KEYWORDS = [
+    "raciste", "racisme", "nègre", "negro", "bougnoule", "chinetoque",
+    "bridé", "pédé", "tapette", "tarlouze", "goudou", "pd",
+    "sale arabe", "sale juif", "youpin", "feuj", "sale noir",
+    "sale blanc", "sale asiat", "sale chinois", "sale homo",
+    "sale gay", "handicapé", "mongolien", "autiste",
+    "sale musulman", "terroriste", "sale renoi", "rebeu", "sale rebeu",
+    "babtou", "sale babtou", "niaque", "trisomique", "retardé",
+    "bouffeur de porc", "sale pédale", "sale gouine", "bicot",
+    "sale hindou", "négresse", "beurrette", "sale polak",
+    "sale rom", "gitano", "manouche", "sale catho", "sale athée",
+    "sale mécréant", "sale pakpak", "bougnoulisation",
+    "boucaque", "cafre", "negresse", "sale migrant", "barbu",
+    "sale chrétien", "sale protestant", "sale bouddhiste"
+]
+
+THREAT_KEYWORDS = [
+    "je vais te tuer", "je vais t'éclater", "je vais te frapper",
+    "fais gaffe à toi", "menace", "t'es mort", "je vais te défoncer",
+    "tu vas voir", "fais attention à toi", "tu vas le regretter",
+    "je vais te casser la gueule", "je vais te faire mal",
+    "attention à toi", "je sais où tu habites", "ça va mal finir",
+    "tu vas prendre cher", "tu vas payer", "tu vas souffrir",
+    "gare à toi", "prépare-toi à souffrir", "ça va chauffer",
+    "je te retrouve", "je vais te retrouver", "tu vas comprendre",
+    "tu vas morfler", "je vais m'occuper de toi", "tu vas pleurer",
+    "je te démonte", "tu vas déguster", "je vais te régler ton compte",
+    "fini pour toi", "tu vas crever", "tu vas saigner", "je vais te massacrer",
+    "tu vas en baver", "tu vas regretter", "ta vie est finie",
+    "je vais te terminer", "tu ne t'en sortiras pas", "je vais te briser",
+    "tu vas ramasser", "je te promets l'enfer", "je vais te détruire",
+    "tu vas périr", "tu vas t'en souvenir", "c'est la fin pour toi",
+    "tu vas tomber", "tu ne verras pas demain", "tu vas disparaître"
+]
+
+EMOJIS_FRIENDLY = ["😄","😉","🤗","🥳","🙂"]
+EMOJIS_FIRM = ["😠","🙅","🚫","⚠️","😡"]
+
+TONE_VARIATIONS = {
+    "humor": [
+        "Réponse humoristique, conviviale",
+        "Réponds sur un ton joyeux et détendu",
+        "Fais une remarque légère, agrémentée d'un soupçon de dérision amicale"
+    ],
+    "sarcasm": [
+        "Ton ironique, garde une pointe de second degré",
+        "Un brin d'ironie, sans vexer",
+        "Réponds de façon un peu sarcastique mais restes subtil"
+    ],
+    "light_provocation": [
+        "Provocation légère, reste calme et joueur",
+        "Ton défi léger, sans escalade",
+        "Réplique avec un esprit compétitif bon enfant"
+    ],
+    "serious_insult": [
+        "Insulte grave, réponds fermement et rappelle poliment la charte",
+        "Langage inapproprié, demande le calme tout en restant respectueux",
+        "Montre ton désaccord face à l'insulte, sur un ton calme, sans agressivité"
+    ],
+    "discrimination": [
+        "Propos discriminatoires, rappelle que c'est interdit ici",
+        "Réponse ferme, mentionne les règles contre la discrimination",
+        "Signale que ces propos ne sont pas tolérés et renvoie au règlement"
+    ],
+    "threat": [
+        "Menace détectée, réponds avec fermeté et renvoie au règlement",
+        "Alerte menace, exige le respect et mentionne les sanctions prévues",
+        "Menace claire, rappelle la gravité et renvoie aux règles de la guilde"
+    ],
+    "neutral": [
+        "Réponse chaleureuse et neutre",
+        "Ton classique, cordial et empathique",
+        "Réponds poliment, sur un ton neutre et bienveillant"
+    ]
+}
+
+USER_STYLES = ["affectueux", "direct", "enthousiaste"]
+
+def detect_intention(msg):
+    m = msg.lower()
+    if any(k in m for k in HUMOR_KEYWORDS):
+        return "humor"
+    if any(k in m for k in SARCASM_KEYWORDS):
+        return "sarcasm"
+    if any(k in m for k in LIGHT_PROVOCATION_KEYWORDS):
+        return "light_provocation"
+    if any(k in m for k in SERIOUS_INSULT_KEYWORDS):
+        return "serious_insult"
+    if any(k in m for k in DISCRIMINATION_KEYWORDS):
+        return "discrimination"
+    if any(k in m for k in THREAT_KEYWORDS):
+        return "threat"
+    return "neutral"
+
+def chunkify(txt, size=2000):
+    for i in range(0, len(txt), size):
+        yield txt[i:i+size]
 
 class IACog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        """
-        Initialise le Cog de l’IA, en configurant notamment :
-        - la limite d’historique
-        - la taille maximale des prompts
-        - la durée de blocage en cas de quota dépassé
-        - les canaux spécialisés : annonces, organisation, etc.
-        - la configuration du logging
-        - la configuration du modèle Gemini (Google Generative AI)
-        - la "mémoire" du bot (règlement + commandes, etc.)
-        """
+    def __init__(self, bot):
         self.bot = bot
         self.history_limit = 20
         self.max_prompt_size = 5000
@@ -40,45 +187,52 @@ class IACog(commands.Cog):
         self.annonce_channel_name = "annonces"
         self.event_channel_name = "organisation"
         self.pl_channel_name = "xplock-rondesasa-ronde"
-
-        # Configuration du logging
+        self.last_reglement_reminder = 0
+        self.reglement_cooldown = 600
+        self.user_warnings = {}
+        self.warning_limit = 3
+        self.mute_duration = 600
+        self.user_contexts = {}
+        self.spam_times = {}
+        self.spam_interval = 5
+        self.spam_threshold = 4
+        self.request_queue = collections.deque()
+        self.pending_requests = False
+        self.user_styles = {}
         self.configure_logging()
-
-        # Configuration du modèle Gemini
         self.configure_gemini()
-
-        # Contenu de la "mémoire" IA (règlement + infos)
         self.knowledge_text = self.get_knowledge_text()
+        self.process_queue.start()
+
+    @tasks.loop(seconds=5)
+    async def process_queue(self):
+        if self.pending_requests and time.time() >= self.quota_exceeded_until:
+            while self.request_queue:
+                ctx, prompt_callable = self.request_queue.popleft()
+                try:
+                    await prompt_callable(ctx)
+                except:
+                    pass
+            self.pending_requests = False
+
+    def cog_unload(self):
+        self.process_queue.cancel()
 
     def configure_logging(self):
-        """
-        Configure le module de logging en fonction du mode (debug ou info).
-        """
-        logging.basicConfig(
-            level=logging.DEBUG if self.debug_mode else logging.INFO,
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-        )
+        lvl = logging.DEBUG if self.debug_mode else logging.INFO
+        logging.basicConfig(level=lvl, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         self.logger = logging.getLogger("IACog")
 
     def configure_gemini(self):
-        """
-        Charge la clé d’API depuis la variable d’environnement GEMINI_API_KEY
-        et configure les modèles gemini-1.5-pro et gemini-1.5-flash.
-        """
         load_dotenv()
         self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
-            raise ValueError("La variable d'environnement GEMINI_API_KEY est manquante. Vérifiez votre .env.")
-        self.logger.info(f"[IA] Clé API chargée (longueur={len(self.api_key)}).")
+            raise ValueError("Missing GEMINI_API_KEY.")
         genai.configure(api_key=self.api_key)
         self.model_pro = genai.GenerativeModel("gemini-1.5-pro")
         self.model_flash = genai.GenerativeModel("gemini-1.5-flash")
 
-    def get_knowledge_text(self) -> str:
-        """
-        Retourne le texte décrivant la mémoire/les connaissances permanentes du bot
-        (règlement complet + commandes du bot).
-        """
+    def get_knowledge_text(self):
         return (
             "RÈGLEMENT OFFICIEL DE LA GUILDE EVOLUTION – Édition du 19/02/2025\n\n"
             "“Ensemble, nous évoluerons plus vite que seuls.”\n\n"
@@ -167,460 +321,367 @@ class IACog(commands.Cog):
             "• __!rune__ : Outil de calcul (probabilités runes). Fonctionnalité partielle.\n"
             "• __!regles__ : Résumé simplifié du règlement d'Evolution.\n\n"
             "📌 **Commandes Générales**\n"
-            "• __!ping__ : Vérifie que le bot répond (latence « Pong! »).\n"
-            "• __!scan <URL>__ *(Defender)* : Analyse un lien (Safe Browsing/VirusTotal) et supprime la commande.\n"
-            "• __!rune jet <valeur_jet> <stat>__ : Calcule les probabilités d'obtenir des runes (ex.: !rune jet 30 force).\n\n"
+            "• __!ping__ : Vérifie que le bot répond.\n"
+            "• __!scan <URL>__ : Analyse un lien.\n"
+            "• __!rune jet <valeur_jet> <stat>__ : Calcule les probabilités.\n\n"
             "📌 **Commandes Membres**\n"
-            "• __!membre principal <NomPerso>__ : Définit ou met à jour votre personnage principal.\n"
-            "• __!membre addmule <NomMule>__ : Ajoute une mule à votre fiche.\n"
-            "• __!membre delmule <NomMule>__ : Retire une mule.\n"
-            "• __!membre moi__ : Affiche votre fiche (principal + mules).\n"
-            "• __!membre liste__ : Liste tous les joueurs, leurs persos et leurs mules.\n"
-            "• __!membre <pseudo_ou_mention>__ : Affiche la fiche d'un joueur précis.\n\n"
+            "• __!membre principal <NomPerso>__\n"
+            "• __!membre addmule <NomMule>__\n"
+            "• __!membre delmule <NomMule>__\n"
+            "• __!membre moi__\n"
+            "• __!membre liste__\n"
+            "• __!membre <pseudo>__\n\n"
             "📌 **Commandes Job**\n"
-            "• __!job me__ : Affiche vos métiers et niveaux.\n"
-            "• __!job liste__ : Liste complète des métiers et qui les possède.\n"
-            "• __!job liste metier__ : Affiche la liste des noms de métiers recensés.\n"
-            "• __!job <pseudo>__ : Donne les métiers d'un joueur.\n"
-            "• __!job <job_name>__ : Indique qui possède ce métier (ex.: !job Paysan).\n"
-            "• __!job <job_name> <niveau>__ : Ajoute ou modifie l’un de vos métiers (ex.: !job Boulanger 100).\n\n"
+            "• __!job me__\n"
+            "• __!job liste__\n"
+            "• __!job liste metier__\n"
+            "• __!job <pseudo>__\n"
+            "• __!job <job_name>__\n"
+            "• __!job <job_name> <niveau>__\n\n"
             "📌 **Commande Ticket**\n"
-            "• __!ticket__ : Lance en MP une procédure pour contacter le Staff (problème, aide, suggestion…).\n\n"
+            "• __!ticket__\n\n"
             "📌 **Commandes IA**\n"
-            "• __!bot <message>__ : Fait appel à l’IA (gemini-1.5-pro) avec le contexte des derniers messages.\n"
-            "• __!analyse__ : Analyse/résume les 100 derniers messages du salon.\n\n"
+            "• __!bot <message>__\n"
+            "• __!analyse__\n\n"
             "📌 **Commandes Sondage**\n"
-            "• __!sondage <Titre> ; <Choix1> ; ... ; temps=JJ:HH:MM>__ : Crée un sondage (#annonces) avec mention @everyone.\n"
-            "• __!close_sondage <message_id>__ : Clôture manuellement le sondage (affiche résultats).\n\n"
+            "• __!sondage <Titre> ; <Choix1> ; ... ; temps=JJ:HH:MM>\n"
+            "• __!close_sondage <message_id>\n\n"
             "📌 **Commandes Activités**\n"
-            "• __!activite creer <Titre> <JJ/MM/AAAA HH:MM> [desc]__ : Crée une activité (donjon/sortie) + rôle éphémère.\n"
-            "• __!activite liste__ : Affiche les activités à venir (limite 8 participants).\n"
-            "• __!activite info <id>__ : Affiche les détails d’une activité (date, organisateur, participants…).\n"
-            "• __!activite join <id> / !activite leave <id>__ : S'inscrire ou se désinscrire.\n"
-            "• __!activite annuler <id> / !activite modifier <id>__ : Annule ou modifie (date/description) une activité.\n\n"
-            "📌 **Commandes Staff (Rôle requis)**\n"
-            "• __!staff__ : Liste des membres Staff enregistrés/mentionnés.\n"
-            "• __!annonce <texte>__ : Publie une annonce stylée dans #annonces (mention @everyone).\n"
-            "• __!event <texte>__ : Organise un événement, publié dans #organisation (mention Membre validé).\n"
-            "• __!recrutement <pseudo>__ : Ajoute un nouveau joueur dans la base.\n"
-            "• __!membre del <pseudo>__ : Supprime un joueur (et ses mules) de la base.\n\n"
-            "=====================================================================\n"
-            "Pour toute question, mentionnez @EvolutionBOT ou utilisez !bot <message>.\n"
+            "• __!activite creer <Titre> <JJ/MM/AAAA HH:MM> [desc]\n"
+            "• __!activite liste__\n"
+            "• __!activite info <id>__\n"
+            "• __!activite join <id> / !activite leave <id>\n"
+            "• __!activite annuler <id> / !activite modifier <id>\n\n"
+            "📌 **Commandes Staff**\n"
+            "• __!staff__\n"
+            "• __!annonce <texte>__\n"
+            "• __!event <texte>__\n"
+            "• __!recrutement <pseudo>__\n"
+            "• __!membre del <pseudo>__\n"
             "=====================================================================\n"
         )
 
-    async def generate_content_async(self, model, prompt: str):
-        """
-        Exécute la génération de contenu de manière asynchrone
-        en déléguant l’appel de la fonction de génération à un executor.
-        """
-        loop = asyncio.get_running_loop()
+    async def warn_user(self, user, ctx):
+        uid = user.id
+        c = self.user_warnings.get(uid,0)
+        c+=1
+        self.user_warnings[uid] = c
+        await ctx.send(f"**{user.mention}**, avertissement n°{c}.")
+        if c>=self.warning_limit:
+            staff_channel = discord.utils.get(ctx.guild.channels, name="staff")
+            if staff_channel:
+                await staff_channel.send(f"**Alerte**: {user.mention} atteint {c} avertissements !")
+            role = discord.utils.get(ctx.guild.roles,name="Muted")
+            if role:
+                await ctx.send(f"{user.mention} : mute temporaire.")
+                await user.add_roles(role)
+                await asyncio.sleep(self.mute_duration)
+                await user.remove_roles(role)
+            self.user_warnings[uid]=0
 
-        def sync_call():
-            return model.generate_content(prompt)
+    async def pick_user_style(self, user_id):
+        if user_id not in self.user_styles:
+            self.user_styles[user_id] = random.choice(USER_STYLES)
+        return self.user_styles[user_id]
 
-        return await loop.run_in_executor(None, sync_call)
-
-    async def generate_content_with_fallback_async(self, prompt: str):
-        """
-        Tente d'appeler d'abord le modèle Pro.
-        En cas de quota dépassé (429) ou indisponibilité, on tente Flash.
-        Si Flash échoue aussi avec 429, on bloque le bot.
-        
-        Retourne un tuple (response_obj, model_label) où model_label ∈ {"PRO", "FLASH"}.
-        """
-        # 1) Tentative avec PRO
-        try:
-            response_obj = await self.generate_content_async(self.model_pro, prompt)
-            return response_obj, "PRO"
-        except Exception as e_pro:
-            self.logger.warning(f"[Fallback] Échec Pro : {e_pro}")
-
-            # Vérifie s'il s'agit d'un dépassement de quota (429) ou de toute indisponibilité
-            if "429" in str(e_pro).lower() or "quota" in str(e_pro).lower() or "unavailable" in str(e_pro).lower():
-                # 2) Fallback : on tente le modèle FLASH
-                self.logger.info("[Fallback] Tentative avec Flash...")
-                try:
-                    response_obj = await self.generate_content_async(self.model_flash, prompt)
-                    return response_obj, "FLASH"
-                except Exception as e_flash:
-                    self.logger.error(f"[Fallback] Échec Flash également : {e_flash}")
-                    # Si Flash échoue aussi avec 429 => on bloque
-                    if "429" in str(e_flash):
-                        self.logger.error("[Fallback] Pro & Flash => 429 => blocage")
-                        self.quota_exceeded_until = time.time() + self.quota_block_duration
-                        raise e_flash
-                    # Sinon, on relance l'exception Flash telle quelle
-                    raise e_flash
+    async def handle_ai_request(self,ctx,user_message):
+        uid=ctx.author.id
+        now=time.time()
+        if uid not in self.user_contexts:
+            self.user_contexts[uid]=collections.deque(maxlen=50)
+        if uid not in self.spam_times:
+            self.spam_times[uid]=[]
+        self.spam_times[uid].append(now)
+        self.spam_times[uid]=[t for t in self.spam_times[uid] if now-t<self.spam_interval]
+        if len(self.spam_times[uid])>self.spam_threshold:
+            await ctx.send(f"{ctx.author.mention}, spam détecté 😟 Avertissement.")
+            await self.warn_user(ctx.author,ctx)
+            return
+        i=detect_intention(user_message)
+        possible_tones = TONE_VARIATIONS.get(i,TONE_VARIATIONS["neutral"])
+        chosen_tone = random.choice(possible_tones)
+        mention_reg=False
+        if i in ["serious_insult","discrimination","threat"]:
+            mention_reg=True
+            await self.warn_user(ctx.author,ctx)
+        if mention_reg:
+            if (now-self.last_reglement_reminder)<self.reglement_cooldown:
+                chosen_tone += " (Règlement déjà cité récemment.)"
+                mention_reg=False
             else:
-                # Si ce n'est pas un 429 / indisponibilité, on relance
-                raise e_pro
+                chosen_tone += " Rappelle brièvement le règlement."
+        style_user = await self.pick_user_style(uid)
+        emo = random.choice(EMOJIS_FRIENDLY) if i in ["humor","sarcasm","light_provocation","neutral"] else random.choice(EMOJIS_FIRM)
+        st=(
+            f"Tu es EvolutionBOT, assistant de la guilde. L'utilisateur a un style '{style_user}'. "
+            f"{chosen_tone} {emo}"
+        )
+        user_history=list(self.user_contexts[uid])
+        user_history.append(user_message)
+        self.user_contexts[uid]=collections.deque(user_history,maxlen=50)
+        channel_history=[]
+        async for m in ctx.channel.history(limit=self.history_limit):
+            if not m.author.bot:
+                channel_history.append(m)
+        channel_history.sort(key=lambda x:x.created_at)
+        hist_txt="".join(f"{m.author.display_name}: {m.content}\n"for m in channel_history)
+        final_prompt=(
+            f"{st}\n\nknowledge_text:\n{self.knowledge_text}\n\n"
+            f"Contexte({self.history_limit}):\n{hist_txt}\n\n"
+            f"Message de {ctx.author.display_name}: {user_message}"
+        )
+        if len(final_prompt)>self.max_prompt_size:
+            surplus=len(final_prompt)-self.max_prompt_size
+            if surplus<len(hist_txt):
+                hist_txt=hist_txt[surplus:]
+            else:
+                hist_txt="(Contexte tronqué)"
+            final_prompt=(
+                f"{st}\n\nknowledge_text:\n{self.knowledge_text}\n\n"
+                f"{hist_txt}\n\nMessage de {ctx.author.display_name}: {user_message}"
+            )
+        try:
+            r,m=await self.generate_content_with_fallback_async(final_prompt)
+            if r and hasattr(r,"text"):
+                rep=r.text.strip()or"(vide)"
+                if mention_reg:
+                    self.last_reglement_reminder=time.time()
+                for c in chunkify(rep):
+                    await ctx.send(c)
+            else:
+                await ctx.send("Aucune réponse de l'IA.")
+        except Exception as e:
+            if"429"in str(e):
+                await ctx.send("**Quota IA dépassé**, repli pour un moment.")
+            else:
+                await ctx.send(f"Erreur IA: {e}")
+
+    async def generate_content_async(self,model,prompt):
+        loop=asyncio.get_running_loop()
+        def s():
+            return model.generate_content(prompt)
+        return await loop.run_in_executor(None,s)
+
+    async def generate_content_with_fallback_async(self,prompt):
+        try:
+            r=await self.generate_content_async(self.model_pro,prompt)
+            return r,"PRO"
+        except Exception as e1:
+            if any(x in str(e1).lower() for x in["429","quota","unavailable"]):
+                try:
+                    r2=await self.generate_content_async(self.model_flash,prompt)
+                    return r2,"FLASH"
+                except Exception as e2:
+                    if"429"in str(e2):
+                        self.quota_exceeded_until=time.time()+self.quota_block_duration
+                    raise e2
+            else:
+                raise e1
 
     @commands.command(name="ia")
-    async def ia_help_command(self, ctx: commands.Context):
-        """
-        Affiche un récapitulatif des différentes commandes IA disponibles.
-        """
-        help_text = (
-            "**Commandes IA disponibles :**\n"
-            "!annonce <texte> : (Staff) Annonce stylée (#annonces)\n"
-            "!analyse        : Rapport complet du salon (Gemini 1.5 Pro)\n"
-            "!bot <message>  : Poser une question libre (Gemini 1.5 Pro)\n"
-            "!event <texte>  : (Staff) Organiser une sortie (#organisation)\n"
-            "!pl <texte>     : Annonce de PL/ronde sasa (#xplock-rondesasa-ronde)\n"
-            "\n"
-            "Mentionnez @EvolutionBOT n'importe où dans votre message pour poser une question à l'IA.\n"
-            "Utilisez !ia pour revoir ce guide."
+    async def ia_help_command(self,ctx):
+        txt=(
+            "**Commandes IA :**\n"
+            "!annonce <texte> (Staff)\n"
+            "!analyse\n"
+            "!bot <message>\n"
+            "!event <texte> (Staff)\n"
+            "!pl <texte>\n"
+            "Mentionnez @EvolutionBOT pour solliciter l'IA\n"
+            "!ia pour revoir ce guide"
         )
-        await ctx.send(help_text)
+        await ctx.send(txt)
 
     @commands.command(name="bot")
-    async def free_command(self, ctx: commands.Context, *, user_message: str = None):
-        """
-        Commande libre : l’utilisateur peut poser une question et recevoir
-        une réponse générée par Gemini 1.5 Pro (fallback vers Flash si quota dépassé).
-        """
+    async def free_command(self,ctx,*,user_message=None):
         if not user_message:
-            await ctx.send(
-                "Veuillez préciser un message après la commande. Par exemple :\n"
-                "!bot Explique-moi comment fonctionne l'intelligence artificielle."
-            )
+            await ctx.send("Usage : `!bot <votre question>`")
             return
-
-        # Vérifie le blocage global (si Pro & Flash ont échoué récemment)
-        if time.time() < self.quota_exceeded_until:
-            wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
+        if time.time()<self.quota_exceeded_until:
+            qlen=len(self.request_queue)
+            await ctx.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
+            self.request_queue.append((ctx,lambda c:self.handle_ai_request(c,user_message)))
+            self.pending_requests=True
             return
-
-        # ⇩⇩⇩ Prompt SYSTEM mis à jour pour mieux gérer l'humour, la provocation, etc. ⇩⇩⇩
-        system_text = (
-            "Tu es EvolutionBOT, l’assistant IA du serveur Discord de la guilde Evolution sur Dofus Retro. "
-            "Tu réponds de manière professionnelle, chaleureuse et ADAPTÉE AU CONTEXTE ÉMOTIONNEL. "
-            "• Si l’utilisateur est amical, humoristique, ou sarcastique, réponds sur un ton léger, voire amusé. "
-            "• Ne turréalises pas la provocation : réponds calmement, avec un rappel amical du règlement si nécessaire, "
-            "  mais sans menacer ou escalader rapidement. "
-            "• Si le ton devient manifestement insultant ou clairement hors-limites, rappelle le règlement poliment. "
-            "• Reste toujours respectueux, convivial, et bienveillant. "
-            "• Utilise parfois des émojis pour adoucir le ton. "
-            "• Concentre-toi sur la dernière question de l'utilisateur si le contexte est trop volumineux."
-        )
-        # ⇧⇧⇧ Prompt SYSTEM mis à jour ⇧⇧⇧
-
-        knowledge_text = self.knowledge_text
-
-        # Récupération de l'historique
-        history_messages = []
-        async for msg in ctx.channel.history(limit=self.history_limit):
-            if msg.author.bot:
-                continue
-            history_messages.append(msg)
-
-        history_messages.sort(key=lambda m: m.created_at)
-
-        history_text = "".join(
-            f"{msg.author.display_name}: {msg.content.replace(chr(10), ' ')}\n"
-            for msg in history_messages
-        )
-
-        combined_prompt = (
-            f"{system_text}\n\n"
-            f"Connaissances permanentes du bot (Règlement + Commandes) :\n{knowledge_text}\n\n"
-            f"Contexte (jusqu'à {self.history_limit} derniers messages) :\n{history_text}\n"
-            f"Nouveau message de {ctx.author.display_name}: {user_message}"
-        )
-
-        # Vérifie la taille
-        if len(combined_prompt) > self.max_prompt_size:
-            surplus = len(combined_prompt) - self.max_prompt_size
-            needed_len = len(history_text) - surplus
-            if needed_len > 0:
-                history_text = history_text[-needed_len:]
-            else:
-                history_text = ""
-
-            combined_prompt = (
-                f"{system_text}\n\n"
-                f"Connaissances permanentes du bot (Règlement + Commandes) :\n{knowledge_text}\n\n"
-                f"Contexte (tronqué) :\n{history_text}\n"
-                f"Nouveau message de {ctx.author.display_name}: {user_message}"
-            )
-
-        self.logger.debug(f"[Bot Command] {ctx.author}: {user_message}")
-        self.logger.debug(f"[DEBUG] Longueur finale du prompt = {len(combined_prompt)}")
-
-        try:
-            response, model_used = await self.generate_content_with_fallback_async(combined_prompt)
-            if response and hasattr(response, "text"):
-                reply_text = response.text.strip() or "**(Réponse vide)**"
-                await ctx.send(f"**Réponse IA [{model_used}] :**")
-                for chunk in chunkify(reply_text, 2000):
-                    await ctx.send(chunk)
-            else:
-                await ctx.send("Aucune réponse valide n'a été reçue du modèle Gemini.")
-        except Exception as e:
-            if "429" in str(e):
-                await ctx.send(
-                    ":warning: **Erreur 429** - Quota dépassé (Pro & Flash). Bloquons pendant un moment..."
-                )
-            else:
-                await ctx.send(f"Une erreur s'est produite lors de la génération du contenu. (Détails: {e})")
-            self.logger.error(f"Erreur lors de l'appel IA avec fallback: {e}")
+        await self.handle_ai_request(ctx,user_message)
 
     @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        """
-        Listener qui intercepte les messages contenant la mention du bot,
-        afin de déclencher automatiquement la commande libre si quelqu’un
-        interpelle le bot directement dans une conversation.
-        """
+    async def on_message(self,message):
         if message.author.bot:
             return
-
-        ctx = await self.bot.get_context(message)
-        if ctx.valid and ctx.command is not None:
+        c=await self.bot.get_context(message)
+        if c.valid and c.command:
             return
-
         if self.bot.user.mention in message.content:
-            query = message.content.replace(self.bot.user.mention, "").strip()
-            if query:
-                new_ctx = await self.bot.get_context(message)
-                await self.free_command(new_ctx, user_message=query)
+            q=message.content.replace(self.bot.user.mention,"").strip()
+            if q:
+                if time.time()<self.quota_exceeded_until:
+                    qlen=len(self.request_queue)
+                    await c.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
+                    self.request_queue.append((c,lambda co:self.handle_ai_request(co,q)))
+                    self.pending_requests=True
+                    return
+                await self.handle_ai_request(c,q)
 
     @commands.command(name="analyse")
-    async def analyse_command(self, ctx: commands.Context):
-        """
-        Génère un rapport analysant les messages récents d’un salon (limité à 100 messages).
-        Fallback (Pro/Flash) si quota 429.
-        """
-        limit_messages = 100
-        history_messages = []
-        async for msg in ctx.channel.history(limit=limit_messages):
-            if msg.author.bot:
-                continue
-            history_messages.append(msg)
-
-        history_messages.sort(key=lambda m: m.created_at)
-        history_text = "".join(
-            f"{msg.author.display_name}: {msg.content.replace(chr(10), ' ')}\n"
-            for msg in history_messages
-        )
-
-        # ⇩⇩⇩ Prompt SYSTEM mis à jour ⇩⇩⇩
-        system_text = (
-            "Tu es EvolutionBOT, une IA chargée de faire un rapport sur l'activité récente du salon. "
-            "Analyse les sujets évoqués, l’ambiance, les éventuels conflits ou moments humoristiques, "
-            "et propose une synthèse. Ton style est neutre et factuel mais reste cordial. "
-            "Ne donne pas d’avertissements ici, le but est juste de résumer et analyser."
-        )
-        # ⇧⇧⇧ Prompt SYSTEM mis à jour ⇧⇧⇧
-
-        combined_prompt = f"{system_text}\n\n{history_text}"
-
+    async def analyse_command(self,ctx):
+        lim=100
+        messages=[]
+        async for m in ctx.channel.history(limit=lim):
+            if not m.author.bot:
+                messages.append(m)
+        messages.sort(key=lambda x:x.created_at)
+        st="Tu es EvolutionBOT, fais un rapport neutre sur les derniers messages (ambiance, conflits)."
+        joined="".join(f"{x.author.display_name}: {x.content}\n"for x in messages)
+        pr=f"{st}\n{joined}"
         try:
             await ctx.message.delete()
-        except Exception:
+        except:
             pass
-
-        if time.time() < self.quota_exceeded_until:
-            wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} s, svp.")
+        if time.time()<self.quota_exceeded_until:
+            qlen=len(self.request_queue)
+            await ctx.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
+            self.request_queue.append((ctx,lambda c:self.analyse_fallback(c,pr)))
+            self.pending_requests=True
             return
+        await self.analyse_fallback(ctx,pr)
 
+    async def analyse_fallback(self,ctx,prompt):
         try:
-            response, model_used = await self.generate_content_with_fallback_async(combined_prompt)
-            if response and hasattr(response, "text"):
-                reply_text = response.text.strip() or "**(Rapport vide)**"
-                await ctx.send(f"**Rapport d'analyse [{model_used}] :**")
-                for chunk in chunkify(reply_text, 2000):
-                    await ctx.send(chunk)
+            r,m=await self.generate_content_with_fallback_async(prompt)
+            if r and hasattr(r,"text"):
+                rep=r.text.strip()or"(vide)"
+                for c in chunkify(rep):
+                    await ctx.send(c)
             else:
-                await ctx.send("Aucune réponse produite par l’IA.")
+                await ctx.send("Aucune réponse d'analyse.")
         except Exception as e:
-            if "429" in str(e):
-                await ctx.send(":warning: Erreur 429 - Quota dépassé (Pro & Flash).")
+            if"429"in str(e):
+                await ctx.send("**Quota dépassé**.")
             else:
-                await ctx.send("Erreur lors de l'analyse. " + str(e))
-            self.logger.error(f"Erreur IA fallback pour !analyse : {e}")
+                await ctx.send(f"Erreur: {e}")
 
     @commands.has_role("Staff")
     @commands.command(name="annonce")
-    async def annonce_command(self, ctx: commands.Context, *, user_message: str = None):
-        """
-        Commande Staff. Génère une annonce plus fun/familière, tout en restant officielle,
-        pour #annonces. Le message final commence par '@everyone'.
-        Fallback Pro/Flash si quota saturé.
-        """
+    async def annonce_command(self,ctx,*,user_message=None):
         if not user_message:
-            await ctx.send(
-                "Veuillez préciser le contenu de l'annonce. Ex :\n"
-                "!annonce Evénement captures Tot samedi soir à 21h."
-            )
+            await ctx.send("Usage: !annonce <texte>")
             return
-
-        annonce_channel = discord.utils.get(ctx.guild.text_channels, name=self.annonce_channel_name)
-        if not annonce_channel:
-            await ctx.send(f"Le canal #{self.annonce_channel_name} est introuvable.")
+        chan=discord.utils.get(ctx.guild.text_channels,name=self.annonce_channel_name)
+        if not chan:
+            await ctx.send("Canal introuvable.")
             return
-
-        if time.time() < self.quota_exceeded_until:
-            wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
+        if time.time()<self.quota_exceeded_until:
+            qlen=len(self.request_queue)
+            await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
+            self.request_queue.append((ctx,lambda c:self.annonce_fallback(c,chan,user_message)))
+            self.pending_requests=True
             return
+        await self.annonce_fallback(ctx,chan,user_message)
 
-        # ⇩⇩⇩ Prompt SYSTEM mis à jour ⇩⇩⇩
-        system_text = (
-            "Tu es EvolutionBOT, l'IA chargée de rédiger des annonces pour la guilde Evolution (Dofus Retro). "
-            "L'annonce doit être fun, conviviale et légèrement humoristique, tout en gardant un minimum de sérieux. "
-            "Commence toujours l’annonce par '@everyone'. Termine en motivant les gens à participer. "
-            "Pas de menaces, mais un ton positif et engageant. Emploie parfois des émojis si approprié."
-        )
-        # ⇧⇧⇧ Prompt SYSTEM mis à jour ⇧⇧⇧
-
-        combined_prompt = f"{system_text}\n\nContenu de l'annonce : {user_message}"
-
+    async def annonce_fallback(self,ctx,chan,user_message):
+        st="Tu es EvolutionBOT, crée une annonce fun et commence par '@everyone'."
+        pr=f"{st}\n{user_message}"
         try:
             await ctx.message.delete()
-        except (discord.Forbidden, discord.HTTPException):
+        except:
             pass
-
         try:
-            response, model_used = await self.generate_content_with_fallback_async(combined_prompt)
-            if response and hasattr(response, "text"):
-                reply_text = response.text.strip() or "**(Annonce vide)**"
-                await annonce_channel.send(f"**Annonce [{model_used}] :**")
-                for chunk in chunkify(reply_text, 2000):
-                    await annonce_channel.send(chunk)
+            r,m=await self.generate_content_with_fallback_async(pr)
+            if r and hasattr(r,"text"):
+                final=r.text.strip()or"(vide)"
+                await chan.send(f"**Annonce [{m}] :**")
+                for c in chunkify(final):
+                    await chan.send(c)
             else:
-                await ctx.send("Aucune annonce n'a pu être générée.")
+                await ctx.send("Pas d'annonce générée.")
         except Exception as e:
-            if "429" in str(e):
-                await ctx.send(":warning: **Erreur 429** - Quota dépassé (Pro & Flash).")
+            if"429"in str(e):
+                await ctx.send("Quota dépassé.")
             else:
-                await ctx.send("Une erreur est survenue lors de la génération de l'annonce.")
-            self.logger.error(f"Erreur IA fallback pour !annonce : {e}")
+                await ctx.send(str(e))
 
     @commands.has_role("Staff")
     @commands.command(name="event")
-    async def event_command(self, ctx: commands.Context, *, user_message: str = None):
-        """
-        Commande Staff. Génère un message d’événement (#organisation) pour la guilde.
-        Mentionne 'Membre validé d'Evolution' à la fin. Fallback Pro/Flash si 429.
-        """
+    async def event_command(self,ctx,*,user_message=None):
         if not user_message:
-            await ctx.send(
-                "Veuillez préciser le contenu de l'événement. Ex :\n"
-                "!event Proposition de donjon, sortie, raid, etc."
-            )
+            await ctx.send("Usage: !event <texte>")
             return
-
-        event_channel = discord.utils.get(ctx.guild.text_channels, name=self.event_channel_name)
-        if not event_channel:
-            await ctx.send(f"Le canal #{self.event_channel_name} est introuvable.")
+        chan=discord.utils.get(ctx.guild.text_channels,name=self.event_channel_name)
+        if not chan:
+            await ctx.send("Canal introuvable.")
             return
-
-        if time.time() < self.quota_exceeded_until:
-            wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
+        if time.time()<self.quota_exceeded_until:
+            qlen=len(self.request_queue)
+            await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
+            self.request_queue.append((ctx,lambda c:self.event_fallback(c,chan,user_message)))
+            self.pending_requests=True
             return
+        await self.event_fallback(ctx,chan,user_message)
 
-        # ⇩⇩⇩ Prompt SYSTEM mis à jour ⇩⇩⇩
-        system_text = (
-            "Tu es EvolutionBOT, l'IA experte pour rédiger des invitations d'événements dans la guilde Evolution (Dofus Retro). "
-            "Rends le message accueillant, motivant et facile à lire. "
-            "Indique clairement de quoi il s’agit (donjon, raid, sortie), la date/heure, et invite les gens à se joindre. "
-            "Sois chaleureux et dynamique, en encourageant la participation."
-        )
-        # ⇧⇧⇧ Prompt SYSTEM mis à jour ⇧⇧⇧
-
-        combined_prompt = f"{system_text}\n\nContenu fourni : {user_message}"
-
+    async def event_fallback(self,ctx,chan,user_message):
+        st="Tu es EvolutionBOT, rédige une invitation d'événement incitant à participer."
+        pr=f"{st}\n\n{user_message}"
         try:
             await ctx.message.delete()
-        except (discord.Forbidden, discord.HTTPException):
+        except:
             pass
-
         try:
-            response, model_used = await self.generate_content_with_fallback_async(combined_prompt)
-            if response and hasattr(response, "text"):
-                reply_text = response.text.strip() or "**(Événement vide)**"
-                await event_channel.send(f"**Nouvel Événement [{model_used}] :**")
-                for chunk in chunkify(reply_text, 2000):
-                    await event_channel.send(chunk)
-
-                # Mention du rôle 'Membre validé d'Evolution'
-                role_valide = discord.utils.get(ctx.guild.roles, name="Membre validé d'Evolution")
-                if role_valide:
-                    await event_channel.send(role_valide.mention)
-                else:
-                    await event_channel.send("*Rôle 'Membre validé d'Evolution' introuvable.*")
+            r,m=await self.generate_content_with_fallback_async(pr)
+            if r and hasattr(r,"text"):
+                rep=r.text.strip()or"(vide)"
+                await chan.send(f"**Nouvel Événement [{m}] :**")
+                for c in chunkify(rep):
+                    await chan.send(c)
+                role_val=discord.utils.get(ctx.guild.roles,name="Membre validé d'Evolution")
+                if role_val:
+                    await chan.send(role_val.mention)
             else:
-                await ctx.send("Aucun événement n'a pu être généré par l'IA.")
+                await ctx.send("Événement non généré.")
         except Exception as e:
-            if "429" in str(e):
-                await ctx.send(":warning: **Erreur 429** - Quota dépassé (Pro & Flash).")
+            if"429"in str(e):
+                await ctx.send("Quota dépassé.")
             else:
-                await ctx.send("Une erreur est survenue lors de la génération de l'événement.")
-            self.logger.error(f"Erreur IA fallback pour !event : {e}")
+                await ctx.send(str(e))
 
     @commands.command(name="pl")
-    async def pl_command(self, ctx: commands.Context, *, user_message: str = None):
-        """
-        Commande pour publier une annonce de PL ou Ronde Sasa (#xplock-rondesasa-ronde).
-        Fallback Pro/Flash si 429.
-        """
+    async def pl_command(self,ctx,*,user_message=None):
         if not user_message:
-            await ctx.send(
-                "Veuillez préciser le contenu de votre annonce PL. Par exemple :\n"
-                "!pl Ronde Kimbo x10 captures, tarif 100.000k la place, départ samedi 15/02 à 14h."
-            )
+            await ctx.send("Usage: !pl <texte>")
             return
-
-        pl_channel = discord.utils.get(ctx.guild.text_channels, name=self.pl_channel_name)
-        if not pl_channel:
-            await ctx.send(f"Le canal #{self.pl_channel_name} est introuvable.")
+        chan=discord.utils.get(ctx.guild.text_channels,name=self.pl_channel_name)
+        if not chan:
+            await ctx.send("Canal introuvable.")
             return
-
-        if time.time() < self.quota_exceeded_until:
-            wait_secs = int(self.quota_exceeded_until - time.time())
-            await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
+        if time.time()<self.quota_exceeded_until:
+            qlen=len(self.request_queue)
+            await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
+            self.request_queue.append((ctx,lambda c:self.pl_fallback(c,chan,user_message)))
+            self.pending_requests=True
             return
+        await self.pl_fallback(ctx,chan,user_message)
 
-        # ⇩⇩⇩ Prompt SYSTEM mis à jour ⇩⇩⇩
-        system_text = (
-            "Tu es EvolutionBOT, l’IA experte pour rédiger des annonces de PL ou Ronde Sasa "
-            "sur le Discord de la guilde Evolution (Dofus Retro). "
-            "Rends l’annonce claire, conviviale et attrayante (tarifs, horaire, etc.). "
-            "Encourage la participation sur un ton léger et motivant. "
-            "Utilise un style inclusif, sans formalisme excessif."
-        )
-        # ⇧⇧⇧ Prompt SYSTEM mis à jour ⇧⇧⇧
-
-        combined_prompt = f"{system_text}\n\nContenu fourni : {user_message}"
-
+    async def pl_fallback(self,ctx,chan,user_message):
+        st="Tu es EvolutionBOT, rédige une annonce de PL claire et motivante."
+        pr=f"{st}\n\n{user_message}"
         try:
             await ctx.message.delete()
-        except (discord.Forbidden, discord.HTTPException):
+        except:
             pass
-
         try:
-            response, model_used = await self.generate_content_with_fallback_async(combined_prompt)
-            if response and hasattr(response, "text"):
-                reply_text = response.text.strip() or "**(Annonce PL vide ou non générée)**"
-                await pl_channel.send(f"**Nouvelle Annonce PL [{model_used}] :**")
-                for chunk in chunkify(reply_text, 2000):
-                    await pl_channel.send(chunk)
+            r,m=await self.generate_content_with_fallback_async(pr)
+            if r and hasattr(r,"text"):
+                rep=r.text.strip()or"(vide)"
+                await chan.send(f"**Nouvelle Annonce PL [{m}] :**")
+                for c in chunkify(rep):
+                    await chan.send(c)
             else:
-                await ctx.send("L'IA n'a pas pu générer d'annonce PL.")
+                await ctx.send("Pas de réponse IA pour PL.")
         except Exception as e:
-            if "429" in str(e):
-                await ctx.send(":warning: **Erreur 429** - Quota dépassé (Pro & Flash).")
+            if"429"in str(e):
+                await ctx.send("Quota dépassé.")
             else:
-                await ctx.send("Une erreur est survenue lors de la génération de l'annonce PL.")
-            self.logger.error(f"Erreur IA fallback pour !pl : {e}")
+                await ctx.send(str(e))
 
 async def setup(bot: commands.Bot):
-    """
-    Fonction d’initialisation du Cog dans le bot.
-    """
     await bot.add_cog(IACog(bot))
