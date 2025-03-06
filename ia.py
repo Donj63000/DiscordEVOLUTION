@@ -226,7 +226,7 @@ class IACog(commands.Cog):
         Tente d'appeler d'abord le modèle Pro.
         En cas de quota dépassé (429) ou indisponibilité, on tente Flash.
         Si Flash échoue aussi avec 429, on bloque le bot.
-        
+
         Retourne un tuple (response_obj, model_label) où model_label ∈ {"PRO", "FLASH"}.
         """
         # 1) Tentative avec PRO
@@ -279,6 +279,7 @@ class IACog(commands.Cog):
         """
         Commande libre : l’utilisateur peut poser une question et recevoir
         une réponse générée par Gemini 1.5 Pro (fallback vers Flash si quota dépassé).
+        Désormais, on inclut *tous* les messages du salon (y compris le bot).
         """
         if not user_message:
             await ctx.send(
@@ -296,24 +297,28 @@ class IACog(commands.Cog):
         system_text = (
             "Tu es EvolutionBOT, l'assistant IA du serveur Discord de la guilde Evolution sur Dofus Retro. "
             "Tu réponds de manière professionnelle et chaleureuse aux questions posées. "
+            "Évite de répéter des salutations si la conversation est déjà entamée. "
             "Si le contexte est trop volumineux, concentre-toi sur la dernière question posée."
         )
 
         knowledge_text = self.knowledge_text
 
         history_messages = []
+        # On ne filtre plus msg.author.bot
         async for msg in ctx.channel.history(limit=self.history_limit):
-            if msg.author.bot:
-                continue
             history_messages.append(msg)
 
+        # Tri chronologique
         history_messages.sort(key=lambda m: m.created_at)
 
-        history_text = "".join(
-            f"{msg.author.display_name}: {msg.content.replace(chr(10), ' ')}\n"
-            for msg in history_messages
-        )
+        # Construction du texte d'historique
+        history_text = ""
+        for msg in history_messages:
+            # On remplace les retours à la ligne par des espaces pour éviter de perturber le prompt
+            content_no_nl = msg.content.replace("\n", " ")
+            history_text += f"{msg.author.display_name}: {content_no_nl}\n"
 
+        # Combine dans le prompt
         combined_prompt = (
             f"{system_text}\n\n"
             f"Connaissances permanentes du bot (Règlement + Commandes) :\n{knowledge_text}\n\n"
@@ -365,6 +370,7 @@ class IACog(commands.Cog):
         afin de déclencher automatiquement la commande libre si quelqu’un
         interpelle le bot directement dans une conversation.
         """
+        # On ignore seulement si c'est un bot. Sinon, on lance le get_context + check valid
         if message.author.bot:
             return
 
@@ -383,12 +389,13 @@ class IACog(commands.Cog):
         """
         Génère un rapport analysant les messages récents d’un salon (limité à 100 messages).
         Fallback (Pro/Flash) si quota 429.
+        Ici, on ignore les messages du bot pour un rapport axé sur les utilisateurs.
         """
         limit_messages = 100
         history_messages = []
         async for msg in ctx.channel.history(limit=limit_messages):
             if msg.author.bot:
-                continue
+                continue  # on skippe les messages du bot
             history_messages.append(msg)
 
         history_messages.sort(key=lambda m: m.created_at)
@@ -399,7 +406,8 @@ class IACog(commands.Cog):
 
         system_text = (
             "Tu es EvolutionBOT, une IA chargée de faire un rapport sur l'activité récente. "
-            "Analyse les sujets importants, l'ambiance générale, etc."
+            "Analyse les sujets importants, l'ambiance générale, etc. "
+            "Ignore les messages du bot pour ce rapport."
         )
 
         combined_prompt = f"{system_text}\n\n{history_text}"
