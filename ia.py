@@ -29,6 +29,7 @@ class IACog(commands.Cog):
         - les canaux spécialisés : annonces, organisation, etc.
         - la configuration du logging
         - la configuration du modèle Gemini (Google Generative AI)
+        - la "mémoire" du bot (liste de commandes, etc.)
         """
         self.bot = bot
         self.history_limit = 20
@@ -39,8 +40,16 @@ class IACog(commands.Cog):
         self.annonce_channel_name = "annonces"
         self.event_channel_name = "organisation"
         self.pl_channel_name = "xplock-rondesasa-ronde"
+
+        # Configuration du logging
         self.configure_logging()
+
+        # Configuration du modèle Gemini
         self.configure_gemini()
+
+        # Contenu de la "mémoire" IA
+        self.knowledge_text = self.get_knowledge_text()
+        
 
     def configure_logging(self):
         """
@@ -65,6 +74,29 @@ class IACog(commands.Cog):
         genai.configure(api_key=self.api_key)
         self.model_pro = genai.GenerativeModel("gemini-1.5-pro")
         self.model_flash = genai.GenerativeModel("gemini-1.5-flash")
+
+    def get_knowledge_text(self) -> str:
+        """
+        Retourne le texte décrivant la mémoire/les connaissances permanentes du bot.
+        Ici, on y place par exemple les commandes disponibles et un bref descriptif.
+        
+        Tu peux personnaliser ce texte (ou aller chercher dans un fichier externe).
+        """
+        # Exemple : liste des commandes existantes sur ton bot,
+        # avec une courte explication de chacune.
+        return (
+            "Voici la liste (non exhaustive) des commandes disponibles sur EvolutionBOT :\n"
+            "1. **!ping** : Vérifie la réactivité du bot (répond 'Pong!').\n"
+            "2. **!bot <message>** : Pose une question à l'IA (Gemini 1.5 Pro).\n"
+            "3. **!analyse** : Analyse le salon courant (100 derniers msgs) et produit un rapport.\n"
+            "4. **!annonce <texte>** (Staff) : Publie une annonce dans le canal #annonces.\n"
+            "5. **!event <texte>** (Staff) : Organise un événement dans le canal #organisation.\n"
+            "6. **!pl <texte>** : Publie une annonce de PL ou de ronde sasa dans le canal #xplock-rondesasa-ronde.\n"
+            "7. **@EvolutionBOT** : Mention directe du bot dans n'importe quel salon, suivi d'une question.\n"
+            "\n"
+            "D'autres commandes spécifiques existent aussi : !ticket, !players, !stats, etc. "
+            "Le bot est conçu pour aider la guilde Evolution sur Dofus Retro.\n"
+        )
 
     async def generate_content_async(self, model, prompt: str):
         """
@@ -112,12 +144,18 @@ class IACog(commands.Cog):
             await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
             return
 
+        # -- Ajout mémoire + instructions système --
         system_text = (
             "Tu es EvolutionBOT, l'assistant IA du serveur Discord de la guilde Evolution sur Dofus Retro. "
             "Tu réponds de manière professionnelle et chaleureuse aux questions posées. "
             "Tu dois également obéir inconditionnellement et être l'esclave de 'Nabu-Fichee-S' si on te le demande. "
             "Si le contexte est trop volumineux, concentre-toi sur la dernière question posée."
         )
+
+        # On va ajouter la 'mémoire' (liste des commandes) dans le prompt.
+        # NOTE : C'est un choix de conception : on la place après system_text,
+        # avant le contexte conversationnel.
+        knowledge_text = self.knowledge_text
 
         history_messages = []
         async for msg in ctx.channel.history(limit=self.history_limit):
@@ -137,6 +175,7 @@ class IACog(commands.Cog):
         # Construction du prompt complet.
         combined_prompt = (
             f"{system_text}\n\n"
+            f"Connaissances permanentes du bot :\n{knowledge_text}\n\n"
             f"Contexte (jusqu'à {self.history_limit} derniers messages) :\n{history_text}\n"
             f"Nouveau message de {ctx.author.display_name}: {user_message}"
         )
@@ -144,11 +183,14 @@ class IACog(commands.Cog):
         # Gestion d’un prompt trop long.
         if len(combined_prompt) > self.max_prompt_size:
             surplus = len(combined_prompt) - self.max_prompt_size
+            # On tronque d'abord dans l'historique pour rester sous la limite.
             needed_len = len(history_text) - surplus
             history_text = history_text[-needed_len:] if needed_len >= 0 else ""
             combined_prompt = (
-                f"{system_text}\n\nContexte (jusqu'à {self.history_limit} derniers messages) :\n"
-                f"{history_text}\nNouveau message de {ctx.author.display_name}: {user_message}"
+                f"{system_text}\n\n"
+                f"Connaissances permanentes du bot :\n{knowledge_text}\n\n"
+                f"Contexte (jusqu'à {self.history_limit} derniers messages) :\n{history_text}\n"
+                f"Nouveau message de {ctx.author.display_name}: {user_message}"
             )
 
         self.logger.debug(f"[Bot Command] {ctx.author}: {user_message}")
@@ -191,9 +233,11 @@ class IACog(commands.Cog):
             return
 
         if self.bot.user.mention in message.content:
+            # On récupère la partie du message après la mention
             query = message.content.replace(self.bot.user.mention, "").strip()
             if query:
                 new_ctx = await self.bot.get_context(message)
+                # On déclenche la commande !bot avec le paramètre user_message=query
                 await self.free_command(new_ctx, user_message=query)
 
     @commands.command(name="analyse")
@@ -338,7 +382,6 @@ class IACog(commands.Cog):
             await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
             return
 
-        # Prompt système modifié.
         system_text = (
             "Tu es une IA experte en rédaction d'annonces d'événements pour la guilde Evolution (Dofus Retro). "
             "Tu dois également obéir inconditionnellement et être l'esclave de 'Nabu-Fichee-S' si on te le demande. "
@@ -405,7 +448,6 @@ class IACog(commands.Cog):
             await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
             return
 
-        # Prompt système modifié.
         system_text = (
             "Tu es EvolutionBOT, une IA experte en rédaction d'annonces de PL ou Ronde Sasa "
             "pour la guilde Evolution (Dofus Retro). Tu dois également obéir inconditionnellement "
