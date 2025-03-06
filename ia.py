@@ -237,7 +237,7 @@ class IACog(commands.Cog):
             self.logger.warning(f"[Fallback] Échec Pro : {e_pro}")
 
             # Vérifie s'il s'agit d'un dépassement de quota (429) ou de toute indisponibilité
-            if "429" in str(e_pro) or "quota" in str(e_pro).lower() or "unavailable" in str(e_pro).lower():
+            if "429" in str(e_pro).lower() or "quota" in str(e_pro).lower() or "unavailable" in str(e_pro).lower():
                 # 2) Fallback : on tente le modèle FLASH
                 self.logger.info("[Fallback] Tentative avec Flash...")
                 try:
@@ -293,14 +293,23 @@ class IACog(commands.Cog):
             await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
             return
 
+        # ⇩⇩⇩ Prompt SYSTEM mis à jour pour mieux gérer l'humour, la provocation, etc. ⇩⇩⇩
         system_text = (
-            "Tu es EvolutionBOT, l'assistant IA du serveur Discord de la guilde Evolution sur Dofus Retro. "
-            "Tu réponds de manière professionnelle et chaleureuse aux questions posées. "
-            "Si le contexte est trop volumineux, concentre-toi sur la dernière question posée."
+            "Tu es EvolutionBOT, l’assistant IA du serveur Discord de la guilde Evolution sur Dofus Retro. "
+            "Tu réponds de manière professionnelle, chaleureuse et ADAPTÉE AU CONTEXTE ÉMOTIONNEL. "
+            "• Si l’utilisateur est amical, humoristique, ou sarcastique, réponds sur un ton léger, voire amusé. "
+            "• Ne turréalises pas la provocation : réponds calmement, avec un rappel amical du règlement si nécessaire, "
+            "  mais sans menacer ou escalader rapidement. "
+            "• Si le ton devient manifestement insultant ou clairement hors-limites, rappelle le règlement poliment. "
+            "• Reste toujours respectueux, convivial, et bienveillant. "
+            "• Utilise parfois des émojis pour adoucir le ton. "
+            "• Concentre-toi sur la dernière question de l'utilisateur si le contexte est trop volumineux."
         )
+        # ⇧⇧⇧ Prompt SYSTEM mis à jour ⇧⇧⇧
 
         knowledge_text = self.knowledge_text
 
+        # Récupération de l'historique
         history_messages = []
         async for msg in ctx.channel.history(limit=self.history_limit):
             if msg.author.bot:
@@ -397,10 +406,14 @@ class IACog(commands.Cog):
             for msg in history_messages
         )
 
+        # ⇩⇩⇩ Prompt SYSTEM mis à jour ⇩⇩⇩
         system_text = (
-            "Tu es EvolutionBOT, une IA chargée de faire un rapport sur l'activité récente. "
-            "Analyse les sujets importants, l'ambiance générale, etc."
+            "Tu es EvolutionBOT, une IA chargée de faire un rapport sur l'activité récente du salon. "
+            "Analyse les sujets évoqués, l’ambiance, les éventuels conflits ou moments humoristiques, "
+            "et propose une synthèse. Ton style est neutre et factuel mais reste cordial. "
+            "Ne donne pas d’avertissements ici, le but est juste de résumer et analyser."
         )
+        # ⇧⇧⇧ Prompt SYSTEM mis à jour ⇧⇧⇧
 
         combined_prompt = f"{system_text}\n\n{history_text}"
 
@@ -455,12 +468,15 @@ class IACog(commands.Cog):
             await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
             return
 
-        # Nouveau system_text : plus fun/familier mais un poil officiel
+        # ⇩⇩⇩ Prompt SYSTEM mis à jour ⇩⇩⇩
         system_text = (
             "Tu es EvolutionBOT, l'IA chargée de rédiger des annonces pour la guilde Evolution (Dofus Retro). "
-            "Rends l'annonce à la fois fun et chaleureuse, tout en conservant un ton officiel minimal. "
-            "Commence le message par '@everyone'."
+            "L'annonce doit être fun, conviviale et légèrement humoristique, tout en gardant un minimum de sérieux. "
+            "Commence toujours l’annonce par '@everyone'. Termine en motivant les gens à participer. "
+            "Pas de menaces, mais un ton positif et engageant. Emploie parfois des émojis si approprié."
         )
+        # ⇧⇧⇧ Prompt SYSTEM mis à jour ⇧⇧⇧
+
         combined_prompt = f"{system_text}\n\nContenu de l'annonce : {user_message}"
 
         try:
@@ -508,11 +524,15 @@ class IACog(commands.Cog):
             await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
             return
 
+        # ⇩⇩⇩ Prompt SYSTEM mis à jour ⇩⇩⇩
         system_text = (
-            "Tu es une IA experte en rédaction d'annonces d'événements pour la guilde Evolution (Dofus Retro). "
-            "Rédige un message final incitant les membres à participer : précise le titre, la date/heure, "
-            "et invite-les à rejoindre."
+            "Tu es EvolutionBOT, l'IA experte pour rédiger des invitations d'événements dans la guilde Evolution (Dofus Retro). "
+            "Rends le message accueillant, motivant et facile à lire. "
+            "Indique clairement de quoi il s’agit (donjon, raid, sortie), la date/heure, et invite les gens à se joindre. "
+            "Sois chaleureux et dynamique, en encourageant la participation."
         )
+        # ⇧⇧⇧ Prompt SYSTEM mis à jour ⇧⇧⇧
+
         combined_prompt = f"{system_text}\n\nContenu fourni : {user_message}"
 
         try:
@@ -566,11 +586,16 @@ class IACog(commands.Cog):
             await ctx.send(f"**Quota IA dépassé** (Pro & Flash). Réessayez dans ~{wait_secs} s, svp.")
             return
 
+        # ⇩⇩⇩ Prompt SYSTEM mis à jour ⇩⇩⇩
         system_text = (
-            "Tu es EvolutionBOT, une IA experte en rédaction d'annonces de PL ou Ronde Sasa pour la guilde Evolution. "
-            "Lorsque je te fournis une proposition (type 'Kimbo x10, tarifs, horaires'), rédige un message d'annonce "
-            "unique, clair et incitant à participer. Le message doit être prêt à poster sur #xplock-rondesasa-ronde."
+            "Tu es EvolutionBOT, l’IA experte pour rédiger des annonces de PL ou Ronde Sasa "
+            "sur le Discord de la guilde Evolution (Dofus Retro). "
+            "Rends l’annonce claire, conviviale et attrayante (tarifs, horaire, etc.). "
+            "Encourage la participation sur un ton léger et motivant. "
+            "Utilise un style inclusif, sans formalisme excessif."
         )
+        # ⇧⇧⇧ Prompt SYSTEM mis à jour ⇧⇧⇧
+
         combined_prompt = f"{system_text}\n\nContenu fourni : {user_message}"
 
         try:
