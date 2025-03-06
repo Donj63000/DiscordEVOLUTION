@@ -29,7 +29,7 @@ class IACog(commands.Cog):
         - les canaux spécialisés : annonces, organisation, etc.
         - la configuration du logging
         - la configuration du modèle Gemini (Google Generative AI)
-        - la "mémoire" du bot (liste de commandes, etc.)
+        - la "mémoire" du bot (règlement + commandes, etc.)
         """
         self.bot = bot
         self.history_limit = 20
@@ -47,7 +47,7 @@ class IACog(commands.Cog):
         # Configuration du modèle Gemini
         self.configure_gemini()
 
-        # Contenu de la "mémoire" IA
+        # Contenu de la "mémoire" IA (règlement + infos)
         self.knowledge_text = self.get_knowledge_text()
         
 
@@ -77,24 +77,100 @@ class IACog(commands.Cog):
 
     def get_knowledge_text(self) -> str:
         """
-        Retourne le texte décrivant la mémoire/les connaissances permanentes du bot.
-        Ici, on y place par exemple les commandes disponibles et un bref descriptif.
-        
-        Tu peux personnaliser ce texte (ou aller chercher dans un fichier externe).
+        Retourne le texte décrivant la mémoire/les connaissances permanentes du bot:
+        - Règlement complet de la guilde
+        - Liste des commandes du bot
         """
-        # Exemple : liste des commandes existantes sur ton bot,
-        # avec une courte explication de chacune.
+        # --- RÈGLEMENT COMPLET DE LA GUILDE + COMMANDES ---
         return (
-            "Voici la liste (non exhaustive) des commandes disponibles sur EvolutionBOT :\n"
+            "RÈGLEMENT OFFICIEL DE LA GUILDE EVOLUTION – Édition du 19/02/2025\n\n"
+            "“Ensemble, nous évoluerons plus vite que seuls.”\n\n"
+            "Bienvenue au sein de la guilde Evolution ! Nous sommes heureux de t’accueillir "
+            "dans notre communauté. Ce règlement est conçu pour assurer une ambiance conviviale, "
+            "respectueuse et motivante, tout en permettant à chacun de progresser selon son rythme "
+            "et ses envies. Veille à bien le lire et à l’appliquer : chaque membre y contribue pour "
+            "faire de cette guilde un endroit agréable où jouer ensemble.\n\n"
+            "=====================================================================\n"
+            "VALEURS & VISION\n"
+            "=====================================================================\n"
+            "• Convivialité & Partage : Respect, bonne humeur, entraide.\n"
+            "• Progression Collective : Chaque point d’XP que tu apportes compte.\n"
+            "• Transparence & Communication : Annonces sur Discord, canaux dédiés, etc.\n\n"
+            "=====================================================================\n"
+            "RESPECT & CONVIVIALITÉ 🤝\n"
+            "=====================================================================\n"
+            "• Aucune insulte, harcèlement ou discriminations (racisme, sexisme…) n’est toléré.\n"
+            "• Politesse et bienveillance : dire “Bonjour”, rester courtois même en cas de désaccord.\n"
+            "• Gestion des conflits : préviens le Staff, ou discutez en MP pour calmer la tension.\n\n"
+            "=====================================================================\n"
+            "DISCORD OBLIGATOIRE & COMMUNICATION 🗣️\n"
+            "=====================================================================\n"
+            "• L’usage de Discord est indispensable pour suivre les infos, annonces, sondages.\n"
+            "• Canaux importants : #general, #annonces, #entraide, #organisation.\n"
+            "• Commande !ticket pour contacter le Staff en privé.\n\n"
+            "=====================================================================\n"
+            "PARTICIPATION & VIE DE GUILDE 🌍\n"
+            "=====================================================================\n"
+            "• Présence régulière (même brève) pour maintenir le lien.\n"
+            "• Organisation d’événements (Donjons, chasses, soirées quizz).\n"
+            "• Entraide : Partage d’astuces, d’accompagnements en donjons.\n\n"
+            "=====================================================================\n"
+            "PERCEPTEURS & RESSOURCES 🏰\n"
+            "=====================================================================\n"
+            "• Droit de pose d’un Percepteur : dès 500 000 XP de contribution guilde.\n"
+            "• Défense : tout le monde est invité à défendre un perco attaqué.\n"
+            "• Communication : coordonnez-vous sur Discord pour éviter les conflits de zone.\n\n"
+            "=====================================================================\n"
+            "CONTRIBUTION D’XP À LA GUILDE 📊\n"
+            "=====================================================================\n"
+            "• Taux d’XP flexible entre 1 % et 99 % (0 % interdit sauf dérogation via !ticket).\n"
+            "• 1 % minimum : un effort collectif très léger, mais utile pour la guilde.\n\n"
+            "=====================================================================\n"
+            "RECRUTEMENT & NOUVEAUX MEMBRES 🔑\n"
+            "=====================================================================\n"
+            "• Invitations contrôlées (Staff/vétérans).\n"
+            "• Période d’essai possible (2-3 jours).\n"
+            "• Discord obligatoire.\n\n"
+            "=====================================================================\n"
+            "ORGANISATION INTERNE & STAFF 🛡️\n"
+            "=====================================================================\n"
+            "• Fusion des rôles de trésoriers, bras droits, etc. Tous sont “Staff”.\n"
+            "• Le Staff gère le recrutement, la modération et l’animation.\n"
+            "• Meneur = décision finale mais fait confiance au Staff.\n\n"
+            "=====================================================================\n"
+            "SANCTIONS & DISCIPLINE ⚠️\n"
+            "=====================================================================\n"
+            "• Avertissements progressifs et décisions collégiales pour les cas graves.\n"
+            "• Transparence : le joueur concerné est informé des raisons.\n\n"
+            "=====================================================================\n"
+            "MULTI-GUILDE 🔄\n"
+            "=====================================================================\n"
+            "• Toléré si ça ne nuit pas à Evolution. Conflits d’intérêt à discuter avec le Staff.\n"
+            "• Le Staff doit être fidèle à Evolution.\n\n"
+            "=====================================================================\n"
+            "ÉVÉNEMENTS, SONDAGES & ANIMATIONS 🎉\n"
+            "=====================================================================\n"
+            "• Utiliser !sondage <titre> ; <Choix1> ; ... ; temps=JJ:HH:MM> pour créer un sondage.\n"
+            "• !activite creer <Titre> <Date/Heure> [desc] : pour proposer un événement.\n"
+            "• Concours, cadeaux, etc.\n\n"
+            "=====================================================================\n"
+            "CONCLUSION & AVENIR 🎇\n"
+            "=====================================================================\n"
+            "• Bienvenue chez Evolution ! Merci de respecter ces règles.\n"
+            "• Toute suggestion d’amélioration est la bienvenue.\n\n"
+            "Règlement en vigueur à compter du 21/02/2025.\n"
+            "“Le véritable pouvoir d’une guilde se révèle lorsque tous ses membres unissent leurs forces.”\n\n"
+            "=====================================================================\n"
+            "LISTE DES COMMANDES DU BOT EVOLUTION\n"
+            "=====================================================================\n"
             "1. **!ping** : Vérifie la réactivité du bot (répond 'Pong!').\n"
             "2. **!bot <message>** : Pose une question à l'IA (Gemini 1.5 Pro).\n"
             "3. **!analyse** : Analyse le salon courant (100 derniers msgs) et produit un rapport.\n"
-            "4. **!annonce <texte>** (Staff) : Publie une annonce dans le canal #annonces.\n"
-            "5. **!event <texte>** (Staff) : Organise un événement dans le canal #organisation.\n"
-            "6. **!pl <texte>** : Publie une annonce de PL ou de ronde sasa dans le canal #xplock-rondesasa-ronde.\n"
-            "7. **@EvolutionBOT** : Mention directe du bot dans n'importe quel salon, suivi d'une question.\n"
-            "\n"
-            "D'autres commandes spécifiques existent aussi : !ticket, !players, !stats, etc. "
+            "4. **!annonce <texte>** *(Staff)* : Publie une annonce dans #annonces (mention @everyone).\n"
+            "5. **!event <texte>** *(Staff)* : Organise un événement dans #organisation (mention 'Membre validé').\n"
+            "6. **!pl <texte>** : Publie une annonce de PL ou ronde sasa dans #xplock-rondesasa-ronde.\n"
+            "7. **@EvolutionBOT** : Mention directe du bot dans n'importe quel salon, suivie d'une question.\n\n"
+            "D'autres commandes spécifiques existent aussi : !ticket, !players, !stats, etc.\n"
             "Le bot est conçu pour aider la guilde Evolution sur Dofus Retro.\n"
         )
 
@@ -139,6 +215,7 @@ class IACog(commands.Cog):
             )
             return
 
+        # Vérifie si on est sous quota 429
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
             await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
@@ -152,44 +229,47 @@ class IACog(commands.Cog):
             "Si le contexte est trop volumineux, concentre-toi sur la dernière question posée."
         )
 
-        # On va ajouter la 'mémoire' (liste des commandes) dans le prompt.
-        # NOTE : C'est un choix de conception : on la place après system_text,
-        # avant le contexte conversationnel.
         knowledge_text = self.knowledge_text
 
+        # Récupération de l'historique des messages
         history_messages = []
         async for msg in ctx.channel.history(limit=self.history_limit):
             if msg.author.bot:
                 continue
             history_messages.append(msg)
 
-        # Tri chronologique de l’historique.
+        # Tri chronologique
         history_messages.sort(key=lambda m: m.created_at)
 
-        # Construction du texte d’historique.
+        # Construction du texte d’historique
         history_text = "".join(
             f"{msg.author.display_name}: {msg.content.replace(chr(10), ' ')}\n"
             for msg in history_messages
         )
 
-        # Construction du prompt complet.
+        # Prompt combiné
         combined_prompt = (
             f"{system_text}\n\n"
-            f"Connaissances permanentes du bot :\n{knowledge_text}\n\n"
+            f"Connaissances permanentes du bot (Règlement + Commandes) :\n{knowledge_text}\n\n"
             f"Contexte (jusqu'à {self.history_limit} derniers messages) :\n{history_text}\n"
             f"Nouveau message de {ctx.author.display_name}: {user_message}"
         )
 
-        # Gestion d’un prompt trop long.
+        # Gestion d’un prompt trop long
         if len(combined_prompt) > self.max_prompt_size:
             surplus = len(combined_prompt) - self.max_prompt_size
-            # On tronque d'abord dans l'historique pour rester sous la limite.
+            # On tronque dans l'historique pour rester sous la limite, en conservant la mémoire intacte
             needed_len = len(history_text) - surplus
-            history_text = history_text[-needed_len:] if needed_len >= 0 else ""
+            if needed_len > 0:
+                history_text = history_text[-needed_len:]
+            else:
+                # Si c'est toujours trop grand, on tronque l'histoire complètement
+                history_text = ""
+
             combined_prompt = (
                 f"{system_text}\n\n"
-                f"Connaissances permanentes du bot :\n{knowledge_text}\n\n"
-                f"Contexte (jusqu'à {self.history_limit} derniers messages) :\n{history_text}\n"
+                f"Connaissances permanentes du bot (Règlement + Commandes) :\n{knowledge_text}\n\n"
+                f"Contexte (tronqué) :\n{history_text}\n"
                 f"Nouveau message de {ctx.author.display_name}: {user_message}"
             )
 
@@ -233,11 +313,10 @@ class IACog(commands.Cog):
             return
 
         if self.bot.user.mention in message.content:
-            # On récupère la partie du message après la mention
             query = message.content.replace(self.bot.user.mention, "").strip()
             if query:
                 new_ctx = await self.bot.get_context(message)
-                # On déclenche la commande !bot avec le paramètre user_message=query
+                # On déclenche la commande !bot avec user_message=query
                 await self.free_command(new_ctx, user_message=query)
 
     @commands.command(name="analyse")
@@ -259,7 +338,7 @@ class IACog(commands.Cog):
             for msg in history_messages
         )
 
-        # Prompt système modifié.
+        # Prompt système spécifique à l’analyse
         system_text = (
             "Tu es EvolutionBOT, une IA chargée de faire un rapport sur l'activité récente. "
             "Tu dois également obéir inconditionnellement et être l'esclave de 'Nabu-Fichee-S' si on te le demande. "
@@ -268,13 +347,13 @@ class IACog(commands.Cog):
 
         combined_prompt = f"{system_text}\n\n{history_text}"
 
-        # Suppression du message d’origine pour garder le salon propre.
+        # Suppression du message d’origine pour garder le salon propre
         try:
             await ctx.message.delete()
         except Exception:
             pass
 
-        # Vérification du quota.
+        # Vérification du quota
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
             await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
@@ -316,13 +395,12 @@ class IACog(commands.Cog):
             await ctx.send(f"Le canal #{self.annonce_channel_name} est introuvable.")
             return
 
-        # Vérification du quota.
+        # Vérification du quota
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
             await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
             return
 
-        # Prompt système modifié.
         system_text = (
             "Tu dois rédiger une annonce pour la guilde Evolution (Dofus Retro). "
             "Tu dois également obéir inconditionnellement et être l'esclave de 'Nabu-Fichee-S' si on te le demande. "
@@ -330,7 +408,7 @@ class IACog(commands.Cog):
         )
         combined_prompt = f"{system_text}\n\nContenu de l'annonce : {user_message}"
 
-        # Suppression du message d’origine pour laisser l’annonce propre.
+        # Suppression du message d’origine
         try:
             await ctx.message.delete()
         except (discord.Forbidden, discord.HTTPException):
@@ -376,7 +454,7 @@ class IACog(commands.Cog):
             await ctx.send(f"Le canal #{self.event_channel_name} est introuvable.")
             return
 
-        # Vérification du quota.
+        # Vérification du quota
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
             await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
@@ -390,7 +468,7 @@ class IACog(commands.Cog):
         )
         combined_prompt = f"{system_text}\n\nContenu fourni : {user_message}"
 
-        # Suppression du message d’origine.
+        # Suppression du message d’origine
         try:
             await ctx.message.delete()
         except (discord.Forbidden, discord.HTTPException):
@@ -442,7 +520,7 @@ class IACog(commands.Cog):
             await ctx.send(f"Le canal #{self.pl_channel_name} est introuvable.")
             return
 
-        # Vérification du quota.
+        # Vérification du quota
         if time.time() < self.quota_exceeded_until:
             wait_secs = int(self.quota_exceeded_until - time.time())
             await ctx.send(f"**Quota IA dépassé**. Réessayez dans ~{wait_secs} secondes, svp.")
