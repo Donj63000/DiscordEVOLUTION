@@ -79,9 +79,8 @@ class IACog(commands.Cog):
         """
         Retourne le texte décrivant la mémoire/les connaissances permanentes du bot:
         - Règlement complet de la guilde
-        - Liste des commandes du bot
+        - Liste détaillée des commandes (mini-guides, staff, sondage, etc.)
         """
-        # --- RÈGLEMENT COMPLET DE LA GUILDE + COMMANDES ---
         return (
             "RÈGLEMENT OFFICIEL DE LA GUILDE EVOLUTION – Édition du 19/02/2025\n\n"
             "“Ensemble, nous évoluerons plus vite que seuls.”\n\n"
@@ -150,8 +149,8 @@ class IACog(commands.Cog):
             "=====================================================================\n"
             "ÉVÉNEMENTS, SONDAGES & ANIMATIONS 🎉\n"
             "=====================================================================\n"
-            "• Utiliser !sondage <titre> ; <Choix1> ; ... ; temps=JJ:HH:MM> pour créer un sondage.\n"
-            "• !activite creer <Titre> <Date/Heure> [desc] : pour proposer un événement.\n"
+            "• Utiliser !sondage <Titre> ; <Choix1> ; ... ; temps=JJ:HH:MM> pour créer un sondage (#annonces).\n"
+            "• !activite creer <Titre> <JJ/MM/AAAA HH:MM> [desc] : Crée une activité (donjon/sortie).\n"
             "• Concours, cadeaux, etc.\n\n"
             "=====================================================================\n"
             "CONCLUSION & AVENIR 🎇\n"
@@ -161,17 +160,65 @@ class IACog(commands.Cog):
             "Règlement en vigueur à compter du 21/02/2025.\n"
             "“Le véritable pouvoir d’une guilde se révèle lorsque tous ses membres unissent leurs forces.”\n\n"
             "=====================================================================\n"
-            "LISTE DES COMMANDES DU BOT EVOLUTION\n"
+            "LISTE DES COMMANDES DU BOT EVOLUTION (DÉTAILLÉES)\n"
             "=====================================================================\n"
-            "1. **!ping** : Vérifie la réactivité du bot (répond 'Pong!').\n"
-            "2. **!bot <message>** : Pose une question à l'IA (Gemini 1.5 Pro).\n"
-            "3. **!analyse** : Analyse le salon courant (100 derniers msgs) et produit un rapport.\n"
-            "4. **!annonce <texte>** *(Staff)* : Publie une annonce dans #annonces (mention @everyone).\n"
-            "5. **!event <texte>** *(Staff)* : Organise un événement dans #organisation (mention 'Membre validé').\n"
-            "6. **!pl <texte>** : Publie une annonce de PL ou ronde sasa dans #xplock-rondesasa-ronde.\n"
-            "7. **@EvolutionBOT** : Mention directe du bot dans n'importe quel salon, suivie d'une question.\n\n"
-            "D'autres commandes spécifiques existent aussi : !ticket, !players, !stats, etc.\n"
-            "Le bot est conçu pour aider la guilde Evolution sur Dofus Retro.\n"
+
+            "📌 **Mini-Guides & Commandes Racines**\n"
+            "• __!ia__ : Guide sur l’IA (ex.: !bot, !analyse).\n"
+            "• __!membre__ : Récap global des sous-commandes (ex.: principal, addmule).\n"
+            "• __!job__ : Guide des sous-commandes liées aux métiers (ex.: !job me, !job liste).\n"
+            "• __!rune__ : Outil de calcul (probabilités runes). Fonctionnalité partielle.\n"
+            "• __!regles__ : Résumé simplifié du règlement d'Evolution.\n\n"
+
+            "📌 **Commandes Générales**\n"
+            "• __!ping__ : Vérifie que le bot répond (latence « Pong! »).\n"
+            "• __!scan <URL>__ *(Defender)* : Analyse un lien (Safe Browsing/VirusTotal) et supprime la commande.\n"
+            "• __!rune jet <valeur_jet> <stat>__ : Calcule les probabilités d'obtenir des runes (ex.: !rune jet 30 force).\n\n"
+
+            "📌 **Commandes Membres**\n"
+            "• __!membre principal <NomPerso>__ : Définit ou met à jour votre personnage principal.\n"
+            "• __!membre addmule <NomMule>__ : Ajoute une mule à votre fiche.\n"
+            "• __!membre delmule <NomMule>__ : Retire une mule.\n"
+            "• __!membre moi__ : Affiche votre fiche (principal + mules).\n"
+            "• __!membre liste__ : Liste tous les joueurs, leurs persos et leurs mules.\n"
+            "• __!membre <pseudo_ou_mention>__ : Affiche la fiche d'un joueur précis.\n\n"
+
+            "📌 **Commandes Job**\n"
+            "• __!job me__ : Affiche vos métiers et niveaux.\n"
+            "• __!job liste__ : Liste complète des métiers et qui les possède.\n"
+            "• __!job liste metier__ : Affiche la liste des noms de métiers recensés.\n"
+            "• __!job <pseudo>__ : Donne les métiers d'un joueur.\n"
+            "• __!job <job_name>__ : Indique qui possède ce métier (ex.: !job Paysan).\n"
+            "• __!job <job_name> <niveau>__ : Ajoute ou modifie l’un de vos métiers (ex.: !job Boulanger 100).\n\n"
+
+            "📌 **Commande Ticket**\n"
+            "• __!ticket__ : Lance en MP une procédure pour contacter le Staff (problème, aide, suggestion…).\n\n"
+
+            "📌 **Commandes IA**\n"
+            "• __!bot <message>__ : Fait appel à l’IA (gemini-1.5-pro) avec le contexte des derniers messages.\n"
+            "• __!analyse__ : Analyse/résume les 100 derniers messages du salon.\n\n"
+
+            "📌 **Commandes Sondage**\n"
+            "• __!sondage <Titre> ; <Choix1> ; ... ; temps=JJ:HH:MM>__ : Crée un sondage (#annonces) avec mention @everyone.\n"
+            "• __!close_sondage <message_id>__ : Clôture manuellement le sondage (affiche résultats).\n\n"
+
+            "📌 **Commandes Activités**\n"
+            "• __!activite creer <Titre> <JJ/MM/AAAA HH:MM> [desc]__ : Crée une activité (donjon/sortie) + rôle éphémère.\n"
+            "• __!activite liste__ : Affiche les activités à venir (limite 8 participants).\n"
+            "• __!activite info <id>__ : Affiche les détails d’une activité (date, organisateur, participants…).\n"
+            "• __!activite join <id> / !activite leave <id>__ : S'inscrire ou se désinscrire.\n"
+            "• __!activite annuler <id> / !activite modifier <id>__ : Annule ou modifie (date/description) une activité.\n\n"
+
+            "📌 **Commandes Staff (Rôle requis)**\n"
+            "• __!staff__ : Liste des membres Staff enregistrés/mentionnés.\n"
+            "• __!annonce <texte>__ : Publie une annonce stylée dans #annonces (mention @everyone).\n"
+            "• __!event <texte>__ : Organise un événement, publié dans #organisation (mention Membre validé).\n"
+            "• __!recrutement <pseudo>__ : Ajoute un nouveau joueur dans la base.\n"
+            "• __!membre del <pseudo>__ : Supprime un joueur (et ses mules) de la base.\n\n"
+
+            "=====================================================================\n"
+            "Pour toute question, mentionnez @EvolutionBOT ou utilisez !bot <message>.\n"
+            "=====================================================================\n"
         )
 
     async def generate_content_async(self, model, prompt: str):
