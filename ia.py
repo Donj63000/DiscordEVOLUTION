@@ -32,6 +32,7 @@ HUMOR_KEYWORDS = [
     "complètement mort","je suis décédé","au bout de ma vie","très très drôle",
     "j'ai explosé","mécroulé","mdrrrrrrrrr","énormissime","exceptionnel"
 ]
+
 SARCASM_KEYWORDS = [
     "sarcasme","ironie","sarcastique","ironique","bien sûr",
     "évidemment","comme par hasard","sans blague","tu m'étonnes",
@@ -49,6 +50,7 @@ SARCASM_KEYWORDS = [
     "superbe logique","on applaudit","ça promet","ah bah tiens",
     "super original","bravo Einstein"
 ]
+
 LIGHT_PROVOCATION_KEYWORDS = [
     "noob","1v1","t'es nul","même pas cap","petit joueur","facile",
     "ez","easy","tu fais quoi là","débutant","faible","peureux",
@@ -65,6 +67,7 @@ LIGHT_PROVOCATION_KEYWORDS = [
     "t'es perdu ?","tu t'en sors ?","pathétique","petit bras","trop lent",
     "fatigué ?","t'es à la ramasse"
 ]
+
 SERIOUS_INSULT_KEYWORDS = [
     "connard","enfoiré","fdp","fils de pute","pute","salope",
     "ta mère","bâtard","enculé","sous-merde","ordure","abruti",
@@ -79,6 +82,7 @@ SERIOUS_INSULT_KEYWORDS = [
     "misérable","rat d'égout","sangsue","sale ordure","vermine",
     "détraqué","fou furieux","tête de noeud","tg","ta gueule"
 ]
+
 DISCRIMINATION_KEYWORDS = [
     "raciste","racisme","nègre","negro","bougnoule","chinetoque",
     "bridé","pédé","tapette","tarlouze","goudou","pd",
@@ -94,6 +98,7 @@ DISCRIMINATION_KEYWORDS = [
     "boucaque","cafre","negresse","sale migrant","barbu",
     "sale chrétien","sale protestant","sale bouddhiste"
 ]
+
 THREAT_KEYWORDS = [
     "je vais te tuer","je vais t'éclater","je vais te frapper",
     "fais gaffe à toi","menace","t'es mort","je vais te défoncer",
@@ -112,8 +117,10 @@ THREAT_KEYWORDS = [
     "tu vas périr","tu vas t'en souvenir","c'est la fin pour toi",
     "tu vas tomber","tu ne verras pas demain","tu vas disparaître"
 ]
+
 EMOJIS_FRIENDLY = ["😄","😉","🤗","🥳","🙂"]
 EMOJIS_FIRM = ["😠","🙅","🚫","⚠️","😡"]
+
 TONE_VARIATIONS = {
     "humor": [
         "Réponse humoristique, conviviale",
@@ -131,9 +138,9 @@ TONE_VARIATIONS = {
         "Réplique avec un esprit compétitif bon enfant"
     ],
     "serious_insult": [
-        "Insulte grave, réponds fermement et rappelle poliment la charte",
-        "Langage inapproprié, demande le calme tout en restant respectueux",
-        "Montre ton désaccord face à l'insulte, sur un ton calme, sans agressivité"
+        "Insulte grave, réponds calmement et signale poliment le règlement",
+        "Langage inapproprié, demande de rester respectueux",
+        "Montre ton désaccord sans agressivité, rappelle que ce n’est pas toléré"
     ],
     "discrimination": [
         "Propos discriminatoires, rappelle que c'est interdit ici",
@@ -141,9 +148,9 @@ TONE_VARIATIONS = {
         "Signale que ces propos ne sont pas tolérés et renvoie au règlement"
     ],
     "threat": [
-        "Menace détectée, réponds avec fermeté et renvoie au règlement",
-        "Alerte menace, exige le respect et mentionne les sanctions prévues",
-        "Menace claire, rappelle la gravité et renvoie aux règles de la guilde"
+        "Menace détectée, réponds avec fermeté et rappelle la charte",
+        "Alerte menace, mentionne qu’on ne tolère aucune intimidation",
+        "Menace claire, indique que cela viole les règles de respect"
     ],
     "neutral": [
         "Réponse chaleureuse et neutre",
@@ -151,6 +158,7 @@ TONE_VARIATIONS = {
         "Réponds poliment, sur un ton neutre et bienveillant"
     ]
 }
+
 USER_STYLES = ["affectueux","direct","enthousiaste"]
 
 def detect_intention(msg):
@@ -192,9 +200,6 @@ class IACog(commands.Cog):
         self.pl_channel_name = "xplock-rondesasa-ronde"
         self.last_reglement_reminder = 0
         self.reglement_cooldown = 600
-        self.user_warnings = {}
-        self.warning_limit = 3
-        self.mute_duration = 600
         self.user_contexts = {}
         self.spam_times = {}
         self.spam_interval = 5
@@ -202,6 +207,8 @@ class IACog(commands.Cog):
         self.request_queue = collections.deque()
         self.pending_requests = False
         self.user_styles = {}
+        self.warning_limit = 3
+        self.mute_duration = 600
         self.configure_logging()
         self.configure_gemini()
         self.knowledge_text = self.get_knowledge_text()
@@ -364,32 +371,23 @@ class IACog(commands.Cog):
             "=====================================================================\n"
         )
 
-    async def warn_user(self, user, ctx):
-        uid = user.id
-        c = self.user_warnings.get(uid, 0)
-        c += 1
-        self.user_warnings[uid] = c
-        await ctx.send(f"**{user.mention}**, avertissement n°{c}.")
-        if c >= self.warning_limit:
-            staff_channel = discord.utils.get(ctx.guild.channels, name="staff")
-            if staff_channel:
-                await staff_channel.send(f"**Alerte**: {user.mention} atteint {c} avertissements !")
-            role = discord.utils.get(ctx.guild.roles, name="Muted")
-            if role:
-                await ctx.send(f"{user.mention} : mute temporaire.")
-                await user.add_roles(role)
-                await asyncio.sleep(self.mute_duration)
-                await user.remove_roles(role)
-            self.user_warnings[uid] = 0
-
-    async def pick_user_style(self, user_id):
-        if user_id not in self.user_styles:
-            self.user_styles[user_id] = random.choice(USER_STYLES)
-        return self.user_styles[user_id]
+    @commands.command(name="ia")
+    async def ia_help_command(self, ctx):
+        txt = (
+            "**Commandes IA :**\n"
+            "!annonce <texte> (Staff)\n"
+            "!analyse\n"
+            "!bot <message>\n"
+            "!event <texte> (Staff)\n"
+            "!pl <texte>\n"
+            "Mentionnez @EvolutionBOT pour solliciter l'IA\n"
+            "!ia pour revoir ce guide"
+        )
+        await ctx.send(txt)
 
     async def handle_ai_request(self, ctx, user_message):
-        uid = ctx.author.id
         now = time.time()
+        uid = ctx.author.id
         if uid not in self.user_contexts:
             self.user_contexts[uid] = collections.deque(maxlen=50)
         if uid not in self.spam_times:
@@ -397,45 +395,47 @@ class IACog(commands.Cog):
         self.spam_times[uid].append(now)
         self.spam_times[uid] = [t for t in self.spam_times[uid] if now - t < self.spam_interval]
         if len(self.spam_times[uid]) > self.spam_threshold:
-            await ctx.send(f"{ctx.author.mention}, spam détecté 😟 Avertissement.")
-            await self.warn_user(ctx.author, ctx)
+            await ctx.send("Tu sembles spammer le bot. Merci de ralentir.")
             return
+
         intention = detect_intention(user_message)
         possible_tones = TONE_VARIATIONS.get(intention, TONE_VARIATIONS["neutral"])
         chosen_tone = random.choice(possible_tones)
-        mention_reg = False
-        if intention in ["serious_insult", "discrimination", "threat"]:
-            mention_reg = True
-            await self.warn_user(ctx.author, ctx)
-        if mention_reg:
-            if (now - self.last_reglement_reminder) < self.reglement_cooldown:
-                chosen_tone += " (Règlement déjà cité récemment.)"
-                mention_reg = False
-            else:
-                chosen_tone += " Rappelle brièvement le règlement."
-        style_user = await self.pick_user_style(uid)
-        if intention in ["humor", "sarcasm", "light_provocation", "neutral"]:
+        style_user = self.user_styles.get(uid, "neutre")
+        if intention in ["humor","sarcasm","light_provocation","neutral"]:
             emo = random.choice(EMOJIS_FRIENDLY)
         else:
             emo = random.choice(EMOJIS_FIRM)
+
+        # Si c'est une insulte, une discrimination ou une menace, juste avertir poliment
+        mention_reglement = ""
+        if intention in ["serious_insult", "discrimination", "threat"]:
+            if (now - self.last_reglement_reminder) > self.reglement_cooldown:
+                mention_reglement = " Merci de garder un langage convenable. (Réf. Règlement)"
+
         st = (
             f"Tu es EvolutionBOT, assistant de la guilde. L'utilisateur a un style '{style_user}'. "
-            f"{chosen_tone} {emo}"
+            f"{chosen_tone} {emo}{mention_reglement}"
         )
+
         user_history = list(self.user_contexts[uid])
         user_history.append(user_message)
         self.user_contexts[uid] = collections.deque(user_history, maxlen=50)
+
         channel_history = []
         async for m in ctx.channel.history(limit=self.history_limit):
             if not m.author.bot:
                 channel_history.append(m)
         channel_history.sort(key=lambda x: x.created_at)
         hist_txt = "".join(f"{m.author.display_name}: {m.content}\n" for m in channel_history)
+
         final_prompt = (
-            f"{st}\n\nknowledge_text:\n{self.knowledge_text}\n\n"
+            f"{st}\n\n"
+            f"knowledge_text:\n{self.knowledge_text}\n\n"
             f"Contexte({self.history_limit}):\n{hist_txt}\n\n"
             f"Message de {ctx.author.display_name}: {user_message}"
         )
+
         if len(final_prompt) > self.max_prompt_size:
             surplus = len(final_prompt) - self.max_prompt_size
             if surplus < len(hist_txt):
@@ -443,22 +443,26 @@ class IACog(commands.Cog):
             else:
                 hist_txt = "(Contexte tronqué)"
             final_prompt = (
-                f"{st}\n\nknowledge_text:\n{self.knowledge_text}\n\n"
-                f"{hist_txt}\n\nMessage de {ctx.author.display_name}: {user_message}"
+                f"{st}\n\n"
+                f"knowledge_text:\n{self.knowledge_text}\n\n"
+                f"{hist_txt}\n\n"
+                f"Message de {ctx.author.display_name}: {user_message}"
             )
+
         try:
             resp, model_used = await self.generate_content_with_fallback_async(final_prompt)
             if resp and hasattr(resp, "text"):
                 rep = resp.text.strip() or "(vide)"
-                if mention_reg:
+                # Mettre à jour la variable last_reglement_reminder si c’est un gros écart
+                if intention in ["serious_insult","discrimination","threat"]:
                     self.last_reglement_reminder = time.time()
-                for part in chunkify(rep):
-                    await ctx.send(part)
+                for c in chunkify(rep):
+                    await ctx.send(c)
             else:
                 await ctx.send("Aucune réponse de l'IA.")
         except Exception as e:
             if "429" in str(e):
-                await ctx.send("**Quota IA dépassé**, repli pour un moment.")
+                await ctx.send("**Quota IA dépassé**, réessayez plus tard.")
             else:
                 await ctx.send(f"Erreur IA: {e}")
 
@@ -484,20 +488,6 @@ class IACog(commands.Cog):
             else:
                 raise e1
 
-    @commands.command(name="ia")
-    async def ia_help_command(self, ctx):
-        txt = (
-            "**Commandes IA :**\n"
-            "!annonce <texte> (Staff)\n"
-            "!analyse\n"
-            "!bot <message>\n"
-            "!event <texte> (Staff)\n"
-            "!pl <texte>\n"
-            "Mentionnez @EvolutionBOT pour solliciter l'IA\n"
-            "!ia pour revoir ce guide"
-        )
-        await ctx.send(txt)
-
     @commands.command(name="bot")
     async def free_command(self, ctx, *, user_message=None):
         if not user_message:
@@ -506,7 +496,7 @@ class IACog(commands.Cog):
         if time.time() < self.quota_exceeded_until:
             qlen = len(self.request_queue)
             await ctx.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
-            self.request_queue.append((ctx, lambda c: self.handle_ai_request(c, user_message)))
+            self.request_queue.append((ctx, lambda co: self.handle_ai_request(co, user_message)))
             self.pending_requests = True
             return
         await self.handle_ai_request(ctx, user_message)
@@ -547,7 +537,7 @@ class IACog(commands.Cog):
         if time.time() < self.quota_exceeded_until:
             qlen = len(self.request_queue)
             await ctx.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
-            self.request_queue.append((ctx, lambda c: self.analyse_fallback(c, pr)))
+            self.request_queue.append((ctx, lambda co: self.analyse_fallback(co, pr)))
             self.pending_requests = True
             return
         await self.analyse_fallback(ctx, pr)
@@ -557,8 +547,8 @@ class IACog(commands.Cog):
             resp, model_used = await self.generate_content_with_fallback_async(prompt)
             if resp and hasattr(resp, "text"):
                 rep = resp.text.strip() or "(vide)"
-                for part in chunkify(rep):
-                    await ctx.send(part)
+                for c in chunkify(rep):
+                    await ctx.send(c)
             else:
                 await ctx.send("Aucune réponse d'analyse.")
         except Exception as e:
@@ -573,14 +563,14 @@ class IACog(commands.Cog):
         if not user_message:
             await ctx.send("Usage: !annonce <texte>")
             return
-        chan = discord.utils.get(ctx.guild.text_channels, name=self.annonce_channel_name)
+        chan = discord.utils.get(ctx.guild.text_channels, name="annonces")
         if not chan:
             await ctx.send("Canal introuvable.")
             return
         if time.time() < self.quota_exceeded_until:
             qlen = len(self.request_queue)
             await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
-            self.request_queue.append((ctx, lambda c: self.annonce_fallback(c, chan, user_message)))
+            self.request_queue.append((ctx, lambda co: self.annonce_fallback(co, chan, user_message)))
             self.pending_requests = True
             return
         await self.annonce_fallback(ctx, chan, user_message)
@@ -613,14 +603,14 @@ class IACog(commands.Cog):
         if not user_message:
             await ctx.send("Usage: !event <texte>")
             return
-        chan = discord.utils.get(ctx.guild.text_channels, name=self.event_channel_name)
+        chan = discord.utils.get(ctx.guild.text_channels, name="organisation")
         if not chan:
             await ctx.send("Canal introuvable.")
             return
         if time.time() < self.quota_exceeded_until:
             qlen = len(self.request_queue)
             await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
-            self.request_queue.append((ctx, lambda c: self.event_fallback(c, chan, user_message)))
+            self.request_queue.append((ctx, lambda co: self.event_fallback(co, chan, user_message)))
             self.pending_requests = True
             return
         await self.event_fallback(ctx, chan, user_message)
@@ -637,8 +627,8 @@ class IACog(commands.Cog):
             if resp and hasattr(resp, "text"):
                 rep = resp.text.strip() or "(vide)"
                 await chan.send(f"**Nouvel Événement [{model_used}] :**")
-                for part in chunkify(rep):
-                    await chan.send(part)
+                for c in chunkify(rep):
+                    await chan.send(c)
                 role_val = discord.utils.get(ctx.guild.roles, name="Membre validé d'Evolution")
                 if role_val:
                     await chan.send(role_val.mention)
@@ -655,14 +645,14 @@ class IACog(commands.Cog):
         if not user_message:
             await ctx.send("Usage: !pl <texte>")
             return
-        chan = discord.utils.get(ctx.guild.text_channels, name=self.pl_channel_name)
+        chan = discord.utils.get(ctx.guild.text_channels, name="xplock-rondesasa-ronde")
         if not chan:
             await ctx.send("Canal introuvable.")
             return
         if time.time() < self.quota_exceeded_until:
             qlen = len(self.request_queue)
             await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
-            self.request_queue.append((ctx, lambda c: self.pl_fallback(c, chan, user_message)))
+            self.request_queue.append((ctx, lambda co: self.pl_fallback(co, chan, user_message)))
             self.pending_requests = True
             return
         await self.pl_fallback(ctx, chan, user_message)
