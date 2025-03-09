@@ -21,6 +21,9 @@ def normalize_string(s: str) -> str:
     return ''.join(c for c in nf if unicodedata.category(c) != 'Mn')
 
 def chunk_list(lst, chunk_size=25):
+    """
+    Générateur qui découpe une liste (lst) en paquets de taille chunk_size.
+    """
     for i in range(0, len(lst), chunk_size):
         yield lst[i : i + chunk_size]
 
@@ -93,6 +96,9 @@ class JobCog(commands.Cog):
         return "temp_jobs_data.json"
 
     def get_user_jobs(self, user_id: str):
+        """
+        Retourne un dictionnaire {job_name: niveau, ...} pour un utilisateur donné (via user_id).
+        """
         if user_id in self.jobs_data and "jobs" in self.jobs_data[user_id]:
             return self.jobs_data[user_id]["jobs"]
         return {}
@@ -103,14 +109,14 @@ class JobCog(commands.Cog):
         correspondant à input_name (comparaison insensible à la casse et aux accents).
         S'il existe, on renvoie le 'job_name' tel qu'il est stocké dans la DB.
         Sinon, on renvoie None.
-        
-        Cette fonction permet d'éviter de créer des doublons Pêcheur vs pecheur, etc.
+
+        Cette fonction permet d'éviter de créer des doublons (Pêcheur vs pecheur, etc.).
         """
         normalized_input = normalize_string(input_name)
 
         # Rassemble tous les job_names déjà existants
         all_job_names = set()
-        for user_id, user_data in self.jobs_data.items():
+        for uid, user_data in self.jobs_data.items():
             for jn in user_data.get("jobs", {}).keys():
                 all_job_names.add(jn)
 
@@ -121,11 +127,103 @@ class JobCog(commands.Cog):
 
         return None
 
+    def suggest_similar_jobs(self, input_name: str, max_distance=3):
+        """
+        Retourne une liste de noms de métiers (déjà existants) proches de input_name
+        (par exemple en calculant une distance de Levenshtein ou en se contentant d'une
+         similarité grossière). Ici, pour simplifier, on va juste regarder si
+         l'input_name est "inclus" en normalisé, ou l'inverse.
+
+        Pour une vraie solution, vous pouvez implémenter un algorithme de distance
+        d'édition. Pour la démonstration, on se limite à un test de "in" + normalisation.
+        """
+        normalized_input = normalize_string(input_name)
+        suggestions = []
+        # Récupère tous les métiers existants
+        all_job_names = set()
+        for uid, user_data in self.jobs_data.items():
+            for jn in user_data.get("jobs", {}).keys():
+                all_job_names.add(jn)
+
+        for job_name in all_job_names:
+            norm_jn = normalize_string(job_name)
+            if (normalized_input in norm_jn) or (norm_jn in normalized_input):
+                suggestions.append(job_name)
+
+        return sorted(suggestions)
+
+    async def confirm_job_creation_flow(self, ctx, job_name: str, level: int, author_id: str, author_name: str):
+        """
+        Dialogue interactif pour créer un nouveau métier si l'utilisateur le souhaite.
+        - 1) on propose un message "Le métier n'existe pas encore. Voulez-vous le créer ?".
+        - 2) on propose aussi les suggestions de métiers proches.
+        - 3) l'utilisateur peut taper 'cancel' pour annuler, 'oui' pour créer, ou bien 'non' 
+             s'il pense avoir fait une faute et veut arrêter le process.
+
+        S'il opte pour 'oui', on crée le job dans la base et on l'attribue à l'utilisateur.
+        """
+        # On affiche d'abord les suggestions de métiers similaires
+        suggestions = self.suggest_similar_jobs(job_name)
+        if suggestions:
+            suggestion_text = "\n".join(f"- **{s}**" for s in suggestions)
+            prompt = (
+                f"**Le métier `{job_name}` n'existe pas dans la base.**\n\n"
+                f"Auriez-vous fait une faute d'orthographe ?\n"
+                f"Voici quelques métiers existants qui ressemblent à votre saisie :\n"
+                f"{suggestion_text}\n\n"
+                f"Si vous voulez vraiment **créer** un nouveau métier nommé `{job_name}`, "
+                f"tapez `oui`. Si vous annulez la création, tapez `non`. (Tapez `cancel` pour abandonner complètement.)"
+            )
+        else:
+            prompt = (
+                f"**Le métier `{job_name}` n'existe pas dans la base.**\n\n"
+                f"Aucun métier similaire trouvé.\n"
+                f"Voulez-vous créer le nouveau métier **{job_name}** ? (Tapez `oui` pour créer, `non` pour refuser, `cancel` pour annuler la commande.)"
+            )
+
+        await ctx.send(prompt)
+
+        def check(m: discord.Message):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["oui", "non", "cancel"]
+
+        try:
+            confirm_msg = await self.bot.wait_for("message", timeout=30.0, check=check)
+        except:
+            await ctx.send("Temps écoulé, commande annulée.")
+            return
+
+        if confirm_msg.content.lower() == "cancel":
+            await ctx.send("Commande annulée.")
+            return
+
+        if confirm_msg.content.lower() == "non":
+            await ctx.send("Aucune action effectuée. (Vous pouvez réessayer avec la bonne orthographe.)")
+            return
+
+        if confirm_msg.content.lower() == "oui":
+            # Création du métier
+            if author_id not in self.jobs_data:
+                self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
+            else:
+                self.jobs_data[author_id]["name"] = author_name
+
+            self.jobs_data[author_id]["jobs"][job_name] = level
+            self.save_data_local()
+            embed_add = discord.Embed(
+                title="Nouveau métier créé",
+                description=(
+                    f"Le métier **{job_name}** a été créé et défini au niveau **{level}** "
+                    f"pour **{author_name}**."
+                ),
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed_add)
+            await self.dump_data_to_console(ctx)
+
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         """
-        Si un membre quitte le serveur, on supprime ses données de la DB
-        (pour faire le ménage).
+        Si un membre quitte le serveur, on supprime ses données de la DB (pour faire le ménage).
         """
         user_id = str(member.id)
         if user_id in self.jobs_data:
@@ -162,9 +260,9 @@ class JobCog(commands.Cog):
         author_id = str(author.id)
         author_name = author.display_name
 
-        # ----------------
+        # -------------------------------------
         # Aide générale si aucun argument
-        # ----------------
+        # -------------------------------------
         if len(args) == 0:
             usage_msg = (
                 "**Utilisation de la commande !job :**\n"
@@ -174,15 +272,15 @@ class JobCog(commands.Cog):
                 "- `!job <pseudo>` : Afficher les métiers d'un joueur.\n"
                 "- `!job <job_name>` : Afficher tous les joueurs qui ont ce job.\n"
                 "- `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job.\n"
-                "- `!job add <job_name> <niveau>` : Commande directe pour ajouter un job (existant).\n"
+                "- `!job add <job_name> <niveau>` : Commande directe pour ajouter un job.\n"
             )
             embed_help = discord.Embed(title="Aide commande !job", description=usage_msg, color=discord.Color.blue())
             await ctx.send(embed=embed_help)
             return
 
-        # ----------------
+        # -------------------------------------
         # !job me
-        # ----------------
+        # -------------------------------------
         if len(args) == 1 and args[0].lower() == "me":
             user_jobs = self.get_user_jobs(author_id)
             if not user_jobs:
@@ -199,9 +297,9 @@ class JobCog(commands.Cog):
                 await ctx.send(embed=embed_my_jobs)
             return
 
-        # ----------------
+        # -------------------------------------
         # !job liste metier
-        # ----------------
+        # -------------------------------------
         if len(args) == 2 and args[0].lower() == "liste" and args[1].lower() == "metier":
             all_jobs = set()
             for uid, user_data in self.jobs_data.items():
@@ -232,9 +330,9 @@ class JobCog(commands.Cog):
                 await ctx.send(embed=embed_job_list)
             return
 
-        # ----------------
+        # -------------------------------------
         # !job liste
-        # ----------------
+        # -------------------------------------
         if len(args) == 1 and args[0].lower() == "liste":
             jobs_map = defaultdict(list)
             for uid, user_data in self.jobs_data.items():
@@ -261,97 +359,91 @@ class JobCog(commands.Cog):
                 await ctx.send(embed=embed_global)
             return
 
-        # ----------------
+        # -------------------------------------
         # !job add <job_name> <level>
-        # ----------------
+        # -------------------------------------
         if len(args) == 3 and args[0].lower() == "add":
-            input_job_name = args[1]
-            level_str = args[2]
+            input_job_name = " ".join(args[1:-1])  # Au cas où <job_name> contienne des espaces
+            level_str = args[-1]
             try:
                 level_int = int(level_str)
             except ValueError:
                 await ctx.send("Syntaxe invalide. Exemple : `!job add Bucheron 5`.")
                 return
 
-            # On vérifie si ce job existe déjà dans la base (insensible à la casse et aux accents)
+            # Cherche si ce job existe déjà
             canonical_job_name = self.find_canonical_job_name_in_db(input_job_name)
             if canonical_job_name is None:
-                # Le métier n'existe pas : on refuse la création automatique
-                await ctx.send(
-                    f"Le métier `{input_job_name}` n'existe pas encore dans la base.\n"
-                    "Impossible de le créer pour le moment."
-                )
-                return
-
-            # OK, on met à jour l'utilisateur
-            if author_id not in self.jobs_data:
-                self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
+                # Lancement du flow interactif pour éventuellement créer le métier
+                await self.confirm_job_creation_flow(ctx, input_job_name, level_int, author_id, author_name)
             else:
-                self.jobs_data[author_id]["name"] = author_name
+                # OK, on met à jour l'utilisateur
+                if author_id not in self.jobs_data:
+                    self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
+                else:
+                    self.jobs_data[author_id]["name"] = author_name
 
-            self.jobs_data[author_id]["jobs"][canonical_job_name] = level_int
-
-            self.save_data_local()
-            embed_add = discord.Embed(
-                title="Mise à jour du job",
-                description=(
-                    f"Le métier **{canonical_job_name}** (initialement demandé : `{input_job_name}`)\n"
-                    f"a été défini au niveau **{level_int}** pour **{author_name}**."
-                ),
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=embed_add)
-            await self.dump_data_to_console(ctx)
-            return
-
-        # ----------------
-        # !job <job_name> <level>  (version courte)
-        # ----------------
-        # L’ancien code permettait aussi de faire: !job Pecheur 10 (sans "add")
-        # On peut le garder ou non, selon vos besoins. On le conserve pour rétro-compatibilité.
-        if len(args) == 2:
-            try:
-                level_int = int(args[1])
-                job_name = args[0]
-                # On cherche s'il existe un job similaire
-                canonical_job_name = self.find_canonical_job_name_in_db(job_name)
-                if canonical_job_name is None:
-                    await ctx.send(
-                        f"Le métier `{job_name}` n'existe pas encore dans la base.\n"
-                        "Impossible de le créer pour le moment."
-                    )
-                    return
-
-                author_jobs = self.jobs_data.get(author_id, {"name": author_name, "jobs": {}})
-                author_jobs["name"] = author_name
-                author_jobs["jobs"][canonical_job_name] = level_int
-                self.jobs_data[author_id] = author_jobs
+                self.jobs_data[author_id]["jobs"][canonical_job_name] = level_int
 
                 self.save_data_local()
-                embed_update = discord.Embed(
+                embed_add = discord.Embed(
                     title="Mise à jour du job",
                     description=(
-                        f"Le métier **{canonical_job_name}** (initialement demandé : `{job_name}`)\n"
-                        f"est maintenant défini au niveau **{level_int}** pour **{author_name}**."
+                        f"Le métier **{canonical_job_name}** (initialement demandé : `{input_job_name}`)\n"
+                        f"a été défini au niveau **{level_int}** pour **{author_name}**."
                     ),
                     color=discord.Color.green()
                 )
-                await ctx.send(embed=embed_update)
+                await ctx.send(embed=embed_add)
                 await self.dump_data_to_console(ctx)
-                return
+            return
+
+        # -------------------------------------
+        # !job <job_name> <level>  (version courte, ex: "!job pêcheur 10")
+        # -------------------------------------
+        if len(args) == 2:
+            # On recompose job_name s'il y a un risque d'espace, mais ici len=2 → 2 tokens
+            #   => job_name = args[0], level_str = args[1]
+            job_name = args[0]
+            level_str = args[1]
+            try:
+                level_int = int(level_str)
             except ValueError:
                 pass
+            else:
+                canonical_job_name = self.find_canonical_job_name_in_db(job_name)
+                if canonical_job_name is None:
+                    # Lancement du flow interactif pour éventuellement créer le métier
+                    await self.confirm_job_creation_flow(ctx, job_name, level_int, author_id, author_name)
+                else:
+                    author_jobs = self.jobs_data.get(author_id, {"name": author_name, "jobs": {}})
+                    author_jobs["name"] = author_name
+                    author_jobs["jobs"][canonical_job_name] = level_int
+                    self.jobs_data[author_id] = author_jobs
 
-        # ----------------
+                    self.save_data_local()
+                    embed_update = discord.Embed(
+                        title="Mise à jour du job",
+                        description=(
+                            f"Le métier **{canonical_job_name}** (initialement demandé : `{job_name}`)\n"
+                            f"est maintenant défini au niveau **{level_int}** pour **{author_name}**."
+                        ),
+                        color=discord.Color.green()
+                    )
+                    await ctx.send(embed=embed_update)
+                    await self.dump_data_to_console(ctx)
+                return
+
+        # -------------------------------------
         # !job <pseudo> ou !job <job_name>
-        # ----------------
+        # -------------------------------------
         if len(args) == 1:
-            pseudo_or_job = args[0].lower()
-            # 1) On cherche si c'est un pseudo
+            pseudo_or_job = args[0]
+            # 1) On cherche si c'est un pseudo EXACT
             found_user_id = None
             found_user_name = None
             for uid, user_data in self.jobs_data.items():
-                if user_data.get("name", "").lower() == pseudo_or_job:
+                if user_data.get("name", "").lower() == pseudo_or_job.lower():
                     found_user_id = uid
                     found_user_name = user_data["name"]
                     break
@@ -371,7 +463,7 @@ class JobCog(commands.Cog):
                     await ctx.send(embed=embed_user_jobs)
                 return
             else:
-                # 2) On cherche si c'est un job (partiel) => on liste tous les joueurs
+                # 2) Sinon, on cherche si c'est un job (partiel) => on liste tous les joueurs
                 job_map = defaultdict(list)
                 for uid, data in self.jobs_data.items():
                     display_name = data.get("name", f"ID {uid}")
@@ -379,9 +471,10 @@ class JobCog(commands.Cog):
                         job_map[jn].append((display_name, lv))
 
                 # On cherche les jobs qui correspondent (en normalisant) à l'arg
+                pseudo_or_job_norm = normalize_string(pseudo_or_job)
                 matching_jobs = []
                 for jn in job_map.keys():
-                    if normalize_string(pseudo_or_job) in normalize_string(jn):
+                    if pseudo_or_job_norm in normalize_string(jn):
                         matching_jobs.append(jn)
 
                 if not matching_jobs:
@@ -405,9 +498,9 @@ class JobCog(commands.Cog):
                     await ctx.send(embed=result_embed)
                 return
 
-        # ----------------
-        # Sinon, on envoie un message d'erreur / syntaxe
-        # ----------------
+        # -------------------------------------
+        # Sinon → message d'erreur de syntaxe
+        # -------------------------------------
         usage_msg = (
             "**Utilisation incorrecte**. Référez-vous ci-dessous :\n\n"
             "• `!job me` : Afficher vos métiers\n"
@@ -415,8 +508,8 @@ class JobCog(commands.Cog):
             "• `!job liste metier` : Afficher la liste de tous les noms de métiers\n"
             "• `!job <pseudo>` : Afficher les métiers d'un joueur\n"
             "• `!job <job_name>` : Afficher ceux qui ont un métier correspondant\n"
-            "• `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job (s'il existe déjà)\n"
-            "• `!job add <job_name> <niveau>` : Ajouter un métier existant au niveau spécifié\n"
+            "• `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job (s'il existe déjà ou après confirmation)\n"
+            "• `!job add <job_name> <niveau>` : Ajouter un métier au niveau spécifié (s'il existe ou après confirmation)\n"
         )
         error_embed = discord.Embed(title="Erreur de syntaxe", description=usage_msg, color=discord.Color.red())
         await ctx.send(embed=error_embed)
@@ -445,7 +538,6 @@ class JobCog(commands.Cog):
             except:
                 pass
         await ctx.send(f"Salon console nettoyé, {deleted_count} messages supprimés.")
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(JobCog(bot))
