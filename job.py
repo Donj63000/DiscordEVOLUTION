@@ -80,16 +80,18 @@ class JobCog(commands.Cog):
         return "temp_jobs_data.json"
 
     def get_user_jobs(self, user_id: str):
+        """
+        Retourne un dict : { job_name: level, ... } pour l'utilisateur user_id.
+        """
         if user_id in self.jobs_data and "jobs" in self.jobs_data[user_id]:
             return self.jobs_data[user_id]["jobs"]
         return {}
 
     def find_canonical_job_name_in_db(self, input_name: str) -> str:
         """
-        Cherche dans TOUTE la base de données si un métier (job_name) existe déjà
-        correspondant à input_name (comparaison insensible à la casse et aux accents).
-        S'il existe, on renvoie le 'job_name' exact tel qu'il est stocké dans la DB.
-        Sinon, on renvoie None.
+        Vérifie si 'input_name' correspond déjà à un job existant dans la DB (insensible à la casse et aux accents).
+        Si oui, retourne la forme exacte existant dans la DB.
+        Sinon, retourne None.
         """
         normalized_input = normalize_string(input_name)
         all_job_names = set()
@@ -104,9 +106,8 @@ class JobCog(commands.Cog):
 
     def suggest_similar_jobs(self, input_name: str):
         """
-        Donne la liste des métiers déjà existants qui "ressemblent" à input_name,
-        ici on fait un test simplifié (dans un vrai cas on pourrait utiliser la distance
-        d'édition Levenshtein).
+        Donne une liste de métiers existants qui "ressemblent" (inclusif) à 'input_name'.
+        (Simplifié : test d'inclusion en normalisé.)
         """
         suggestions = []
         all_jobs = set()
@@ -117,7 +118,6 @@ class JobCog(commands.Cog):
         norm_in = normalize_string(input_name)
         for job_name in all_jobs:
             norm_jn = normalize_string(job_name)
-            # On teste juste si l'un contient l'autre :
             if norm_in in norm_jn or norm_jn in norm_in:
                 suggestions.append(job_name)
 
@@ -125,7 +125,8 @@ class JobCog(commands.Cog):
 
     async def confirm_job_creation_flow(self, ctx, job_name: str, level: int, author_id: str, author_name: str):
         """
-        Dialogue interactif pour confirmer la création d'un nouveau métier si l'utilisateur le veut.
+        Dialogue interactif : si un métier n'existe pas, on propose de le créer.
+        L'utilisateur peut répondre "oui", "non", ou "cancel".
         """
         suggestions = self.suggest_similar_jobs(job_name)
         if suggestions:
@@ -147,7 +148,7 @@ class JobCog(commands.Cog):
         await ctx.send(prompt)
 
         def check(m: discord.Message):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["oui","non","cancel"]
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["oui", "non", "cancel"]
 
         try:
             reply = await self.bot.wait_for("message", timeout=30.0, check=check)
@@ -155,11 +156,11 @@ class JobCog(commands.Cog):
             await ctx.send("Temps écoulé, commande annulée.")
             return
 
-        if reply.content.lower() == "cancel" or reply.content.lower() == "non":
+        if reply.content.lower() in ["cancel", "non"]:
             await ctx.send("Ok, pas de création. Commande terminée.")
             return
 
-        # S'il a dit "oui", on crée
+        # => "oui" : on crée le job
         if author_id not in self.jobs_data:
             self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
         self.jobs_data[author_id]["name"] = author_name
@@ -177,6 +178,9 @@ class JobCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
+        """
+        Si un membre quitte, on supprime son entrée de la base.
+        """
         user_id = str(member.id)
         if user_id in self.jobs_data:
             del self.jobs_data[user_id]
@@ -194,6 +198,9 @@ class JobCog(commands.Cog):
 
     @commands.command(name="job")
     async def job_command(self, ctx, *args):
+        """
+        Commande principale !job
+        """
         if not self.initialized:
             await self.initialize_data()
 
@@ -202,8 +209,10 @@ class JobCog(commands.Cog):
         author_name = author.display_name
 
         # ---------------------------
-        # Aide par défaut si pas d'args
+        # On enchaîne avec IF / ELIF / ELSE
         # ---------------------------
+
+        # 1) Aide générale si pas d'arguments
         if len(args) == 0:
             usage_msg = (
                 "**Utilisation de la commande !job :**\n"
@@ -213,15 +222,13 @@ class JobCog(commands.Cog):
                 "- `!job <pseudo>` : Afficher les métiers d'un joueur.\n"
                 "- `!job <job_name>` : Afficher ceux qui ont ce job.\n"
                 "- `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job.\n"
-                "- `!job add <job_name> <niveau>` : Commande directe pour ajouter un job (même multi-mots).\n"
+                "- `!job add <job_name> <niveau>` : Commande directe pour ajouter un job (multi-mots autorisé).\n"
             )
             await ctx.send(embed=discord.Embed(title="Aide commande !job", description=usage_msg, color=0x00ffff))
             return
 
-        # ---------------------------
-        # !job me
-        # ---------------------------
-        if len(args) == 1 and args[0].lower() == "me":
+        # 2) !job me
+        elif len(args) == 1 and args[0].lower() == "me":
             user_jobs = self.get_user_jobs(author_id)
             if not user_jobs:
                 await ctx.send(embed=discord.Embed(
@@ -236,10 +243,8 @@ class JobCog(commands.Cog):
                 await ctx.send(embed=emb)
             return
 
-        # ---------------------------
-        # !job liste metier
-        # ---------------------------
-        if len(args) == 2 and args[0].lower() == "liste" and args[1].lower() == "metier":
+        # 3) !job liste metier
+        elif len(args) == 2 and args[0].lower() == "liste" and args[1].lower() == "metier":
             all_jobs = set()
             for uid, data in self.jobs_data.items():
                 for jn in data.get("jobs", {}).keys():
@@ -253,7 +258,7 @@ class JobCog(commands.Cog):
                 e = discord.Embed(title="Liste de tous les métiers", description=text, color=discord.Color.purple())
                 await ctx.send(embed=e)
             else:
-                # chunk si trop grand
+                # Découpage si trop long
                 current = ""
                 chunks = []
                 for line in text.split("\n"):
@@ -268,10 +273,8 @@ class JobCog(commands.Cog):
                     await ctx.send(embed=e)
             return
 
-        # ---------------------------
-        # !job liste
-        # ---------------------------
-        if len(args) == 1 and args[0].lower() == "liste":
+        # 4) !job liste
+        elif len(args) == 1 and args[0].lower() == "liste":
             jobs_map = defaultdict(list)
             for uid, data in self.jobs_data.items():
                 disp_name = data.get("name", f"ID {uid}")
@@ -297,29 +300,24 @@ class JobCog(commands.Cog):
                 await ctx.send(embed=e)
             return
 
-        # ------------------------------------------------
-        # !job add <job_name...> <level>
-        #  ==> Gère plusieurs mots pour job_name
-        # ------------------------------------------------
-        if len(args) >= 3 and args[0].lower() == "add":
-            # On prend tous les arguments sauf le 1er (add) et le dernier (level)
-            # Le job_name peut contenir plusieurs mots
+        # 5) !job add <job_name...> <level>
+        elif len(args) >= 3 and args[0].lower() == "add":
+            # Recompose le nom du métier (multi-mots) sauf le dernier argument (niveau)
             *job_name_tokens, level_str = args[1:]
             job_name = " ".join(job_name_tokens)
-            # Convertit en int
             try:
                 level_int = int(level_str)
             except ValueError:
-                await ctx.send("Syntaxe invalide. Exemple : `!job add Grand Sculpteur 100`")
+                await ctx.send("Syntaxe invalide. Exemple : `!job add Grand Sculpteur 100`.")
                 return
 
-            # Cherche si le job existe déjà
+            # Vérifie si le job existe déjà
             canonical = self.find_canonical_job_name_in_db(job_name)
             if canonical is None:
-                # Proposer la création
+                # Flow de création
                 await self.confirm_job_creation_flow(ctx, job_name, level_int, author_id, author_name)
             else:
-                # Mettre à jour
+                # Mise à jour
                 if author_id not in self.jobs_data:
                     self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
                 self.jobs_data[author_id]["name"] = author_name
@@ -338,25 +336,22 @@ class JobCog(commands.Cog):
                 await self.dump_data_to_console(ctx)
             return
 
-        # ------------------------------------------------
-        # !job <job_name> <level> (version courte)
-        #  Mais ici, <job_name> ne peut pas contenir d'espaces
-        #  => si vous voulez gérer plusieurs mots en version courte,
-        #     il faut faire la même logique que ci-dessus (>=2).
-        # ------------------------------------------------
-        if len(args) == 2:
+        # 6) !job <job_name> <level> (version courte, 2 arguments)
+        elif len(args) == 2:
             job_name, level_str = args
             try:
                 level_int = int(level_str)
             except ValueError:
+                # Pas un niveau => pas la syntaxe attendue
                 pass
             else:
+                # Cherche si le job existe déjà
                 canonical = self.find_canonical_job_name_in_db(job_name)
                 if canonical is None:
                     # Proposer la création
                     await self.confirm_job_creation_flow(ctx, job_name, level_int, author_id, author_name)
                 else:
-                    # Mettre à jour
+                    # Mise à jour
                     author_jobs = self.jobs_data.get(author_id, {"name": author_name, "jobs": {}})
                     author_jobs["name"] = author_name
                     author_jobs["jobs"][canonical] = level_int
@@ -375,12 +370,10 @@ class JobCog(commands.Cog):
                     await self.dump_data_to_console(ctx)
                 return
 
-        # ---------------------------
-        # !job <pseudo> (1 arg)  OU  !job <job_name> (1 arg)
-        # ---------------------------
-        if len(args) == 1:
-            # 1) on teste si c'est un pseudo
+        # 7) !job <pseudo> ou !job <job_name> (1 argument)
+        elif len(args) == 1:
             pseudo_or_job = args[0]
+            # On cherche si c'est un pseudo EXACT
             found_user_id = None
             found_user_name = None
             for uid, data in self.jobs_data.items():
@@ -390,7 +383,7 @@ class JobCog(commands.Cog):
                     break
 
             if found_user_id:
-                # On affiche les jobs de ce joueur
+                # Affiche les jobs du joueur
                 user_jobs = self.get_user_jobs(found_user_id)
                 if not user_jobs:
                     await ctx.send(f"{found_user_name} n'a aucun job enregistré.")
@@ -400,59 +393,61 @@ class JobCog(commands.Cog):
                         e.add_field(name=jn, value=f"Niveau {lv}", inline=True)
                     await ctx.send(embed=e)
                 return
+            else:
+                # Sinon, on liste tous les joueurs qui ont un job correspondant (partiel)
+                job_map = defaultdict(list)
+                for uid, data in self.jobs_data.items():
+                    display_name = data.get("name", f"ID {uid}")
+                    for jn, lv in data.get("jobs", {}).items():
+                        job_map[jn].append((display_name, lv))
 
-            # 2) sinon, on cherche tous les joueurs qui ont un job correspondant
-            job_map = defaultdict(list)
-            for uid, data in self.jobs_data.items():
-                display_name = data.get("name", f"ID {uid}")
-                for jn, lv in data.get("jobs", {}).items():
-                    job_map[jn].append((display_name, lv))
+                pseudo_norm = normalize_string(pseudo_or_job)
+                matching_jobs = []
+                for jn in job_map.keys():
+                    if pseudo_norm in normalize_string(jn):
+                        matching_jobs.append(jn)
 
-            pseudo_norm = normalize_string(pseudo_or_job)
-            matching_jobs = []
-            for jn in job_map.keys():
-                if pseudo_norm in normalize_string(jn):
-                    matching_jobs.append(jn)
+                if not matching_jobs:
+                    await ctx.send(f"Aucun joueur nommé **{pseudo_or_job}** et aucun job similaire.")
+                    return
 
-            if not matching_jobs:
-                await ctx.send(f"Aucun joueur nommé **{pseudo_or_job}** et aucun job similaire.")
+                sorted_matches = sorted(matching_jobs, key=lambda x: normalize_string(x))
+                chunk_idx = 0
+                for chunk in chunk_list(sorted_matches, 25):
+                    chunk_idx += 1
+                    emb = discord.Embed(
+                        title=f"Résultats de la recherche de métier (part {chunk_idx})",
+                        description=f"Recherche : {pseudo_or_job}",
+                        color=discord.Color.blue()
+                    )
+                    for jn in chunk:
+                        listing = ""
+                        for (player, lv) in job_map[jn]:
+                            listing += f"- **{player}** : {lv}\n"
+                        emb.add_field(name=jn, value=listing, inline=False)
+                    await ctx.send(embed=emb)
                 return
 
-            sorted_matches = sorted(matching_jobs, key=lambda x: normalize_string(x))
-            chunk_idx = 0
-            for chunk in chunk_list(sorted_matches, 25):
-                chunk_idx += 1
-                emb = discord.Embed(
-                    title=f"Résultats de la recherche de métier (part {chunk_idx})",
-                    description=f"Recherche : {pseudo_or_job}",
-                    color=discord.Color.blue()
-                )
-                for jn in chunk:
-                    listing = ""
-                    for (player, lv) in job_map[jn]:
-                        listing += f"- **{player}** : {lv}\n"
-                    emb.add_field(name=jn, value=listing, inline=False)
-                await ctx.send(embed=emb)
-            return
-
-        # ---------------------------
-        # Erreur de syntaxe
-        # ---------------------------
-        usage_msg = (
-            "**Utilisation incorrecte**. Référez-vous ci-dessous :\n\n"
-            "• `!job me` : Afficher vos métiers\n"
-            "• `!job liste` : Afficher la liste de tous les métiers\n"
-            "• `!job liste metier` : Afficher la liste de tous les noms de métiers\n"
-            "• `!job <pseudo>` : Afficher les métiers d'un joueur\n"
-            "• `!job <job_name>` : Afficher ceux qui ont un métier correspondant\n"
-            "• `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job (s'il existe ou après confirmation)\n"
-            "• `!job add <job_name> <niveau>` : Ajouter un métier (multi-mots autorisé) au niveau spécifié\n"
-        )
-        await ctx.send(embed=discord.Embed(title="Erreur de syntaxe", description=usage_msg, color=discord.Color.red()))
+        # 8) Aucune condition ne correspond => Erreur de syntaxe
+        else:
+            usage_msg = (
+                "**Utilisation incorrecte**. Référez-vous ci-dessous :\n\n"
+                "• `!job me` : Afficher vos métiers\n"
+                "• `!job liste` : Afficher la liste de tous les métiers\n"
+                "• `!job liste metier` : Afficher la liste de tous les noms de métiers\n"
+                "• `!job <pseudo>` : Afficher les métiers d'un joueur\n"
+                "• `!job <job_name>` : Afficher ceux qui ont un métier correspondant\n"
+                "• `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job (s'il existe ou après confirmation)\n"
+                "• `!job add <job_name> <niveau>` : Ajouter un métier (multi-mots autorisé) au niveau spécifié\n"
+            )
+            await ctx.send(embed=discord.Embed(title="Erreur de syntaxe", description=usage_msg, color=discord.Color.red()))
 
     @commands.command(name="clear")
     @commands.has_role(STAFF_ROLE_NAME)
     async def clear_console_command(self, ctx, channel_name=None):
+        """
+        Permet de nettoyer le salon console (réservé au STAFF).
+        """
         if not channel_name:
             await ctx.send("Utilisation : `!clear console`")
             return
