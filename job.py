@@ -21,6 +21,9 @@ def normalize_string(s: str) -> str:
     return ''.join(c for c in nf if unicodedata.category(c) != 'Mn')
 
 def chunk_list(lst, chunk_size=25):
+    """
+    Découpe une liste en tranches de taille `chunk_size`.
+    """
     for i in range(0, len(lst), chunk_size):
         yield lst[i : i + chunk_size]
 
@@ -34,9 +37,14 @@ class JobCog(commands.Cog):
         await self.initialize_data()
 
     async def initialize_data(self):
+        """
+        Charge la base de données (jobs) :
+         - Soit depuis le canal 'console' (si on y trouve un message contenant ===BOTJOBS===),
+         - Soit depuis le fichier local 'jobs_data.json'.
+        """
         console_channel = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
         if console_channel:
-            # Recherche d'un message contenant ===BOTJOBS=== et un bloc JSON
+            # Recherche d'un message contenant ===BOTJOBS===
             async for msg in console_channel.history(limit=1000):
                 if msg.author == self.bot.user and "===BOTJOBS===" in msg.content:
                     try:
@@ -48,6 +56,7 @@ class JobCog(commands.Cog):
                     except:
                         pass
 
+        # Si pas trouvé dans le canal console, on essaie le fichier local
         if not self.jobs_data and os.path.exists(DATA_FILE):
             try:
                 with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -58,10 +67,16 @@ class JobCog(commands.Cog):
         self.initialized = True
 
     def save_data_local(self):
+        """
+        Sauvegarde la DB localement dans un fichier JSON.
+        """
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(self.jobs_data, f, indent=4, ensure_ascii=False)
 
     async def dump_data_to_console(self, ctx):
+        """
+        Réécrit la DB dans le canal 'console' (ou en fichier si trop volumineux).
+        """
         console_channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
         if not console_channel:
             return
@@ -81,7 +96,7 @@ class JobCog(commands.Cog):
 
     def get_user_jobs(self, user_id: str):
         """
-        Retourne un dict : { job_name: level, ... } pour l'utilisateur user_id.
+        Retourne un dict { job_name: level, ... } pour l'utilisateur donné.
         """
         if user_id in self.jobs_data and "jobs" in self.jobs_data[user_id]:
             return self.jobs_data[user_id]["jobs"]
@@ -89,9 +104,8 @@ class JobCog(commands.Cog):
 
     def find_canonical_job_name_in_db(self, input_name: str) -> str:
         """
-        Vérifie si 'input_name' correspond déjà à un job existant dans la DB (insensible à la casse et aux accents).
-        Si oui, retourne la forme exacte existant dans la DB.
-        Sinon, retourne None.
+        Cherche si 'input_name' (en ignorant la casse/accents) est déjà un job existant.
+        Si oui, renvoie le nom exact tel que stocké. Sinon, renvoie None.
         """
         normalized_input = normalize_string(input_name)
         all_job_names = set()
@@ -106,8 +120,7 @@ class JobCog(commands.Cog):
 
     def suggest_similar_jobs(self, input_name: str):
         """
-        Donne une liste de métiers existants qui "ressemblent" (inclusif) à 'input_name'.
-        (Simplifié : test d'inclusion en normalisé.)
+        Retourne une liste de métiers 'similaires' (simplifiée : test d'inclusion).
         """
         suggestions = []
         all_jobs = set()
@@ -125,8 +138,8 @@ class JobCog(commands.Cog):
 
     async def confirm_job_creation_flow(self, ctx, job_name: str, level: int, author_id: str, author_name: str):
         """
-        Dialogue interactif : si un métier n'existe pas, on propose de le créer.
-        L'utilisateur peut répondre "oui", "non", ou "cancel".
+        Flow de confirmation simple : si le job n'existe pas et qu'on tape !job <job_name> <level>,
+        on propose la création. (Fonctionnalité existante.)
         """
         suggestions = self.suggest_similar_jobs(job_name)
         if suggestions:
@@ -148,7 +161,9 @@ class JobCog(commands.Cog):
         await ctx.send(prompt)
 
         def check(m: discord.Message):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["oui", "non", "cancel"]
+            return (m.author == ctx.author and 
+                    m.channel == ctx.channel and 
+                    m.content.lower() in ["oui", "non", "cancel"])
 
         try:
             reply = await self.bot.wait_for("message", timeout=30.0, check=check)
@@ -160,7 +175,7 @@ class JobCog(commands.Cog):
             await ctx.send("Ok, pas de création. Commande terminée.")
             return
 
-        # => "oui" : on crée le job
+        # => "oui" => on crée
         if author_id not in self.jobs_data:
             self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
         self.jobs_data[author_id]["name"] = author_name
@@ -175,6 +190,134 @@ class JobCog(commands.Cog):
         )
         await ctx.send(embed=embed_ok)
         await self.dump_data_to_console(ctx)
+
+    async def interactive_add_job_no_level(self, ctx, job_name: str, author_id: str, author_name: str):
+        """
+        Lance un dialogue en plusieurs étapes pour !job add <job_name> (sans niveau) :
+          1) Vérifie si le job existe
+          2) Demande confirmation
+          3) Demande le niveau
+          4) Mise à jour ou création
+        """
+        canonical = self.find_canonical_job_name_in_db(job_name)
+
+        if canonical:
+            # => Le métier existe déjà
+            await ctx.send(
+                f"Le métier **{canonical}** existe déjà dans la base.\n"
+                "Voulez-vous quand même le mettre à jour pour vous ? (Tapez `oui`, `non` ou `cancel`)"
+            )
+            def check_yes_no(m: discord.Message):
+                return (m.author == ctx.author and
+                        m.channel == ctx.channel and
+                        m.content.lower() in ["oui", "non", "cancel"])
+
+            try:
+                msg_confirm = await self.bot.wait_for("message", timeout=30.0, check=check_yes_no)
+            except:
+                await ctx.send("Temps écoulé, commande annulée.")
+                return
+
+            if msg_confirm.content.lower() in ["non", "cancel"]:
+                await ctx.send("Ok, commande abandonnée.")
+                return
+
+            # => "oui" => on demande le niveau
+            await ctx.send("Quel niveau souhaitez-vous pour ce job ? (entrez un nombre ou `cancel`)")
+            def check_level(m: discord.Message):
+                return (m.author == ctx.author and m.channel == ctx.channel)
+
+            try:
+                msg_level = await self.bot.wait_for("message", timeout=30.0, check=check_level)
+            except:
+                await ctx.send("Temps écoulé, commande annulée.")
+                return
+
+            if msg_level.content.lower() == "cancel":
+                await ctx.send("Commande annulée.")
+                return
+
+            try:
+                level = int(msg_level.content)
+            except ValueError:
+                await ctx.send("Niveau invalide, commande annulée.")
+                return
+
+            # Mise à jour
+            if author_id not in self.jobs_data:
+                self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
+            self.jobs_data[author_id]["name"] = author_name
+            self.jobs_data[author_id]["jobs"][canonical] = level
+            self.save_data_local()
+
+            emb = discord.Embed(
+                title="Mise à jour du job",
+                description=(
+                    f"Le métier **{canonical}** (initialement demandé : `{job_name}`)\n"
+                    f"est défini au niveau **{level}** pour **{author_name}**."
+                ),
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=emb)
+            await self.dump_data_to_console(ctx)
+
+        else:
+            # => Le métier n'existe pas
+            await ctx.send(
+                f"Le métier **{job_name}** n'existe pas dans la base.\n"
+                "Souhaitez-vous le créer ? (Tapez `oui`, `non` ou `cancel`)"
+            )
+            def check_yes_no(m: discord.Message):
+                return (m.author == ctx.author and
+                        m.channel == ctx.channel and
+                        m.content.lower() in ["oui", "non", "cancel"])
+            try:
+                msg_confirm = await self.bot.wait_for("message", timeout=30.0, check=check_yes_no)
+            except:
+                await ctx.send("Temps écoulé, commande annulée.")
+                return
+
+            if msg_confirm.content.lower() in ["non", "cancel"]:
+                await ctx.send("Ok, commande abandonnée.")
+                return
+
+            # => "oui"
+            await ctx.send("Quel niveau voulez-vous attribuer à ce nouveau métier ? (entrez un nombre ou `cancel`)")
+            def check_level(m: discord.Message):
+                return (m.author == ctx.author and m.channel == ctx.channel)
+
+            try:
+                msg_level = await self.bot.wait_for("message", timeout=30.0, check=check_level)
+            except:
+                await ctx.send("Temps écoulé, commande annulée.")
+                return
+
+            if msg_level.content.lower() == "cancel":
+                await ctx.send("Commande annulée.")
+                return
+
+            try:
+                level = int(msg_level.content)
+            except ValueError:
+                await ctx.send("Niveau invalide, commande annulée.")
+                return
+
+            # Création
+            if author_id not in self.jobs_data:
+                self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
+            self.jobs_data[author_id]["name"] = author_name
+            self.jobs_data[author_id]["jobs"][job_name] = level
+            self.save_data_local()
+
+            emb = discord.Embed(
+                title="Nouveau métier créé",
+                description=(
+                    f"Le métier **{job_name}** a été créé et défini au niveau **{level}** pour **{author_name}**."
+                ),
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=emb)
+            await self.dump_data_to_console(ctx)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
@@ -300,41 +443,47 @@ class JobCog(commands.Cog):
                 await ctx.send(embed=e)
             return
 
-        # 5) !job add <job_name...> <level>
-        elif len(args) >= 3 and args[0].lower() == "add":
-            # Recompose le nom du métier (multi-mots) sauf le dernier argument (niveau)
-            *job_name_tokens, level_str = args[1:]
-            job_name = " ".join(job_name_tokens)
+        # 5) !job add <job_name> (SANS niveau) => conversation
+        elif len(args) >= 2 and args[0].lower() == "add":
+            # On va vérifier si le dernier argument est un nombre ou non.
+            # Si c'est un nombre, c'est le mode direct existant. Sinon, on fait la conversation.
+            possible_level = args[-1]
             try:
-                level_int = int(level_str)
-            except ValueError:
-                await ctx.send("Syntaxe invalide. Exemple : `!job add Grand Sculpteur 100`.")
+                level_int = int(possible_level)
+                # => On a bien un niveau => code existant de !job add <job_name> <level>
+                # Recompose le job_name (tout sauf le dernier arg)
+                job_name_tokens = args[1:-1]  # tout sauf "add" et le dernier arg
+                job_name = " ".join(job_name_tokens)
+
+                canonical = self.find_canonical_job_name_in_db(job_name)
+                if canonical is None:
+                    # Creation
+                    await self.confirm_job_creation_flow(ctx, job_name, level_int, author_id, author_name)
+                else:
+                    # Mise à jour
+                    if author_id not in self.jobs_data:
+                        self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
+                    self.jobs_data[author_id]["name"] = author_name
+                    self.jobs_data[author_id]["jobs"][canonical] = level_int
+
+                    self.save_data_local()
+                    emb = discord.Embed(
+                        title="Mise à jour du job",
+                        description=(
+                            f"Le métier **{canonical}** (initialement demandé : `{job_name}`)\n"
+                            f"a été défini au niveau **{level_int}** pour **{author_name}**."
+                        ),
+                        color=discord.Color.green()
+                    )
+                    await ctx.send(embed=emb)
+                    await self.dump_data_to_console(ctx)
                 return
 
-            # Vérifie si le job existe déjà
-            canonical = self.find_canonical_job_name_in_db(job_name)
-            if canonical is None:
-                # Flow de création
-                await self.confirm_job_creation_flow(ctx, job_name, level_int, author_id, author_name)
-            else:
-                # Mise à jour
-                if author_id not in self.jobs_data:
-                    self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
-                self.jobs_data[author_id]["name"] = author_name
-                self.jobs_data[author_id]["jobs"][canonical] = level_int
-
-                self.save_data_local()
-                emb = discord.Embed(
-                    title="Mise à jour du job",
-                    description=(
-                        f"Le métier **{canonical}** (initialement demandé : `{job_name}`)\n"
-                        f"a été défini au niveau **{level_int}** pour **{author_name}**."
-                    ),
-                    color=discord.Color.green()
-                )
-                await ctx.send(embed=emb)
-                await self.dump_data_to_console(ctx)
-            return
+            except ValueError:
+                # => pas de niveau => mode conversation
+                job_name = " ".join(args[1:])
+                await self.interactive_add_job_no_level(ctx, job_name, author_id, author_name)
+                return
 
         # 6) !job <job_name> <level> (version courte, 2 arguments)
         elif len(args) == 2:
@@ -342,10 +491,10 @@ class JobCog(commands.Cog):
             try:
                 level_int = int(level_str)
             except ValueError:
-                # Pas un niveau => pas la syntaxe attendue
+                # => pas un entier => on ne correspond pas
                 pass
             else:
-                # Cherche si le job existe déjà
+                # On a un niveau
                 canonical = self.find_canonical_job_name_in_db(job_name)
                 if canonical is None:
                     # Proposer la création
@@ -439,6 +588,7 @@ class JobCog(commands.Cog):
                 "• `!job <job_name>` : Afficher ceux qui ont un métier correspondant\n"
                 "• `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job (s'il existe ou après confirmation)\n"
                 "• `!job add <job_name> <niveau>` : Ajouter un métier (multi-mots autorisé) au niveau spécifié\n"
+                "   (ou sans niveau pour un dialogue interactif)\n"
             )
             await ctx.send(embed=discord.Embed(title="Erreur de syntaxe", description=usage_msg, color=discord.Color.red()))
 
