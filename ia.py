@@ -8,15 +8,15 @@ import asyncio
 import collections
 import random
 import re
+
 import discord
 from discord.ext import commands, tasks
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-def is_exact_match(msg, keyword):
-    pattern = r"\b" + re.escape(keyword.lower()) + r"\b"
-    return re.search(pattern, msg) is not None
-
+#
+# 1) Déclarations et regex compilées (intention) avec trie par longueur décroissante
+#
 HUMOR_KEYWORDS = [
     "haha","lol","mdr","ptdr","xD","xd","🤣","😂","😅","😆",
     "trop drôle","c'est drôle","excellent","jpp","marrant",
@@ -118,6 +118,35 @@ THREAT_KEYWORDS = [
     "tu vas tomber","tu ne verras pas demain","tu vas disparaître"
 ]
 
+def sort_keywords_desc(words):
+    """Trie la liste par longueur décroissante."""
+    return sorted(words, key=len, reverse=True)
+
+_PATTERNS_RAW = {
+    "serious_insult": SERIOUS_INSULT_KEYWORDS,
+    "discrimination": DISCRIMINATION_KEYWORDS,
+    "threat": THREAT_KEYWORDS,
+    "light_provocation": LIGHT_PROVOCATION_KEYWORDS,
+    "humor": HUMOR_KEYWORDS,
+    "sarcasm": SARCASM_KEYWORDS,
+}
+_COMPILED_PATTERNS = {}
+
+for label, kws in _PATTERNS_RAW.items():
+    sorted_kws = sort_keywords_desc(kws)
+    _COMPILED_PATTERNS[label] = re.compile(rf"\b({'|'.join(map(re.escape, sorted_kws))})\b", re.IGNORECASE)
+
+def detect_intention(msg: str) -> str:
+    """Détection des intentions via regex compilées."""
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", msg.lower())
+    for label, pattern in _COMPILED_PATTERNS.items():
+        if pattern.search(cleaned):
+            return label
+    return "neutral"
+
+#
+# 2) Tonalités, prompts système
+#
 EMOJIS_FRIENDLY = ["😄","😉","🤗","🥳","🙂"]
 EMOJIS_FIRM = ["😠","🙅","🚫","⚠️","😡"]
 
@@ -159,79 +188,184 @@ TONE_VARIATIONS = {
     ]
 }
 
-USER_STYLES = ["affectueux","direct","enthousiaste"]
+# PATCH APPLIQUÉ : nouveau bloc PROMPT_BASES
+PROMPT_BASES = {
+    # ------------------------------------------------ bot / !bot / mention -----------------------------------------
+    # ❖ objectif : réponse de 8 lignes max, ton amical et informatif
+    "bot": (
+        "Tu réponds à la question de l’utilisateur en **français** ; "
+        "structure‑toi ainsi :\n"
+        "1. Phrase d’accroche (confirmation ou courte reformulation).\n"
+        "2. Explication claire et concise du sujet (≤ 5 phrases).\n"
+        "3. Suggestion ou question d’ouverture pour poursuivre la discussion.\n"
+        "Si la demande enfreint le règlement, refuse poliment en citant la règle."
+    ),
 
-def detect_intention(msg):
-    cleaned = re.sub(r'[^\w\s]', '', msg.lower())
-    for kw in SERIOUS_INSULT_KEYWORDS:
-        if is_exact_match(cleaned, kw):
-            return "serious_insult"
-    for kw in DISCRIMINATION_KEYWORDS:
-        if is_exact_match(cleaned, kw):
-            return "discrimination"
-    for kw in THREAT_KEYWORDS:
-        if is_exact_match(cleaned, kw):
-            return "threat"
-    for kw in LIGHT_PROVOCATION_KEYWORDS:
-        if is_exact_match(cleaned, kw):
-            return "light_provocation"
-    for kw in HUMOR_KEYWORDS:
-        if is_exact_match(cleaned, kw):
-            return "humor"
-    for kw in SARCASM_KEYWORDS:
-        if is_exact_match(cleaned, kw):
-            return "sarcasm"
-    return "neutral"
+    # ------------------------------------------------ analyse / !analyse -------------------------------------------
+    # ❖ objectif : radiographie neutre du fil de discussion + 1 suggestion
+    "analyse": (
+        "Rédige un **compte‑rendu neutre** des 20 derniers messages :\n"
+        "• Atmosphère générale\n"
+        "• Thèmes principaux\n"
+        "• Signes éventuels de tension ou conflit\n"
+        "Conclue par **une seule** proposition constructive pour améliorer l’échange."
+    ),
 
+    # ------------------------------------------------ annonce / !annonce -------------------------------------------
+    # ❖ objectif : annonce officielle ping @everyone
+    "annonce": (
+        "Rédige une **annonce officielle** (pings autorisés) :\n"
+        "1. Accroche percutante (≤ 120 car.)\n"
+        "2. 2 ou 3 points clés sous forme de liste « • »\n"
+        "3. Appel à l’action clair avec date/heure ou canal dédié\n"
+        "Ton chaleureux, inclusif, **sans emoji**."
+    ),
+
+    # ------------------------------------------------ event / !event -----------------------------------------------
+    # ❖ objectif : invitation d’événement motivante
+    "event": (
+        "Rédige une **invitation d’événement** enthousiasmante :\n"
+        "• Nom de l’activité en **gras**\n"
+        "• Date + heure (format JJ/MM – HHh)\n"
+        "• Objectif principal\n"
+        "• Prérequis éventuels (niveau, stuff…)\n"
+        "Termine par : « Réservez votre place dans #organisation ! »."
+    ),
+
+    # ------------------------------------------------ pl / !pl -----------------------------------------------------
+    # ❖ objectif : demande de power‑levelling claire
+    "pl": (
+        "Formule une **demande de Power‑Levelling** structurée :\n"
+        "• Nombre de places recherchées\n"
+        "• Tranches de niveaux concernées\n"
+        "• Récompenses proposées (kamas, loot…)\n"
+        "• Plage horaire souhaitée\n"
+        "Conclue par un court message motivant."
+    ),
+}
+
+def system_prompt(base: str, tone: str, emoji: str, mention_reglement: str) -> str:
+    """Construit le prompt 'système' unifié."""
+    return (
+        "Tu es **EvolutionBOT**, assistant officiel Discord de la guilde Evolution.\n"
+        "Ta réponse doit être concise, chaleureuse et **en français**. "
+        "Fais référence aux valeurs de convivialité et d’entraide de la guilde.\n"
+        f"{base}\n{tone} {emoji}{mention_reglement}"
+    )
+
+#
+# Fonctions de sécurisation du texte avant insertion dans le prompt
+#
+def secure_text(txt: str) -> str:
+    """Évite injection de code markdown, pings, etc."""
+    from discord.utils import escape_markdown, escape_mentions
+    txt = txt.replace("```", "`\u200b``")
+    # Ajout pour gérer les ">>>"
+    txt = txt.replace(">>>", ">\u200b>>")
+    txt = escape_markdown(txt)
+    txt = escape_mentions(txt)
+    txt = txt.replace("@everyone", "@\u200beveryone")
+    txt = txt.replace("@here", "@\u200bhere")
+    return txt
+
+#
+# 3) chunkify
+#
 def chunkify(txt, size=2000):
+    """Découpe un long texte en morceaux de taille <= size."""
     for i in range(0, len(txt), size):
         yield txt[i:i+size]
 
+#
+# 4) Classe IACog
+#
 class IACog(commands.Cog):
+    ROLE_INVITE = "Membre validé d'Evolution"
+
     def __init__(self, bot):
         self.bot = bot
         self.history_limit = 20
-        self.max_prompt_size = 5000
+        # Patch : augmenter la taille max du prompt pour éviter la coupure trop tôt
+        self.max_prompt_size = 8000
         self.quota_block_duration = 3600
         self.quota_exceeded_until = 0
-        self.debug_mode = True
+
+        self.debug_mode = False
+        self.logger = self._setup_logger()
+
+        # Noms de canaux
         self.annonce_channel_name = "annonces"
         self.event_channel_name = "organisation"
         self.pl_channel_name = "xplock-rondesasa-ronde"
+
+        # Rappels règlement
         self.last_reglement_reminder = 0
         self.reglement_cooldown = 600
-        self.user_contexts = {}
+
+        # Contextes & anti-spam
+        self.user_contexts = {}  # {user_id: deque of (msg, ts)}
         self.spam_times = {}
         self.spam_interval = 5
         self.spam_threshold = 4
-        self.request_queue = collections.deque()
-        self.pending_requests = False
-        self.user_styles = {}
-        self.warning_limit = 3
-        self.mute_duration = 600
-        self.configure_logging()
+
+        # File d’attente
+        self.request_queue: asyncio.Queue[tuple[commands.Context, callable]] = asyncio.Queue()
+
         self.configure_gemini()
         self.knowledge_text = self.get_knowledge_text()
-        self.process_queue.start()
 
-    @tasks.loop(seconds=5)
+        # Tâches
+        self.process_queue.start()
+        self.cleanup_contexts.start()
+
+    def _setup_logger(self) -> logging.Logger:
+        """Crée un logger local nommé evo.ia avec un seul StreamHandler."""
+        logger = logging.getLogger("evo.ia")
+        logger.setLevel(logging.DEBUG if self.debug_mode else logging.INFO)
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.DEBUG if self.debug_mode else logging.INFO)
+        fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        handler.setFormatter(fmt)
+        # Évite d’ajouter deux fois le même handler
+        if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+            logger.addHandler(handler)
+        return logger
+
+    @tasks.loop(seconds=1)
     async def process_queue(self):
-        if self.pending_requests and time.time() >= self.quota_exceeded_until:
-            while self.request_queue:
-                ctx, prompt_callable = self.request_queue.popleft()
-                try:
-                    await prompt_callable(ctx)
-                except:
-                    pass
-            self.pending_requests = False
+        """Boucle d’exécution de la file d’attente toutes les 1 s."""
+        if time.time() < self.quota_exceeded_until:
+            return
+
+        while not self.request_queue.empty():
+            ctx, prompt_callable = await self.request_queue.get()
+            try:
+                await prompt_callable(ctx)
+            except Exception as exc:
+                self.logger.exception("Unhandled error in process_queue", exc_info=exc)
+                await ctx.send("Erreur interne lors du traitement de la requête. Voir logs.")
+            finally:
+                self.request_queue.task_done()
+
+    @tasks.loop(hours=1)
+    async def cleanup_contexts(self):
+        """Purge des contextes vieux de plus de 7 jours."""
+        cutoff = time.time() - 7 * 24 * 3600
+        for uid in list(self.user_contexts):
+            dq = self.user_contexts[uid]
+            new_dq = collections.deque(
+                ((m, t) for (m, t) in dq if t >= cutoff),
+                maxlen=dq.maxlen
+            )
+            if new_dq:
+                self.user_contexts[uid] = new_dq
+            else:
+                self.user_contexts.pop(uid, None)
 
     def cog_unload(self):
-        self.process_queue.cancel()
-
-    def configure_logging(self):
-        lvl = logging.DEBUG if self.debug_mode else logging.INFO
-        logging.basicConfig(level=lvl, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        self.logger = logging.getLogger("IACog")
+        """Arrêt propre : annule les tasks. (Méthode synchrone pour être invoquée par discord.py)"""
+        for task in (self.process_queue, self.cleanup_contexts):
+            task.cancel()
 
     def configure_gemini(self):
         load_dotenv()
@@ -243,6 +377,7 @@ class IACog(commands.Cog):
         self.model_flash = genai.GenerativeModel("gemini-1.5-flash")
 
     def get_knowledge_text(self):
+        """Texte du règlement + liste des commandes."""
         return (
             "RÈGLEMENT OFFICIEL DE LA GUILDE EVOLUTION – Édition du 19/02/2025\n\n"
             "“Ensemble, nous évoluerons plus vite que seuls.”\n\n"
@@ -351,7 +486,7 @@ class IACog(commands.Cog):
             "📌 **Commande Ticket**\n"
             "• __!ticket__\n\n"
             "📌 **Commandes IA**\n"
-            "• __!bot <message>__\n"
+            "• __!bot <message>__ (alias !free)\n"
             "• __!analyse__\n\n"
             "📌 **Commandes Sondage**\n"
             "• __!sondage <Titre> ; <Choix1> ; ... ; temps=JJ:HH:MM>\n"
@@ -371,231 +506,320 @@ class IACog(commands.Cog):
             "=====================================================================\n"
         )
 
+    #
+    # Commande !ia => aide
+    #
     @commands.command(name="ia")
     async def ia_help_command(self, ctx):
         txt = (
             "**Commandes IA :**\n"
-            "!annonce <texte> (Staff)\n"
-            "!analyse\n"
-            "!bot <message>\n"
-            "!event <texte> (Staff)\n"
-            "!pl <texte>\n"
+            "`!bot` / `!free <msg>` – Question à l’IA (message visible)\n"
+            "!analyse (Staff – efface la commande)\n"
+            "!annonce <texte> (Staff – efface la commande)\n"
+            "!event <texte> (Staff – efface la commande)\n"
+            "!pl <texte> (Staff – efface la commande)\n"
             "Mentionnez @EvolutionBOT pour solliciter l'IA\n"
             "!ia pour revoir ce guide"
         )
         await ctx.send(txt)
 
-    async def handle_ai_request(self, ctx, user_message):
+    #
+    # handle_ai_request => pour !bot
+    #
+    async def handle_ai_request(self, ctx, user_message: str):
         now = time.time()
-        uid = ctx.author.id
-        if uid not in self.user_contexts:
-            self.user_contexts[uid] = collections.deque(maxlen=50)
-        if uid not in self.spam_times:
-            self.spam_times[uid] = []
-        self.spam_times[uid].append(now)
-        self.spam_times[uid] = [t for t in self.spam_times[uid] if now - t < self.spam_interval]
-        if len(self.spam_times[uid]) > self.spam_threshold:
-            await ctx.send("Tu sembles spammer le bot. Merci de ralentir.")
+
+        # Anti-spam
+        dq = self.spam_times.setdefault(ctx.author.id, collections.deque(maxlen=self.spam_threshold + 1))
+        dq.append(now)
+        while dq and now - dq[0] > self.spam_interval:
+            dq.popleft()
+        if len(dq) > self.spam_threshold:
+            # Correctif D : éviter temps d'attente négatif
+            wait = max(1, int(self.spam_interval - (now - dq[0])))
+            await ctx.send(f"Ralentis un peu… réessaye dans {wait}s.")
             return
 
+        # Sécurisation
+        user_message = secure_text(user_message)
+
+        # Intention
         intention = detect_intention(user_message)
         possible_tones = TONE_VARIATIONS.get(intention, TONE_VARIATIONS["neutral"])
         chosen_tone = random.choice(possible_tones)
-        style_user = self.user_styles.get(uid, "neutre")
         if intention in ["humor","sarcasm","light_provocation","neutral"]:
-            emo = random.choice(EMOJIS_FRIENDLY)
+            emoji = random.choice(EMOJIS_FRIENDLY)
         else:
-            emo = random.choice(EMOJIS_FIRM)
+            emoji = random.choice(EMOJIS_FIRM)
 
-        # Si c'est une insulte, une discrimination ou une menace, juste avertir poliment
         mention_reglement = ""
         if intention in ["serious_insult", "discrimination", "threat"]:
             if (now - self.last_reglement_reminder) > self.reglement_cooldown:
                 mention_reglement = " Merci de garder un langage convenable. (Réf. Règlement)"
 
-        st = (
-            f"Tu es EvolutionBOT, assistant de la guilde. L'utilisateur a un style '{style_user}'. "
-            f"{chosen_tone} {emo}{mention_reglement}"
-        )
+        # Prompt system
+        base = PROMPT_BASES["bot"]
+        system_str = system_prompt(base, chosen_tone, emoji, mention_reglement)
 
-        user_history = list(self.user_contexts[uid])
-        user_history.append(user_message)
-        self.user_contexts[uid] = collections.deque(user_history, maxlen=50)
+        # Enregistrer le message
+        if ctx.author.id not in self.user_contexts:
+            self.user_contexts[ctx.author.id] = collections.deque(maxlen=50)
+        self.user_contexts[ctx.author.id].append((user_message, now))
 
+        # Historique du salon (ordre chronologique)
         channel_history = []
         async for m in ctx.channel.history(limit=self.history_limit):
             if not m.author.bot:
-                channel_history.append(m)
-        channel_history.sort(key=lambda x: x.created_at)
-        hist_txt = "".join(f"{m.author.display_name}: {m.content}\n" for m in channel_history)
+                channel_history.append((m.created_at, m.author.display_name, secure_text(m.content)))
+        # Tri sur la date
+        channel_history.sort(key=lambda x: x[0])
+        hist_txt = "".join(f"{author}: {content}\n" for (_, author, content) in channel_history)
 
+        # Construire le prompt
         final_prompt = (
-            f"{st}\n\n"
+            f"{system_str}\n\n"
             f"knowledge_text:\n{self.knowledge_text}\n\n"
             f"Contexte({self.history_limit}):\n{hist_txt}\n\n"
             f"Message de {ctx.author.display_name}: {user_message}"
         )
 
-        if len(final_prompt) > self.max_prompt_size:
-            surplus = len(final_prompt) - self.max_prompt_size
-            if surplus < len(hist_txt):
-                hist_txt = hist_txt[surplus:]
-            else:
-                hist_txt = "(Contexte tronqué)"
+        # Tronquage “propre”
+        while len(final_prompt) > self.max_prompt_size and hist_txt.count("\n") > 1:
+            lines = hist_txt.split("\n")
+            # Retire la moitié la plus ancienne
+            hist_txt = "\n".join(lines[len(lines)//2:])
             final_prompt = (
-                f"{st}\n\n"
+                f"{system_str}\n\n"
                 f"knowledge_text:\n{self.knowledge_text}\n\n"
-                f"{hist_txt}\n\n"
+                f"(Historique partiellement tronqué)\n\n"
                 f"Message de {ctx.author.display_name}: {user_message}"
             )
+
+        # Si c'est encore trop grand
+        if len(final_prompt) > self.max_prompt_size:
+            surplus = len(final_prompt) - self.max_prompt_size
+            final_prompt = final_prompt[surplus:]
 
         try:
             resp, model_used = await self.generate_content_with_fallback_async(final_prompt)
             if resp and hasattr(resp, "text"):
                 rep = resp.text.strip() or "(vide)"
-                # Mettre à jour la variable last_reglement_reminder si c’est un gros écart
                 if intention in ["serious_insult","discrimination","threat"]:
                     self.last_reglement_reminder = time.time()
                 for c in chunkify(rep):
                     await ctx.send(c)
             else:
                 await ctx.send("Aucune réponse de l'IA.")
-        except Exception as e:
-            if "429" in str(e):
+        except Exception as exc:
+            if "429" in str(exc):
                 await ctx.send("**Quota IA dépassé**, réessayez plus tard.")
             else:
-                await ctx.send(f"Erreur IA: {e}")
+                self.logger.exception("Erreur IA handle_ai_request", exc_info=exc)
+                await ctx.send(f"Erreur IA: {exc}")
 
+    #
+    # Fonctions d'appel Gemini (async) avec fallback
+    #
     async def generate_content_async(self, model, prompt):
         loop = asyncio.get_running_loop()
-        def sync_call():
-            return model.generate_content(prompt)
-        return await loop.run_in_executor(None, sync_call)
+        return await loop.run_in_executor(
+            None,
+            lambda: model.generate_content(prompt)
+        )
 
     async def generate_content_with_fallback_async(self, prompt):
         try:
             r = await self.generate_content_async(self.model_pro, prompt)
             return r, "PRO"
         except Exception as e1:
-            if any(x in str(e1).lower() for x in ["429","quota","unavailable"]):
+            if any(x in str(e1).lower() for x in ["429", "quota", "unavailable"]):
+                self.quota_exceeded_until = time.time() + self.quota_block_duration
+                self.logger.warning("Quota saturé (modèle PRO), passage en FLASH.")
                 try:
                     r2 = await self.generate_content_async(self.model_flash, prompt)
                     return r2, "FLASH"
                 except Exception as e2:
-                    if "429" in str(e2):
+                    if "429" in str(e2).lower():
                         self.quota_exceeded_until = time.time() + self.quota_block_duration
+                        self.logger.warning("Quota saturé (modèle FLASH). Bloqué.")
                     raise e2
             else:
                 raise e1
 
-    @commands.command(name="bot")
-    async def free_command(self, ctx, *, user_message=None):
+    #
+    # 8) !bot / alias !free
+    #
+    @commands.command(name="bot", aliases=["free"])
+    async def bot_command(self, ctx, *, user_message=None):
         if not user_message:
             await ctx.send("Usage : `!bot <votre question>`")
             return
         if time.time() < self.quota_exceeded_until:
-            qlen = len(self.request_queue)
+            qlen = self.request_queue.qsize()
             await ctx.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
-            self.request_queue.append((ctx, lambda co: self.handle_ai_request(co, user_message)))
-            self.pending_requests = True
+            await self.request_queue.put((ctx, lambda co: self.handle_ai_request(co, user_message)))
             return
+
         await self.handle_ai_request(ctx, user_message)
 
+    #
+    # 9) Mention directe
+    #
     @commands.Cog.listener()
-    async def on_message(self, message):
+    async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
         c = await self.bot.get_context(message)
         if c.valid and c.command:
             return
         if self.bot.user.mention in message.content:
-            q = message.content.replace(self.bot.user.mention, "").strip()
-            if q:
+            raw = secure_text(message.content.replace(self.bot.user.mention, "").strip())
+            if raw:
                 if time.time() < self.quota_exceeded_until:
-                    qlen = len(self.request_queue)
+                    qlen = self.request_queue.qsize()
                     await c.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
-                    self.request_queue.append((c, lambda co: self.handle_ai_request(co, q)))
-                    self.pending_requests = True
+                    await self.request_queue.put((c, lambda co: self.handle_ai_request(co, raw)))
                     return
-                await self.handle_ai_request(c, q)
+                await self.handle_ai_request(c, raw)
 
+    #
+    # 10) !analyse (Staff)
+    #
     @commands.command(name="analyse")
     async def analyse_command(self, ctx):
+        try:
+            await ctx.message.delete()
+        except discord.Forbidden:
+            pass
+
         lim = 100
         messages = []
         async for m in ctx.channel.history(limit=lim):
             if not m.author.bot:
                 messages.append(m)
         messages.sort(key=lambda x: x.created_at)
-        st = "Tu es EvolutionBOT, fais un rapport neutre sur les derniers messages (ambiance, conflits)."
-        joined = "".join(f"{x.author.display_name}: {x.content}\n" for x in messages)
-        pr = f"{st}\n{joined}"
-        try:
-            await ctx.message.delete()
-        except:
-            pass
-        if time.time() < self.quota_exceeded_until:
-            qlen = len(self.request_queue)
-            await ctx.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
-            self.request_queue.append((ctx, lambda co: self.analyse_fallback(co, pr)))
-            self.pending_requests = True
-            return
-        await self.analyse_fallback(ctx, pr)
 
-    async def analyse_fallback(self, ctx, prompt):
+        joined = []
+        for x in messages:
+            safe = secure_text(x.content)
+            joined.append(f"{x.author.display_name}: {safe}")
+        user_message = "\n".join(joined)
+
+        if time.time() < self.quota_exceeded_until:
+            qlen = self.request_queue.qsize()
+            await ctx.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
+            await self.request_queue.put((ctx, lambda co: self.analyse_fallback(co, user_message)))
+            return
+
+        await self.analyse_fallback(ctx, user_message)
+
+    async def analyse_fallback(self, ctx, user_message: str):
+        intention = detect_intention(user_message)
+        possible_tones = TONE_VARIATIONS.get(intention, TONE_VARIATIONS["neutral"])
+        chosen_tone = random.choice(possible_tones)
+
+        if intention in ["humor","sarcasm","light_provocation","neutral"]:
+            emoji = random.choice(EMOJIS_FRIENDLY)
+        else:
+            emoji = random.choice(EMOJIS_FIRM)
+
+        mention_reglement = ""
+        now = time.time()
+        if intention in ["serious_insult", "discrimination", "threat"]:
+            if (now - self.last_reglement_reminder) > self.reglement_cooldown:
+                mention_reglement = " Merci de garder un langage convenable. (Réf. Règlement)"
+
+        base = PROMPT_BASES["analyse"]
+        system_str = system_prompt(base, chosen_tone, emoji, mention_reglement)
+
+        final_prompt = (
+            f"{system_str}\n\n"
+            f"{user_message}"
+        )
+
         try:
-            resp, model_used = await self.generate_content_with_fallback_async(prompt)
+            resp, model_used = await self.generate_content_with_fallback_async(final_prompt)
             if resp and hasattr(resp, "text"):
                 rep = resp.text.strip() or "(vide)"
+                if intention in ["serious_insult","discrimination","threat"]:
+                    self.last_reglement_reminder = time.time()
                 for c in chunkify(rep):
                     await ctx.send(c)
             else:
                 await ctx.send("Aucune réponse d'analyse.")
-        except Exception as e:
-            if "429" in str(e):
+        except Exception as exc:
+            if "429" in str(exc):
                 await ctx.send("**Quota dépassé**.")
             else:
-                await ctx.send(f"Erreur: {e}")
+                self.logger.exception("Erreur dans analyse_fallback", exc_info=exc)
+                await ctx.send(f"Erreur: {exc}")
 
+    #
+    # 11) !annonce, !event, !pl
+    #
     @commands.has_role("Staff")
     @commands.command(name="annonce")
     async def annonce_command(self, ctx, *, user_message=None):
         if not user_message:
             await ctx.send("Usage: !annonce <texte>")
             return
-        chan = discord.utils.get(ctx.guild.text_channels, name="annonces")
+        try:
+            await ctx.message.delete()
+        except discord.Forbidden:
+            pass
+
+        chan = discord.utils.get(ctx.guild.text_channels, name=self.annonce_channel_name)
         if not chan:
             await ctx.send("Canal introuvable.")
             return
+
         if time.time() < self.quota_exceeded_until:
-            qlen = len(self.request_queue)
+            qlen = self.request_queue.qsize()
             await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
-            self.request_queue.append((ctx, lambda co: self.annonce_fallback(co, chan, user_message)))
-            self.pending_requests = True
+            await self.request_queue.put((ctx, lambda co: self.annonce_fallback(co, chan, user_message)))
             return
+
         await self.annonce_fallback(ctx, chan, user_message)
 
     async def annonce_fallback(self, ctx, chan, user_message):
-        st = "Tu es EvolutionBOT, crée une annonce fun et commence par '@everyone'."
-        pr = f"{st}\n{user_message}"
+        user_message = secure_text(user_message)
+
+        intention = detect_intention(user_message)
+        possible_tones = TONE_VARIATIONS.get(intention, TONE_VARIATIONS["neutral"])
+        chosen_tone = random.choice(possible_tones)
+
+        if intention in ["humor","sarcasm","light_provocation","neutral"]:
+            emoji = random.choice(EMOJIS_FRIENDLY)
+        else:
+            emoji = random.choice(EMOJIS_FIRM)
+
+        mention_reglement = ""
+        now = time.time()
+        if intention in ["serious_insult", "discrimination", "threat"]:
+            if (now - self.last_reglement_reminder) > self.reglement_cooldown:
+                mention_reglement = " Merci de garder un langage convenable. (Réf. Règlement)"
+
+        base = PROMPT_BASES["annonce"]
+        system_str = system_prompt(base, chosen_tone, emoji, mention_reglement)
+        prompt = f"{system_str}\n\n{user_message}"
+
         try:
-            await ctx.message.delete()
-        except:
-            pass
-        try:
-            resp, model_used = await self.generate_content_with_fallback_async(pr)
+            resp, model_used = await self.generate_content_with_fallback_async(prompt)
             if resp and hasattr(resp, "text"):
                 final = resp.text.strip() or "(vide)"
-                await chan.send(f"**Annonce [{model_used}] :**")
+                if intention in ["serious_insult","discrimination","threat"]:
+                    self.last_reglement_reminder = time.time()
+                await chan.send("**Annonce :**")
                 for c in chunkify(final):
                     await chan.send(c)
             else:
                 await ctx.send("Pas d'annonce générée.")
-        except Exception as e:
-            if "429" in str(e):
+        except Exception as exc:
+            if "429" in str(exc):
                 await ctx.send("Quota dépassé.")
             else:
-                await ctx.send(str(e))
+                self.logger.exception("Erreur dans annonce_fallback", exc_info=exc)
+                await ctx.send(str(exc))
 
     @commands.has_role("Staff")
     @commands.command(name="event")
@@ -603,81 +827,132 @@ class IACog(commands.Cog):
         if not user_message:
             await ctx.send("Usage: !event <texte>")
             return
-        chan = discord.utils.get(ctx.guild.text_channels, name="organisation")
+        try:
+            await ctx.message.delete()
+        except discord.Forbidden:
+            pass
+
+        chan = discord.utils.get(ctx.guild.text_channels, name=self.event_channel_name)
         if not chan:
             await ctx.send("Canal introuvable.")
             return
+
         if time.time() < self.quota_exceeded_until:
-            qlen = len(self.request_queue)
+            qlen = self.request_queue.qsize()
             await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
-            self.request_queue.append((ctx, lambda co: self.event_fallback(co, chan, user_message)))
-            self.pending_requests = True
+            await self.request_queue.put((ctx, lambda co: self.event_fallback(co, chan, user_message)))
             return
+
         await self.event_fallback(ctx, chan, user_message)
 
     async def event_fallback(self, ctx, chan, user_message):
-        st = "Tu es EvolutionBOT, rédige une invitation d'événement incitant à participer."
-        pr = f"{st}\n\n{user_message}"
+        user_message = secure_text(user_message)
+
+        intention = detect_intention(user_message)
+        possible_tones = TONE_VARIATIONS.get(intention, TONE_VARIATIONS["neutral"])
+        chosen_tone = random.choice(possible_tones)
+
+        if intention in ["humor","sarcasm","light_provocation","neutral"]:
+            emoji = random.choice(EMOJIS_FRIENDLY)
+        else:
+            emoji = random.choice(EMOJIS_FIRM)
+
+        mention_reglement = ""
+        now = time.time()
+        if intention in ["serious_insult", "discrimination", "threat"]:
+            if (now - self.last_reglement_reminder) > self.reglement_cooldown:
+                mention_reglement = " Merci de garder un langage convenable. (Réf. Règlement)"
+
+        base = PROMPT_BASES["event"]
+        system_str = system_prompt(base, chosen_tone, emoji, mention_reglement)
+        prompt = f"{system_str}\n\n{user_message}"
+
         try:
-            await ctx.message.delete()
-        except:
-            pass
-        try:
-            resp, model_used = await self.generate_content_with_fallback_async(pr)
+            resp, model_used = await self.generate_content_with_fallback_async(prompt)
             if resp and hasattr(resp, "text"):
                 rep = resp.text.strip() or "(vide)"
-                await chan.send(f"**Nouvel Événement [{model_used}] :**")
+                if intention in ["serious_insult","discrimination","threat"]:
+                    self.last_reglement_reminder = time.time()
+                await chan.send("**Nouvel Événement :**")
                 for c in chunkify(rep):
                     await chan.send(c)
-                role_val = discord.utils.get(ctx.guild.roles, name="Membre validé d'Evolution")
+                role_val = discord.utils.get(ctx.guild.roles, name=self.ROLE_INVITE)
                 if role_val:
                     await chan.send(role_val.mention)
             else:
                 await ctx.send("Événement non généré.")
-        except Exception as e:
-            if "429" in str(e):
+        except Exception as exc:
+            if "429" in str(exc):
                 await ctx.send("Quota dépassé.")
             else:
-                await ctx.send(str(e))
+                self.logger.exception("Erreur dans event_fallback", exc_info=exc)
+                await ctx.send(str(exc))
 
     @commands.command(name="pl")
     async def pl_command(self, ctx, *, user_message=None):
         if not user_message:
             await ctx.send("Usage: !pl <texte>")
             return
-        chan = discord.utils.get(ctx.guild.text_channels, name="xplock-rondesasa-ronde")
+        try:
+            await ctx.message.delete()
+        except discord.Forbidden:
+            pass
+
+        chan = discord.utils.get(ctx.guild.text_channels, name=self.pl_channel_name)
         if not chan:
             await ctx.send("Canal introuvable.")
             return
+
         if time.time() < self.quota_exceeded_until:
-            qlen = len(self.request_queue)
+            qlen = self.request_queue.qsize()
             await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
-            self.request_queue.append((ctx, lambda co: self.pl_fallback(co, chan, user_message)))
-            self.pending_requests = True
+            await self.request_queue.put((ctx, lambda co: self.pl_fallback(co, chan, user_message)))
             return
+
         await self.pl_fallback(ctx, chan, user_message)
 
     async def pl_fallback(self, ctx, chan, user_message):
-        st = "Tu es EvolutionBOT, rédige une annonce de PL claire et motivante."
-        pr = f"{st}\n\n{user_message}"
+        user_message = secure_text(user_message)
+
+        intention = detect_intention(user_message)
+        possible_tones = TONE_VARIATIONS.get(intention, TONE_VARIATIONS["neutral"])
+        chosen_tone = random.choice(possible_tones)
+
+        if intention in ["humor","sarcasm","light_provocation","neutral"]:
+            emoji = random.choice(EMOJIS_FRIENDLY)
+        else:
+            emoji = random.choice(EMOJIS_FIRM)
+
+        mention_reglement = ""
+        now = time.time()
+        if intention in ["serious_insult", "discrimination", "threat"]:
+            if (now - self.last_reglement_reminder) > self.reglement_cooldown:
+                mention_reglement = " Merci de garder un langage convenable. (Réf. Règlement)"
+
+        base = PROMPT_BASES["pl"]
+        system_str = system_prompt(base, chosen_tone, emoji, mention_reglement)
+        prompt = f"{system_str}\n\n{user_message}"
+
         try:
-            await ctx.message.delete()
-        except:
-            pass
-        try:
-            resp, model_used = await self.generate_content_with_fallback_async(pr)
+            resp, model_used = await self.generate_content_with_fallback_async(prompt)
             if resp and hasattr(resp, "text"):
                 rep = resp.text.strip() or "(vide)"
-                await chan.send(f"**Nouvelle Annonce PL [{model_used}] :**")
+                if intention in ["serious_insult","discrimination","threat"]:
+                    self.last_reglement_reminder = time.time()
+                await chan.send("**Annonce PL :**")
                 for c in chunkify(rep):
                     await chan.send(c)
             else:
                 await ctx.send("Pas de réponse IA pour PL.")
-        except Exception as e:
-            if "429" in str(e):
+        except Exception as exc:
+            if "429" in str(exc):
                 await ctx.send("Quota dépassé.")
             else:
-                await ctx.send(str(e))
+                self.logger.exception("Erreur dans pl_fallback", exc_info=exc)
+                await ctx.send(str(exc))
 
+#
+# 12) setup du cog
+#
 async def setup(bot: commands.Bot):
     await bot.add_cog(IACog(bot))
