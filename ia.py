@@ -292,7 +292,6 @@ class IACog(commands.Cog):
         self.history_limit = 20
 
         # Limite de longueur du prompt (en caractères) avant tronquage
-        # (L'idéal serait un comptage tokens, mais on reste minimal.)
         self.max_prompt_size = 8000
 
         # Durée du blocage si quota dépassé (en secondes)
@@ -328,11 +327,33 @@ class IACog(commands.Cog):
         self.configure_gemini()
         self.knowledge_text = self.get_knowledge_text()
 
-        # Démarrage des tâches
+        # ─────────────────────────────────────────────
+        # IMPORTANT: on NE démarre plus les tasks ici
+        # ─────────────────────────────────────────────
+        # self.process_queue.start()
+        # self.cleanup_contexts.start()
+
+        self.logger.info("IACog __init__ terminé, Cog chargé correctement.")
+
+    async def cog_load(self) -> None:
+        """
+        Méthode spéciale appelée automatiquement par discord.py quand le Cog
+        est entièrement chargé (la boucle asyncio du bot est disponible).
+        On démarre ici les loops.
+        """
         self.process_queue.start()
         self.cleanup_contexts.start()
 
-        self.logger.info("IACog __init__ terminé, Cog chargé correctement.")
+    async def cog_unload(self) -> None:
+        """
+        Arrêt propre du Cog. On stoppe les loops, on vide la file d'attente
+        et on ferme l'executor.
+        """
+        self.process_queue.cancel()
+        self.cleanup_contexts.cancel()
+        await self.request_queue.join()
+        self.executor.shutdown(wait=True)
+        self.logger.info("IACog déchargé proprement.")
 
     def _setup_logger(self) -> logging.Logger:
         """Crée un logger local nommé evo.ia avec un seul StreamHandler."""
@@ -389,24 +410,6 @@ class IACog(commands.Cog):
             "=====================================================================\n"
         )
 
-    async def cog_unload(self):
-        """
-        Arrêt propre : on attend que la queue soit vidée,
-        puis on annule les tâches.
-        """
-        await self.request_queue.join()  # On attend que tout soit traité
-
-        for task in (self.process_queue, self.cleanup_contexts):
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        # On ferme le threadpool
-        self.executor.shutdown(wait=True)
-        self.logger.info("IACog déchargé proprement.")
-
     @tasks.loop(seconds=1)
     async def process_queue(self):
         """Boucle d’exécution de la file d’attente toutes les 1 s."""
@@ -446,7 +449,7 @@ class IACog(commands.Cog):
             del self.user_contexts[uid]
 
     #
-    # 5) Fonctions d’appel Gemini (async) avec fallback si quota saturé
+    # Fonctions d’appel Gemini (async) avec fallback si quota saturé
     #
     async def generate_content_async(self, model: genai.GenerativeModel, prompt: str):
         """
@@ -751,7 +754,7 @@ class IACog(commands.Cog):
 
         now = time.time()
         mention_reglement = ""
-        if intention in ["serious_insult", "discrimination", "threat"]:
+        if intention in ["serious_insult","discrimination","threat"]:
             if (now - self.last_reglement_reminder) > self.reglement_cooldown:
                 mention_reglement = " Merci de garder un langage convenable. (Réf. Règlement)"
 
