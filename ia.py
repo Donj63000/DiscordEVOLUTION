@@ -202,37 +202,37 @@ TONE_VARIATIONS = {
 # Blocs de prompts spécifiques selon la commande
 PROMPT_BASES = {
     "bot": (
-        "Tu réponds à la question de l’utilisateur en **français** ; "
-        "structure‑toi ainsi :\n"
+        "Tu réponds à la question de l’utilisateur en **français** ; "
+        "structure‑toi ainsi :\n"
         "1. Phrase d’accroche (confirmation ou courte reformulation).\n"
         "2. Explication claire et concise du sujet (≤ 5 phrases).\n"
         "3. Suggestion ou question d’ouverture pour poursuivre la discussion.\n"
         "Si la demande enfreint le règlement, refuse poliment en citant la règle."
     ),
     "analyse": (
-        "Rédige un **compte‑rendu neutre** des 20 derniers messages :\n"
+        "Rédige un **compte‑rendu neutre** des 20 derniers messages :\n"
         "• Atmosphère générale\n"
         "• Thèmes principaux\n"
         "• Signes éventuels de tension ou conflit\n"
         "Conclue par **une seule** proposition constructive pour améliorer l’échange."
     ),
     "annonce": (
-        "Rédige une **annonce officielle** (pings autorisés) :\n"
+        "Rédige une **annonce officielle** (pings autorisés) :\n"
         "1. Accroche percutante (≤ 120 car.)\n"
         "2. 2 ou 3 points clés sous forme de liste « • »\n"
         "3. Appel à l’action clair avec date/heure ou canal dédié\n"
         "Ton chaleureux, inclusif, **sans emoji**."
     ),
     "event": (
-        "Rédige une **invitation d’événement** enthousiasmante :\n"
+        "Rédige une **invitation d’événement** enthousiasmante :\n"
         "• Nom de l’activité en **gras**\n"
-        "• Date + heure (format JJ/MM – HHh)\n"
+        "• Date + heure (format JJ/MM – HHh)\n"
         "• Objectif principal\n"
         "• Prérequis éventuels (niveau, stuff…)\n"
-        "Termine par : « Réservez votre place dans #organisation ! »."
+        "Termine par : « Réservez votre place dans #organisation ! »."
     ),
     "pl": (
-        "Formule une **demande de Power‑Levelling** structurée :\n"
+        "Formule une **demande de Power‑Levelling** structurée :\n"
         "• Nombre de places recherchées\n"
         "• Tranches de niveaux concernées\n"
         "• Récompenses proposées (kamas, loot…)\n"
@@ -260,9 +260,8 @@ def secure_text(txt: str) -> str:
     from discord.utils import escape_markdown, escape_mentions
 
     # On protège tous les backticks pour éviter l'injection
-    txt = txt.replace("`", "`\u200b")
-
-    txt = txt.replace("```", "`\u200b``")  # triple backticks
+    # (Ici, on peut simplement s’assurer qu’on ne produit pas de triple backticks.)
+    txt = txt.replace("```", "`\u200b``")
     txt = txt.replace(">>>", ">\u200b>>")
     txt = escape_markdown(txt)
     txt = escape_mentions(txt)
@@ -327,13 +326,10 @@ class IACog(commands.Cog):
         self.configure_gemini()
         self.knowledge_text = self.get_knowledge_text()
 
-        # ─────────────────────────────────────────────
-        # IMPORTANT: on NE démarre plus les tasks ici
-        # ─────────────────────────────────────────────
-        # self.process_queue.start()
-        # self.cleanup_contexts.start()
+        # IMPORTANT : on ne démarre PAS les tasks dans __init__ !
+        # (pour éviter RuntimeError: no running event loop)
 
-        self.logger.info("IACog __init__ terminé, Cog chargé correctement.")
+        self.logger.info("IACog __init__ terminé, Cog chargé en mémoire (tasks non démarrées).")
 
     async def cog_load(self) -> None:
         """
@@ -343,6 +339,7 @@ class IACog(commands.Cog):
         """
         self.process_queue.start()
         self.cleanup_contexts.start()
+        self.logger.info("IACog: Les tasks process_queue et cleanup_contexts ont été démarrées.")
 
     async def cog_unload(self) -> None:
         """
@@ -353,7 +350,7 @@ class IACog(commands.Cog):
         self.cleanup_contexts.cancel()
         await self.request_queue.join()
         self.executor.shutdown(wait=True)
-        self.logger.info("IACog déchargé proprement.")
+        self.logger.info("IACog déchargé proprement : tasks stoppées, executor fermé.")
 
     def _setup_logger(self) -> logging.Logger:
         """Crée un logger local nommé evo.ia avec un seul StreamHandler."""
@@ -375,7 +372,6 @@ class IACog(commands.Cog):
         Initialise la configuration de l'API Gemini/PaLM2
         en chargeant la clé depuis l'environnement (.env).
         """
-        # Idéalement, load_dotenv() serait fait dans le main, pas ici
         load_dotenv()
         self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
@@ -423,7 +419,6 @@ class IACog(commands.Cog):
                 await prompt_callable(ctx)
             except Exception as exc:
                 self.logger.exception("Unhandled error in process_queue", exc_info=exc)
-                # On évite d'envoyer toute la stacktrace en public
                 await ctx.send("Erreur interne lors du traitement de la requête.")
             finally:
                 self.request_queue.task_done()
@@ -477,7 +472,7 @@ class IACog(commands.Cog):
                     return resp2, "FLASH"
                 except Exception as e2:
                     if "429" in str(e2).lower():
-                        # Seulement ici on bloque globalement
+                        # On bloque globalement
                         self.quota_exceeded_until = time.time() + self.quota_block_duration
                         self.logger.warning("Quota saturé (modèle FLASH). Bloqué.")
                     raise e2
@@ -548,6 +543,7 @@ class IACog(commands.Cog):
         intention = detect_intention(user_message)
         possible_tones = TONE_VARIATIONS.get(intention, TONE_VARIATIONS["neutral"])
         chosen_tone = random.choice(possible_tones)
+
         if intention in ["humor", "sarcasm", "light_provocation", "neutral"]:
             emoji = random.choice(EMOJIS_FRIENDLY)
         else:
