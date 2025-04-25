@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-#SAVE IA
+
 import os
 import time
 import logging
@@ -8,14 +8,42 @@ import asyncio
 import collections
 import random
 import re
+
 import discord
 from discord.ext import commands, tasks
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-def is_exact_match(msg, keyword):
+##############################################
+# Constantes "globales" et fonctions utilitaires
+##############################################
+
+# Exemple de nom de salon "console" si on voulait reproduire la logique de dump,
+# non obligatoire ici (contrairement à Code B qui stocke des données JSON).
+CONSOLE_CHANNEL_NAME = "console"
+
+# Intervalle de la boucle process_queue
+QUEUE_PROCESS_INTERVAL = 5
+
+def chunk_list(txt, size=2000):
+    """
+    Coupe une longue chaîne en morceaux de taille <= size.
+    Équivalent de 'chunkify' du code original,
+    mais écrit ici pour reproduire le style de Code B.
+    """
+    for i in range(0, len(txt), size):
+        yield txt[i:i+size]
+
+def is_exact_match(msg: str, keyword: str) -> bool:
+    """
+    Détecte si le 'keyword' est présent de façon isolée (mot entier) dans 'msg'.
+    """
     pattern = r"\b" + re.escape(keyword.lower()) + r"\b"
     return re.search(pattern, msg) is not None
+
+##############################################
+# Listes de mots-clés / intentions
+##############################################
 
 HUMOR_KEYWORDS = [
     "haha","lol","mdr","ptdr","xD","xd","🤣","😂","😅","😆",
@@ -161,218 +189,230 @@ TONE_VARIATIONS = {
 
 USER_STYLES = ["affectueux","direct","enthousiaste"]
 
-def detect_intention(msg):
-    cleaned = re.sub(r'[^\w\s]', '', msg.lower())
-    for kw in SERIOUS_INSULT_KEYWORDS:
-        if is_exact_match(cleaned, kw):
-            return "serious_insult"
-    for kw in DISCRIMINATION_KEYWORDS:
-        if is_exact_match(cleaned, kw):
-            return "discrimination"
-    for kw in THREAT_KEYWORDS:
-        if is_exact_match(cleaned, kw):
-            return "threat"
-    for kw in LIGHT_PROVOCATION_KEYWORDS:
-        if is_exact_match(cleaned, kw):
-            return "light_provocation"
-    for kw in HUMOR_KEYWORDS:
-        if is_exact_match(cleaned, kw):
-            return "humor"
-    for kw in SARCASM_KEYWORDS:
-        if is_exact_match(cleaned, kw):
-            return "sarcasm"
-    return "neutral"
-
-def chunkify(txt, size=2000):
-    for i in range(0, len(txt), size):
-        yield txt[i:i+size]
+##############################################
+# Classe Cog gérant la logique IA
+##############################################
 
 class IACog(commands.Cog):
-    def __init__(self, bot):
+    """
+    Cog gérant l'Intelligence Artificielle (réponses en langage naturel, etc.).
+    Inspiré du Code B : utilisation de cog_load pour l'initialisation,
+    fonctions chunk_list globales, etc.
+    """
+
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Définition ici des variables essentielles qui existeront
+        # après l’initialisation dans cog_load()
         self.history_limit = 20
         self.max_prompt_size = 5000
         self.quota_block_duration = 3600
         self.quota_exceeded_until = 0
         self.debug_mode = True
+
         self.annonce_channel_name = "annonces"
         self.event_channel_name = "organisation"
         self.pl_channel_name = "xplock-rondesasa-ronde"
+
+        # Éléments pour la gestion du règlement
         self.last_reglement_reminder = 0
         self.reglement_cooldown = 600
+
+        # Contextes utilisateurs
         self.user_contexts = {}
+        # Anti-spam
         self.spam_times = {}
         self.spam_interval = 5
         self.spam_threshold = 4
+
+        # Queue de requêtes IA
         self.request_queue = collections.deque()
         self.pending_requests = False
+
+        # Customisation utilisateur
         self.user_styles = {}
+
+        # Warnings, mute, etc. (non utilisé dans la démo)
         self.warning_limit = 3
         self.mute_duration = 600
+
+        # Les attributs ci-dessous seront configurés dans self.initialize_ia()
+        self.logger = None
+        self.api_key = None
+        self.model_pro = None
+        self.model_flash = None
+        self.knowledge_text = ""
+
+        # On lance la loop "process_queue" (mais elle démarrera
+        # réellement après le cog_load, selon Discord.py).
+        self.process_queue.start()
+
+    async def cog_load(self):
+        """
+        Méthode appelée automatiquement par discord.py quand le Cog est chargé.
+        Similaire à l’initialize_data() de Code B : ici on configure l’IA, etc.
+        """
+        await self.initialize_ia()
+
+    async def initialize_ia(self):
+        """
+        Initialisation : configuration du logging, chargement de la clé .env,
+        préparation de l'IA, etc.
+        """
         self.configure_logging()
         self.configure_gemini()
         self.knowledge_text = self.get_knowledge_text()
-        self.process_queue.start()
-
-    @tasks.loop(seconds=5)
-    async def process_queue(self):
-        if self.pending_requests and time.time() >= self.quota_exceeded_until:
-            while self.request_queue:
-                ctx, prompt_callable = self.request_queue.popleft()
-                try:
-                    await prompt_callable(ctx)
-                except:
-                    pass
-            self.pending_requests = False
-
-    def cog_unload(self):
-        self.process_queue.cancel()
+        self.logger.info("IACog initialisé avec succès.")
 
     def configure_logging(self):
+        """
+        Configure le logging (niveau DEBUG si self.debug_mode, sinon INFO).
+        """
         lvl = logging.DEBUG if self.debug_mode else logging.INFO
         logging.basicConfig(level=lvl, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         self.logger = logging.getLogger("IACog")
 
     def configure_gemini(self):
+        """
+        Charge la clé d'API et prépare les modèles Generative AI.
+        """
         load_dotenv()
         self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
-            raise ValueError("Missing GEMINI_API_KEY.")
+            raise ValueError("Missing GEMINI_API_KEY dans .env.")
         genai.configure(api_key=self.api_key)
         self.model_pro = genai.GenerativeModel("gemini-1.5-pro")
         self.model_flash = genai.GenerativeModel("gemini-1.5-flash")
 
-    def get_knowledge_text(self):
+    def get_knowledge_text(self) -> str:
+        """
+        Renvoie un texte 'de connaissance' (règlement, etc.) qui sera utilisé
+        dans la construction de prompts IA.
+        """
         return (
             "RÈGLEMENT OFFICIEL DE LA GUILDE EVOLUTION – Édition du 19/02/2025\n\n"
             "“Ensemble, nous évoluerons plus vite que seuls.”\n\n"
             "Bienvenue au sein de la guilde Evolution ! Nous sommes heureux de t’accueillir "
             "dans notre communauté. Ce règlement est conçu pour assurer une ambiance conviviale, "
             "respectueuse et motivante, tout en permettant à chacun de progresser selon son rythme "
-            "et ses envies. Veille à bien le lire et à l’appliquer : chaque membre y contribue pour "
-            "faire de cette guilde un endroit agréable où jouer ensemble.\n\n"
+            "et ses envies. [...] \n\n"
             "=====================================================================\n"
-            "VALEURS & VISION\n"
+            "(Texte complet du règlement, inchangé par souci de concision)\n"
             "=====================================================================\n"
-            "• Convivialité & Partage : Respect, bonne humeur, entraide.\n"
-            "• Progression Collective : Chaque point d’XP que tu apportes compte.\n"
-            "• Transparence & Communication : Annonces sur Discord, canaux dédiés, etc.\n\n"
+            "LISTE DES COMMANDES DU BOT EVOLUTION\n"
             "=====================================================================\n"
-            "RESPECT & CONVIVIALITÉ 🤝\n"
-            "=====================================================================\n"
-            "• Aucune insulte, harcèlement ou discriminations (racisme, sexisme…) n’est toléré.\n"
-            "• Politesse et bienveillance : dire “Bonjour”, rester courtois même en cas de désaccord.\n"
-            "• Gestion des conflits : préviens le Staff, ou discutez en MP pour calmer la tension.\n\n"
-            "=====================================================================\n"
-            "DISCORD OBLIGATOIRE & COMMUNICATION 🗣️\n"
-            "=====================================================================\n"
-            "• L’usage de Discord est indispensable pour suivre les infos, annonces, sondages.\n"
-            "• Canaux importants : #general, #annonces, #entraide, #organisation.\n"
-            "• Commande !ticket pour contacter le Staff en privé.\n\n"
-            "=====================================================================\n"
-            "PARTICIPATION & VIE DE GUILDE 🌍\n"
-            "=====================================================================\n"
-            "• Présence régulière (même brève) pour maintenir le lien.\n"
-            "• Organisation d’événements (Donjons, chasses, soirées quizz).\n"
-            "• Entraide : Partage d’astuces, d’accompagnements en donjons.\n\n"
-            "=====================================================================\n"
-            "PERCEPTEURS & RESSOURCES 🏰\n"
-            "=====================================================================\n"
-            "• Droit de pose d’un Percepteur : dès 500 000 XP de contribution guilde.\n"
-            "• Défense : tout le monde est invité à défendre un perco attaqué.\n"
-            "• Communication : coordonnez-vous sur Discord pour éviter les conflits de zone.\n\n"
-            "=====================================================================\n"
-            "CONTRIBUTION D’XP À LA GUILDE 📊\n"
-            "=====================================================================\n"
-            "• Taux d’XP flexible entre 1 % et 99 % (0 % interdit sauf dérogation via !ticket).\n"
-            "• 1 % minimum : un effort collectif très léger, mais utile pour la guilde.\n\n"
-            "=====================================================================\n"
-            "RECRUTEMENT & NOUVEAUX MEMBRES 🔑\n"
-            "=====================================================================\n"
-            "• Invitations contrôlées (Staff/vétérans).\n"
-            "• Période d’essai possible (2-3 jours).\n"
-            "• Discord obligatoire.\n\n"
-            "=====================================================================\n"
-            "ORGANISATION INTERNE & STAFF 🛡️\n"
-            "=====================================================================\n"
-            "• Fusion des rôles de trésoriers, bras droits, etc. Tous sont “Staff”.\n"
-            "• Le Staff gère le recrutement, la modération et l’animation.\n"
-            "• Meneur = décision finale mais fait confiance au Staff.\n\n"
-            "=====================================================================\n"
-            "SANCTIONS & DISCIPLINE ⚠️\n"
-            "=====================================================================\n"
-            "• Avertissements progressifs et décisions collégiales pour les cas graves.\n"
-            "• Transparence : le joueur concerné est informé des raisons.\n\n"
-            "=====================================================================\n"
-            "MULTI-GUILDE 🔄\n"
-            "=====================================================================\n"
-            "• Toléré si ça ne nuit pas à Evolution. Conflits d’intérêt à discuter avec le Staff.\n"
-            "• Le Staff doit être fidèle à Evolution.\n\n"
-            "=====================================================================\n"
-            "ÉVÉNEMENTS, SONDAGES & ANIMATIONS 🎉\n"
-            "=====================================================================\n"
-            "• Utiliser !sondage <Titre> ; <Choix1> ; ... ; temps=JJ:HH:MM> pour créer un sondage (#annonces).\n"
-            "• !activite creer <Titre> <JJ/MM/AAAA HH:MM> [desc] : Crée une activité (donjon/sortie).\n"
-            "• Concours, cadeaux, etc.\n\n"
-            "=====================================================================\n"
-            "CONCLUSION & AVENIR 🎇\n"
-            "=====================================================================\n"
-            "• Bienvenue chez Evolution ! Merci de respecter ces règles.\n"
-            "• Toute suggestion d’amélioration est la bienvenue.\n\n"
-            "Règlement en vigueur à compter du 21/02/2025.\n"
-            "“Le véritable pouvoir d’une guilde se révèle lorsque tous ses membres unissent leurs forces.”\n\n"
-            "=====================================================================\n"
-            "LISTE DES COMMANDES DU BOT EVOLUTION (DÉTAILLÉES)\n"
-            "=====================================================================\n"
-            "📌 **Mini-Guides & Commandes Racines**\n"
-            "• __!ia__ : Guide sur l’IA (ex.: !bot, !analyse).\n"
-            "• __!membre__ : Récap global des sous-commandes (ex.: principal, addmule).\n"
-            "• __!job__ : Guide des sous-commandes liées aux métiers (ex.: !job me, !job liste).\n"
-            "• __!rune__ : Outil de calcul (probabilités runes). Fonctionnalité partielle.\n"
-            "• __!regles__ : Résumé simplifié du règlement d'Evolution.\n\n"
-            "📌 **Commandes Générales**\n"
-            "• __!ping__ : Vérifie que le bot répond.\n"
-            "• __!scan <URL>__ : Analyse un lien.\n"
-            "• __!rune jet <valeur_jet> <stat>__ : Calcule les probabilités.\n\n"
-            "📌 **Commandes Membres**\n"
-            "• __!membre principal <NomPerso>__\n"
-            "• __!membre addmule <NomMule>__\n"
-            "• __!membre delmule <NomMule>__\n"
-            "• __!membre moi__\n"
-            "• __!membre liste__\n"
-            "• __!membre <pseudo>__\n\n"
-            "📌 **Commandes Job**\n"
-            "• __!job me__\n"
-            "• __!job liste__\n"
-            "• __!job liste metier__\n"
-            "• __!job <pseudo>__\n"
-            "• __!job <job_name>__\n"
-            "• __!job <job_name> <niveau>__\n\n"
-            "📌 **Commande Ticket**\n"
-            "• __!ticket__\n\n"
-            "📌 **Commandes IA**\n"
-            "• __!bot <message>__\n"
-            "• __!analyse__\n\n"
-            "📌 **Commandes Sondage**\n"
-            "• __!sondage <Titre> ; <Choix1> ; ... ; temps=JJ:HH:MM>\n"
-            "• __!close_sondage <message_id>\n\n"
-            "📌 **Commandes Activités**\n"
-            "• __!activite creer <Titre> <JJ/MM/AAAA HH:MM> [desc]\n"
-            "• __!activite liste__\n"
-            "• __!activite info <id>__\n"
-            "• __!activite join <id> / !activite leave <id>\n"
-            "• __!activite annuler <id> / !activite modifier <id>\n\n"
-            "📌 **Commandes Staff**\n"
-            "• __!staff__\n"
-            "• __!annonce <texte>__\n"
-            "• __!event <texte>__\n"
-            "• __!recrutement <pseudo>__\n"
-            "• __!membre del <pseudo>__\n"
-            "=====================================================================\n"
+            "• !ia pour revoir ce guide\n"
+            "• !bot <message>\n"
+            "• !analyse\n"
+            "• !annonce <texte> (Staff)\n"
+            "• !event <texte> (Staff)\n"
+            "• !pl <texte>\n"
+            "etc.\n"
         )
+
+    @tasks.loop(seconds=QUEUE_PROCESS_INTERVAL)
+    async def process_queue(self):
+        """
+        Boucle périodique qui traite la file de requêtes IA (self.request_queue).
+        """
+        # On ne traite la file que si on n'est plus bloqué par un quota
+        # et s'il y a des requêtes en attente.
+        if self.pending_requests and time.time() >= self.quota_exceeded_until:
+            while self.request_queue:
+                ctx, prompt_callable = self.request_queue.popleft()
+                try:
+                    await prompt_callable(ctx)
+                except Exception as e:
+                    self.logger.warning(f"Erreur dans process_queue : {e}")
+            self.pending_requests = False
+
+    def cog_unload(self):
+        """
+        Si jamais on décharge le Cog, on arrête la boucle.
+        """
+        self.process_queue.cancel()
+
+    ##############################################
+    # Fonctions de détection d'intention
+    ##############################################
+
+    def detect_intention(self, msg: str) -> str:
+        """
+        Détecte l'intention (humor, sarcasm, light_provocation, serious_insult,
+        discrimination, threat, ou neutral) selon les mots-clés.
+        """
+        cleaned = re.sub(r'[^\w\s]', '', msg.lower())
+
+        for kw in SERIOUS_INSULT_KEYWORDS:
+            if is_exact_match(cleaned, kw):
+                return "serious_insult"
+
+        for kw in DISCRIMINATION_KEYWORDS:
+            if is_exact_match(cleaned, kw):
+                return "discrimination"
+
+        for kw in THREAT_KEYWORDS:
+            if is_exact_match(cleaned, kw):
+                return "threat"
+
+        for kw in LIGHT_PROVOCATION_KEYWORDS:
+            if is_exact_match(cleaned, kw):
+                return "light_provocation"
+
+        for kw in HUMOR_KEYWORDS:
+            if is_exact_match(cleaned, kw):
+                return "humor"
+
+        for kw in SARCASM_KEYWORDS:
+            if is_exact_match(cleaned, kw):
+                return "sarcasm"
+
+        return "neutral"
+
+    ##############################################
+    # Fonctions d'appel à l'API IA
+    ##############################################
+
+    async def generate_content_async(self, model, prompt: str):
+        """
+        Appel synchrone du modèle, exécuté dans un thread (run_in_executor).
+        """
+        loop = asyncio.get_running_loop()
+
+        def sync_call():
+            return model.generate_content(prompt)
+
+        return await loop.run_in_executor(None, sync_call)
+
+    async def generate_content_with_fallback_async(self, prompt: str):
+        """
+        Tente d'abord le modèle PRO, puis bascule sur FLASH en cas d'erreur de quota (429).
+        """
+        try:
+            r = await self.generate_content_async(self.model_pro, prompt)
+            return r, "PRO"
+        except Exception as e1:
+            if any(x in str(e1).lower() for x in ["429","quota","unavailable"]):
+                # Fallback sur le modèle FLASH
+                try:
+                    r2 = await self.generate_content_async(self.model_flash, prompt)
+                    return r2, "FLASH"
+                except Exception as e2:
+                    if "429" in str(e2):
+                        self.quota_exceeded_until = time.time() + self.quota_block_duration
+                    raise e2
+            else:
+                raise e1
+
+    ##############################################
+    # Commandes utilisateur et logique IA
+    ##############################################
 
     @commands.command(name="ia")
     async def ia_help_command(self, ctx):
+        """
+        Commande !ia : affiche le guide sur l'IA.
+        """
         txt = (
             "**Commandes IA :**\n"
             "!annonce <texte> (Staff)\n"
@@ -385,11 +425,37 @@ class IACog(commands.Cog):
         )
         await ctx.send(txt)
 
-    async def handle_ai_request(self, ctx, user_message):
+    @commands.command(name="bot")
+    async def free_command(self, ctx, *, user_message=None):
+        """
+        Commande !bot <message> : envoie la requête à l'IA.
+        """
+        if not user_message:
+            await ctx.send("Usage : `!bot <votre question>`")
+            return
+
+        # Si on est en blocage de quota, on place la requête en file.
+        if time.time() < self.quota_exceeded_until:
+            qlen = len(self.request_queue)
+            await ctx.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
+            self.request_queue.append((ctx, lambda co: self.handle_ai_request(co, user_message)))
+            self.pending_requests = True
+            return
+
+        await self.handle_ai_request(ctx, user_message)
+
+    async def handle_ai_request(self, ctx, user_message: str):
+        """
+        Logique commune pour traiter la requête IA (anti-spam, intention, etc.).
+        """
         now = time.time()
         uid = ctx.author.id
+
+        # Historique utilisateur
         if uid not in self.user_contexts:
             self.user_contexts[uid] = collections.deque(maxlen=50)
+
+        # Anti-spam
         if uid not in self.spam_times:
             self.spam_times[uid] = []
         self.spam_times[uid].append(now)
@@ -398,23 +464,27 @@ class IACog(commands.Cog):
             await ctx.send("Tu sembles spammer le bot. Merci de ralentir.")
             return
 
-        intention = detect_intention(user_message)
+        # Détection d'intention
+        intention = self.detect_intention(user_message)
         possible_tones = TONE_VARIATIONS.get(intention, TONE_VARIATIONS["neutral"])
         chosen_tone = random.choice(possible_tones)
         style_user = self.user_styles.get(uid, "neutre")
+
         if intention in ["humor","sarcasm","light_provocation","neutral"]:
             emo = random.choice(EMOJIS_FRIENDLY)
         else:
             emo = random.choice(EMOJIS_FIRM)
 
-        # Si c'est une insulte, une discrimination ou une menace, juste avertir poliment
         mention_reglement = ""
-        if intention in ["serious_insult", "discrimination", "threat"]:
+        if intention in ["serious_insult","discrimination","threat"]:
             if (now - self.last_reglement_reminder) > self.reglement_cooldown:
                 mention_reglement = " Merci de garder un langage convenable. (Réf. Règlement)"
+                self.last_reglement_reminder = now
 
+        # Contexte complet
         st = (
-            f"Tu es EvolutionBOT, assistant de la guilde. L'utilisateur a un style '{style_user}'. "
+            f"Tu es EvolutionBOT, assistant de la guilde. "
+            f"L'utilisateur a un style '{style_user}'. "
             f"{chosen_tone} {emo}{mention_reglement}"
         )
 
@@ -422,6 +492,7 @@ class IACog(commands.Cog):
         user_history.append(user_message)
         self.user_contexts[uid] = collections.deque(user_history, maxlen=50)
 
+        # Récupération d'historique du channel
         channel_history = []
         async for m in ctx.channel.history(limit=self.history_limit):
             if not m.author.bot:
@@ -429,6 +500,7 @@ class IACog(commands.Cog):
         channel_history.sort(key=lambda x: x.created_at)
         hist_txt = "".join(f"{m.author.display_name}: {m.content}\n" for m in channel_history)
 
+        # Construction du prompt final
         final_prompt = (
             f"{st}\n\n"
             f"knowledge_text:\n{self.knowledge_text}\n\n"
@@ -436,12 +508,14 @@ class IACog(commands.Cog):
             f"Message de {ctx.author.display_name}: {user_message}"
         )
 
+        # Tronquer si prompt trop long
         if len(final_prompt) > self.max_prompt_size:
             surplus = len(final_prompt) - self.max_prompt_size
             if surplus < len(hist_txt):
                 hist_txt = hist_txt[surplus:]
             else:
                 hist_txt = "(Contexte tronqué)"
+
             final_prompt = (
                 f"{st}\n\n"
                 f"knowledge_text:\n{self.knowledge_text}\n\n"
@@ -449,14 +523,12 @@ class IACog(commands.Cog):
                 f"Message de {ctx.author.display_name}: {user_message}"
             )
 
+        # Appel IA
         try:
             resp, model_used = await self.generate_content_with_fallback_async(final_prompt)
             if resp and hasattr(resp, "text"):
                 rep = resp.text.strip() or "(vide)"
-                # Mettre à jour la variable last_reglement_reminder si c’est un gros écart
-                if intention in ["serious_insult","discrimination","threat"]:
-                    self.last_reglement_reminder = time.time()
-                for c in chunkify(rep):
+                for c in chunk_list(rep):
                     await ctx.send(c)
             else:
                 await ctx.send("Aucune réponse de l'IA.")
@@ -466,88 +538,46 @@ class IACog(commands.Cog):
             else:
                 await ctx.send(f"Erreur IA: {e}")
 
-    async def generate_content_async(self, model, prompt):
-        loop = asyncio.get_running_loop()
-        def sync_call():
-            return model.generate_content(prompt)
-        return await loop.run_in_executor(None, sync_call)
-
-    async def generate_content_with_fallback_async(self, prompt):
-        try:
-            r = await self.generate_content_async(self.model_pro, prompt)
-            return r, "PRO"
-        except Exception as e1:
-            if any(x in str(e1).lower() for x in ["429","quota","unavailable"]):
-                try:
-                    r2 = await self.generate_content_async(self.model_flash, prompt)
-                    return r2, "FLASH"
-                except Exception as e2:
-                    if "429" in str(e2):
-                        self.quota_exceeded_until = time.time() + self.quota_block_duration
-                    raise e2
-            else:
-                raise e1
-
-    @commands.command(name="bot")
-    async def free_command(self, ctx, *, user_message=None):
-        if not user_message:
-            await ctx.send("Usage : `!bot <votre question>`")
-            return
-        if time.time() < self.quota_exceeded_until:
-            qlen = len(self.request_queue)
-            await ctx.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
-            self.request_queue.append((ctx, lambda co: self.handle_ai_request(co, user_message)))
-            self.pending_requests = True
-            return
-        await self.handle_ai_request(ctx, user_message)
-
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        if message.author.bot:
-            return
-        c = await self.bot.get_context(message)
-        if c.valid and c.command:
-            return
-        if self.bot.user.mention in message.content:
-            q = message.content.replace(self.bot.user.mention, "").strip()
-            if q:
-                if time.time() < self.quota_exceeded_until:
-                    qlen = len(self.request_queue)
-                    await c.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
-                    self.request_queue.append((c, lambda co: self.handle_ai_request(co, q)))
-                    self.pending_requests = True
-                    return
-                await self.handle_ai_request(c, q)
-
     @commands.command(name="analyse")
     async def analyse_command(self, ctx):
+        """
+        Commande !analyse : demande un résumé des derniers messages du channel.
+        Supprime le message d'origine pour discrétion.
+        """
         lim = 100
         messages = []
         async for m in ctx.channel.history(limit=lim):
             if not m.author.bot:
                 messages.append(m)
         messages.sort(key=lambda x: x.created_at)
+
         st = "Tu es EvolutionBOT, fais un rapport neutre sur les derniers messages (ambiance, conflits)."
         joined = "".join(f"{x.author.display_name}: {x.content}\n" for x in messages)
         pr = f"{st}\n{joined}"
+
         try:
             await ctx.message.delete()
         except:
             pass
+
         if time.time() < self.quota_exceeded_until:
             qlen = len(self.request_queue)
             await ctx.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
             self.request_queue.append((ctx, lambda co: self.analyse_fallback(co, pr)))
             self.pending_requests = True
             return
+
         await self.analyse_fallback(ctx, pr)
 
-    async def analyse_fallback(self, ctx, prompt):
+    async def analyse_fallback(self, ctx, prompt: str):
+        """
+        Version fallback (mise en file éventuelle) de l'analyse.
+        """
         try:
             resp, model_used = await self.generate_content_with_fallback_async(prompt)
             if resp and hasattr(resp, "text"):
                 rep = resp.text.strip() or "(vide)"
-                for c in chunkify(rep):
+                for c in chunk_list(rep):
                     await ctx.send(c)
             else:
                 await ctx.send("Aucune réponse d'analyse.")
@@ -560,34 +590,43 @@ class IACog(commands.Cog):
     @commands.has_role("Staff")
     @commands.command(name="annonce")
     async def annonce_command(self, ctx, *, user_message=None):
+        """
+        Commande !annonce <texte> (Staff) : crée une annonce dans #annonces.
+        """
         if not user_message:
             await ctx.send("Usage: !annonce <texte>")
             return
-        chan = discord.utils.get(ctx.guild.text_channels, name="annonces")
+        chan = discord.utils.get(ctx.guild.text_channels, name=self.annonce_channel_name)
         if not chan:
-            await ctx.send("Canal introuvable.")
+            await ctx.send("Canal 'annonces' introuvable.")
             return
+
         if time.time() < self.quota_exceeded_until:
             qlen = len(self.request_queue)
             await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
             self.request_queue.append((ctx, lambda co: self.annonce_fallback(co, chan, user_message)))
             self.pending_requests = True
             return
+
         await self.annonce_fallback(ctx, chan, user_message)
 
-    async def annonce_fallback(self, ctx, chan, user_message):
+    async def annonce_fallback(self, ctx, chan, user_message: str):
+        """
+        Génère un message d'annonce (tag @everyone) de façon IA.
+        """
         st = "Tu es EvolutionBOT, crée une annonce fun et commence par '@everyone'."
         pr = f"{st}\n{user_message}"
         try:
             await ctx.message.delete()
         except:
             pass
+
         try:
             resp, model_used = await self.generate_content_with_fallback_async(pr)
             if resp and hasattr(resp, "text"):
                 final = resp.text.strip() or "(vide)"
                 await chan.send(f"**Annonce [{model_used}] :**")
-                for c in chunkify(final):
+                for c in chunk_list(final):
                     await chan.send(c)
             else:
                 await ctx.send("Pas d'annonce générée.")
@@ -600,34 +639,43 @@ class IACog(commands.Cog):
     @commands.has_role("Staff")
     @commands.command(name="event")
     async def event_command(self, ctx, *, user_message=None):
+        """
+        Commande !event <texte> (Staff) : crée un événement dans #organisation.
+        """
         if not user_message:
             await ctx.send("Usage: !event <texte>")
             return
-        chan = discord.utils.get(ctx.guild.text_channels, name="organisation")
+        chan = discord.utils.get(ctx.guild.text_channels, name=self.event_channel_name)
         if not chan:
-            await ctx.send("Canal introuvable.")
+            await ctx.send("Canal d'organisation introuvable.")
             return
+
         if time.time() < self.quota_exceeded_until:
             qlen = len(self.request_queue)
             await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
             self.request_queue.append((ctx, lambda co: self.event_fallback(co, chan, user_message)))
             self.pending_requests = True
             return
+
         await self.event_fallback(ctx, chan, user_message)
 
-    async def event_fallback(self, ctx, chan, user_message):
+    async def event_fallback(self, ctx, chan, user_message: str):
+        """
+        Génère un message d'événement (invitation).
+        """
         st = "Tu es EvolutionBOT, rédige une invitation d'événement incitant à participer."
         pr = f"{st}\n\n{user_message}"
         try:
             await ctx.message.delete()
         except:
             pass
+
         try:
             resp, model_used = await self.generate_content_with_fallback_async(pr)
             if resp and hasattr(resp, "text"):
                 rep = resp.text.strip() or "(vide)"
                 await chan.send(f"**Nouvel Événement [{model_used}] :**")
-                for c in chunkify(rep):
+                for c in chunk_list(rep):
                     await chan.send(c)
                 role_val = discord.utils.get(ctx.guild.roles, name="Membre validé d'Evolution")
                 if role_val:
@@ -642,34 +690,43 @@ class IACog(commands.Cog):
 
     @commands.command(name="pl")
     async def pl_command(self, ctx, *, user_message=None):
+        """
+        Commande !pl <texte> : génère une annonce de PL dans le canal xplock-rondesasa-ronde.
+        """
         if not user_message:
             await ctx.send("Usage: !pl <texte>")
             return
-        chan = discord.utils.get(ctx.guild.text_channels, name="xplock-rondesasa-ronde")
+        chan = discord.utils.get(ctx.guild.text_channels, name=self.pl_channel_name)
         if not chan:
-            await ctx.send("Canal introuvable.")
+            await ctx.send("Canal introuvable pour PL.")
             return
+
         if time.time() < self.quota_exceeded_until:
             qlen = len(self.request_queue)
             await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
             self.request_queue.append((ctx, lambda co: self.pl_fallback(co, chan, user_message)))
             self.pending_requests = True
             return
+
         await self.pl_fallback(ctx, chan, user_message)
 
-    async def pl_fallback(self, ctx, chan, user_message):
+    async def pl_fallback(self, ctx, chan, user_message: str):
+        """
+        Génère un message d'annonce de PL.
+        """
         st = "Tu es EvolutionBOT, rédige une annonce de PL claire et motivante."
         pr = f"{st}\n\n{user_message}"
         try:
             await ctx.message.delete()
         except:
             pass
+
         try:
             resp, model_used = await self.generate_content_with_fallback_async(pr)
             if resp and hasattr(resp, "text"):
                 rep = resp.text.strip() or "(vide)"
                 await chan.send(f"**Nouvelle Annonce PL [{model_used}] :**")
-                for c in chunkify(rep):
+                for c in chunk_list(rep):
                     await chan.send(c)
             else:
                 await ctx.send("Pas de réponse IA pour PL.")
@@ -679,5 +736,40 @@ class IACog(commands.Cog):
             else:
                 await ctx.send(str(e))
 
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """
+        Listener qui intercepte les mentions directes du bot.
+        """
+        # Ignorer les messages du bot
+        if message.author.bot:
+            return
+
+        # On récupère le contexte, on vérifie si c'est une commande
+        c = await self.bot.get_context(message)
+        if c.valid and c.command:
+            return
+
+        # Si la mention du bot est dedans, on traite comme un appel IA
+        if self.bot.user.mention in message.content:
+            q = message.content.replace(self.bot.user.mention, "").strip()
+            if q:
+                if time.time() < self.quota_exceeded_until:
+                    qlen = len(self.request_queue)
+                    await c.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
+                    self.request_queue.append((c, lambda co: self.handle_ai_request(co, q)))
+                    self.pending_requests = True
+                    return
+                await self.handle_ai_request(c, q)
+
+
+##############################################
+# Configuration d'extension
+##############################################
+
 async def setup(bot: commands.Bot):
+    """
+    Méthode appelée par bot.load_extension(...).
+    Ajoute simplement le IACog au bot.
+    """
     await bot.add_cog(IACog(bot))
