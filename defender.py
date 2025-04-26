@@ -19,64 +19,101 @@ import discord
 from discord.ext import commands
 from cryptography.fernet import Fernet
 
-# Pour la validation avancée (IDN, homograph)
-# pip install idna confusable_homoglyphs
+# Pour la détection de noms de domaines IDN (optionnel pour l’homographe)
 import idna
-from confusable_homoglyphs import confusables
 
-# Contrôle de flux
+# Limitation du nombre de scans simultanés
 from asyncio import Semaphore
 
-# ----------------------------------------
-# CONSTANTES DE CONFIG
-# ----------------------------------------
+# ---------------------------------------------------------------------------
+# 1) CONFIG LOGGER GLOBAL
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,  # <= Passe en logging.DEBUG si tu veux voir les .debug(...)
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("defender_discord.log", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
 
+# ---------------------------------------------------------------------------
+# 2) CONSTANTES ET REGEX
+# ---------------------------------------------------------------------------
 URL_REGEX = re.compile(r"(https?://[^\s]+)", re.IGNORECASE)
 
 MAX_CONCURRENT_SCANS = 5      # Limite de scans simultanés
 MAX_RETRIES = 3               # Nb de tentatives en cas de 429/503
 BACKOFF_BASE = 2              # Base du backoff exponentiel
-BLOCK_PRIVATE_IPS = True      # Bloquer IP privées (SSRF)
-USE_ENV_FERNET_KEY = True     # Tenter la clé FERNET_KEY en variable d’env
 
+BLOCK_PRIVATE_IPS = True      # Bloquer l'accès aux IP privées (SSRF)
+USE_ENV_FERNET_KEY = True     # Tenter la clé FERNET_KEY depuis l'env
 
+# ---------------------------------------------------------------------------
+# 3) LA COG DEFENDER
+# ---------------------------------------------------------------------------
 class DefenderCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.logger = logging.getLogger("Defender")
-        self.logger.setLevel(logging.INFO)
 
+        # Clés d'API éventuellement depuis les variables d'environnement
         self.GOOGLE_SAFE_BROWSING_API_KEY = os.getenv("GSB_API_KEY")
         self.VIRUSTOTAL_API_KEY = os.getenv("VT_API_KEY")
+        self.PHISHTANK_APP_KEY = os.getenv("PHISHTANK_APP_KEY")  # facultatif
 
+        # Whitelist de domaines (à personnaliser)
         self.LISTE_BLANCHE_DOMAINE = []
+
+        # Shortlinks potentiels
         self.SHORTLINK_DOMAINS = [
             "bit.ly", "tinyurl.com", "t.co", "goo.gl",
             "ow.ly", "is.gd", "buff.ly", "buffly.com"
         ]
 
+        # Cache pour l'expansion de shortlinks (éviter de tout re-télécharger)
         self.cache_expanded_urls = {}
-        self.CACHE_EXPIRATION = 3600
+        self.CACHE_EXPIRATION = 3600  # 1h
 
-        self.http_session = aiohttp.ClientSession()
+        # On NE crée plus la session ici, mais dans cog_load
+        self.http_session = None
 
+        # Fichier(s) de config
         self.KEY_FILE = "secret.key"
         self.DB_FILENAME = "historique_defender.db"
         self.LOG_FILENAME = "defender_discord.log"
 
+        # Génération / chargement de la clé de chiffrement (Fernet)
         self.init_fernet_key()
+
+        # DB pour stocker l'historique
         self.initialiser_db()
+
+        # Sécuriser les fichiers sur systèmes Unix (chmod)
         self.securiser_fichiers()
 
+        # Semaphore pour limiter les scans simultanés
         self.scan_semaphore = Semaphore(MAX_CONCURRENT_SCANS)
 
-        self.logger.info("DefenderCog initialisé avec succès.")
+        self.logger.info("DefenderCog initialisé (mais la session aiohttp sera créée dans cog_load).")
 
-    def cog_unload(self):
-        if not self.http_session.closed:
-            asyncio.create_task(self.http_session.close())
-        self.logger.info("DefenderCog déchargé (session fermée).")
+    # -----------------------------------------------------------------------
+    # 4) GESTION DE CHARGEMENT/DECHARGEMENT DU COG
+    # -----------------------------------------------------------------------
+    async def cog_load(self):
+        """Nouveau hook disponible dans discord.py >= 2.3 pour init asynchrone."""
+        self.http_session = aiohttp.ClientSession()
+        self.logger.info("ClientSession créée dans cog_load().")
 
+    async def cog_unload(self):
+        """Fermeture asynchrone propre de la session HTTP."""
+        if self.http_session and not self.http_session.closed:
+            await self.http_session.close()
+        self.logger.info("Session HTTP fermée dans cog_unload().")
+
+    # -----------------------------------------------------------------------
+    # 5) INITIALISATION DE LA CLE FERNET ET DB
+    # -----------------------------------------------------------------------
     def init_fernet_key(self):
         env_key = os.getenv("FERNET_KEY", "").strip()
         if USE_ENV_FERNET_KEY and env_key:
@@ -115,6 +152,7 @@ class DefenderCog(commands.Cog):
 
     def securiser_fichiers(self):
         if os.name != "nt":
+            # Sous Windows, chmod ne fonctionne pas toujours comme attendu
             try:
                 os.chmod(self.LOG_FILENAME, 0o600)
                 os.chmod(self.DB_FILENAME, 0o600)
@@ -122,18 +160,9 @@ class DefenderCog(commands.Cog):
             except Exception as e:
                 self.logger.error(f"Erreur chmod (Defender): {e}")
 
-    def enregistrer_historique(self, url: str, statut: str):
-        try:
-            conn = sqlite3.connect(self.DB_FILENAME)
-            cursor = conn.cursor()
-            encrypted = self.fernet.encrypt(url.encode()).decode()
-            cursor.execute("INSERT INTO historique (url, statut) VALUES (?, ?)", (encrypted, statut))
-            conn.commit()
-            conn.close()
-            self.logger.info(f"[Historique] {self.mask_sensitive_info(url)} => {statut}")
-        except sqlite3.Error as e:
-            self.logger.error(f"Erreur BD (historique): {e}")
-
+    # -----------------------------------------------------------------------
+    # 6) COMMANDE MANUELLE  !scan <URL>
+    # -----------------------------------------------------------------------
     @commands.command(name="scan", help="Analyse un lien + supprime le message de commande.")
     async def scan_command(self, ctx, *, url: str = None):
         try:
@@ -155,6 +184,9 @@ class DefenderCog(commands.Cog):
         embed = self.creer_embed(url_affiche, statut, color)
         await ctx.send(embed=embed)
 
+    # -----------------------------------------------------------------------
+    # 7) INTERCEPTION AUTOMATIQUE DES MESSAGES (on_message)
+    # -----------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -162,22 +194,27 @@ class DefenderCog(commands.Cog):
 
         found_urls = URL_REGEX.findall(message.content)
         if not found_urls:
+            # IMPORTANT : même s’il n’y a pas d’URL, on laisse passer les commandes
+            await self.bot.process_commands(message)
             return
 
         new_content = message.content
         results = []
-        worst_status = None
+        worst_status = None  # On stocke le plus mauvais statut rencontré
 
         async with self.scan_semaphore:
             for raw_url in found_urls:
                 statut, color, url_affiche = await self.analyser_url(raw_url)
                 if statut is None:
-                    continue
+                    continue  # URL invalide ?
+
                 results.append((raw_url, statut, url_affiche))
 
+                # Si c'est un lien DANGEREUX, on remplace par un placeholder
                 if "DANGEREUX" in statut:
                     new_content = new_content.replace(raw_url, "[dangerous link removed]")
 
+                # On calcule la « sévérité » pour déterminer le worst_status global
                 severity = 0
                 if "INDÉTERMINÉ" in statut:
                     severity = 1
@@ -197,9 +234,12 @@ class DefenderCog(commands.Cog):
                         else "SÛR"
                     )
 
+        # Si on a détecté des URLs mais aucune valide, on process tout de même les cmds
         if not results:
+            await self.bot.process_commands(message)
             return
 
+        # Édition du message si on a remplacé quelque chose
         if new_content != message.content:
             try:
                 await message.edit(content=new_content)
@@ -208,6 +248,7 @@ class DefenderCog(commands.Cog):
             except discord.HTTPException as e:
                 self.logger.warning(f"Erreur lors de l'édition du message: {e}")
 
+        # Couleur globale de l'embed
         if worst_status == "DANGEREUX":
             final_color = 0xE74C3C
         elif worst_status == "INDÉTERMINÉ":
@@ -220,8 +261,9 @@ class DefenderCog(commands.Cog):
             description=f"Détection et analyse de **{len(results)}** URL(s)",
             color=final_color
         )
-        embed.set_footer(text="EVO Defender© By Coca - Analysis via Safe Browsing & VirusTotal")
+        embed.set_footer(text="EVO Defender© By Coca - Analysis via PhishTank & VirusTotal")
 
+        # Ajout d’un field par URL détectée
         for original_url, statut, url_affiche in results:
             embed.add_field(
                 name=f"URL détectée : {original_url}",
@@ -231,6 +273,12 @@ class DefenderCog(commands.Cog):
 
         await message.reply(embed=embed, mention_author=False)
 
+        # Enfin, on laisse passer d’éventuelles commandes
+        await self.bot.process_commands(message)
+
+    # -----------------------------------------------------------------------
+    # 8) ANALYSE PRINCIPALE  (on appelle PhishTank, VirusTotal, etc.)
+    # -----------------------------------------------------------------------
     async def analyser_url(self, raw_url: str, second_pass: bool = False):
         url_nettoyee, whitelisted = await self.valider_et_nettoyer_url(raw_url)
         if not url_nettoyee:
@@ -242,130 +290,85 @@ class DefenderCog(commands.Cog):
             self.enregistrer_historique(url_nettoyee, statut)
             return statut, color, url_nettoyee
 
-        est_sure_sb, _ = await self.verifier_url_safe_browsing(url_nettoyee)
-        est_sure_vt, _ = await self.verifier_url_virustotal(url_nettoyee)
+        # ---------------------------------------------------------
+        # A) APPEL PHISHTANK
+        # ---------------------------------------------------------
+        est_sure_pt, details_pt = await self.verifier_url_phishtank(url_nettoyee)
 
-        if est_sure_sb is False or est_sure_vt is False:
+        # ---------------------------------------------------------
+        # B) APPEL VIRUSTOTAL
+        # ---------------------------------------------------------
+        est_sure_vt, details_vt = await self.verifier_url_virustotal(url_nettoyee)
+
+        # ---------------------------------------------------------
+        # C) APPEL SAFE BROWSING (OPTIONNEL)
+        # ---------------------------------------------------------
+        if self.GOOGLE_SAFE_BROWSING_API_KEY:
+            est_sure_sb, details_sb = await self.verifier_url_safe_browsing(url_nettoyee)
+        else:
+            # Si aucune clé GSB => on « suppose » SÛR
+            est_sure_sb, details_sb = True, None
+
+        # ---------------------------------------------------------
+        # D) FUSION DES VERDICTS
+        # ---------------------------------------------------------
+        flags_danger = [(x is False) for x in (est_sure_pt, est_sure_vt, est_sure_sb)]
+        flags_sure   = [(x is True)  for x in (est_sure_pt, est_sure_vt, est_sure_sb)]
+
+        if any(flags_danger):
             statut = "DANGEREUX ⚠️"
-            color = 0xE74C3C
-        elif est_sure_sb is True and est_sure_vt is True:
+            color  = 0xE74C3C
+        elif all(flags_sure):
             statut = "SÛR ✅"
-            color = 0x2ECC71
+            color  = 0x2ECC71
         else:
             statut = "INDÉTERMINÉ ❓"
-            color = 0xF1C40F
+            color  = 0xF1C40F
 
+        # Tentative d’analyse en second pass si c’est indéterminé
         if ("INDÉTERMINÉ" in statut) and (not second_pass):
             self.logger.info(f"Statut indéterminé pour {url_nettoyee}, nouvelle tentative dans 5s...")
             await asyncio.sleep(5)
             return await self.analyser_url(raw_url, second_pass=True)
 
         self.enregistrer_historique(url_nettoyee, statut)
+
         url_affiche = (self.mask_dangerous(url_nettoyee)
                        if "DANGEREUX" in statut else url_nettoyee)
         return statut, color, url_affiche
 
-    async def valider_et_nettoyer_url(self, url: str):
-        url = url.strip()
-        if not self.est_url_valide(url):
-            return None, False
+    # -----------------------------------------------------------------------
+    # 9) PHISHTANK  (nouvelle source pour phishing)
+    # -----------------------------------------------------------------------
+    async def verifier_url_phishtank(self, url: str):
+        endpoint = "https://checkurl.phishtank.com/checkurl/"
+        data = {"url": url, "format": "json"}
 
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return None, False
+        if self.PHISHTANK_APP_KEY:
+            data["app_key"] = self.PHISHTANK_APP_KEY
 
         try:
-            host_only = parsed.netloc.split(":")[0]
-            puny_host = idna.encode(host_only).decode("ascii")
-        except (idna.IDNAError, UnicodeError):
-            self.logger.warning(f"Impossible de punycode => {url}")
-            return None, False
-
-        port_part = ""
-        if ":" in parsed.netloc:
-            port_part = ":" + parsed.netloc.split(":", 1)[1]
-        puny_netloc = puny_host + port_part
-        puny_url = parsed._replace(netloc=puny_netloc).geturl()
-
-        if BLOCK_PRIVATE_IPS:
-            if self.is_private_or_local(puny_host):
-                self.logger.warning(f"Refus d'une IP/host interne => {url}")
-                return None, False
-
-        url = puny_url
-        domain = puny_host.lower()
-        whitelisted = any(
-            domain == w or domain.endswith("." + w)
-            for w in self.LISTE_BLANCHE_DOMAINE
-        )
-
-        if domain in self.SHORTLINK_DOMAINS:
-            url = await self.expand_url(url, max_redirects=3)
-
-        return url, whitelisted
-
-    def est_url_valide(self, url: str) -> bool:
-        if not validators.url(url):
-            return False
-        if len(url) > 2048:
-            return False
-        if self.contient_scripts_malveillants(url):
-            return False
-        for ch in url:
-            if ord(ch) < 0x20:
-                return False
-        return True
-
-    def contient_scripts_malveillants(self, url: str) -> bool:
-        patterns = [
-            r'<script.*?>.*?</script>',
-            r'javascript:',
-            r'(\%3C|\<)(\%2F|\/)script(\%3E|\>)',
-            r'eval\(',
-            r'alert\('
-        ]
-        for pat in patterns:
-            if re.search(pat, url, re.IGNORECASE):
-                return True
-        return False
-
-    async def verifier_url_safe_browsing(self, url: str):
-        if not self.GOOGLE_SAFE_BROWSING_API_KEY:
+            async with async_timeout.timeout(10):
+                async with self.http_session.post(endpoint, data=data) as resp:
+                    if resp.status != 200:
+                        return None, None
+                    payload = await resp.json()
+        except Exception as e:
+            self.logger.error(f"PhishTank : {e}")
             return None, None
 
-        endpoint = "https://safebrowsing.googleapis.com/v4/threatMatches:find"
-        payload = {
-            "client": {"clientId": "defender_discord_bot", "clientVersion": "1.0"},
-            "threatInfo": {
-                "threatTypes": [
-                    "MALWARE", "SOCIAL_ENGINEERING",
-                    "POTENTIALLY_HARMFUL_APPLICATION", "UNWANTED_SOFTWARE"
-                ],
-                "platformTypes": ["ANY_PLATFORM"],
-                "threatEntryTypes": ["URL"],
-                "threatEntries": [{"url": url}]
-            }
-        }
-        params = {"key": self.GOOGLE_SAFE_BROWSING_API_KEY}
+        try:
+            r = payload["results"]
+            if r["in_database"] and r["verified"]:
+                return False, r
+            else:
+                return True, None
+        except (KeyError, TypeError):
+            return None, None
 
-        for attempt in range(MAX_RETRIES):
-            try:
-                async with async_timeout.timeout(10):
-                    async with self.http_session.post(endpoint, params=params, json=payload) as resp:
-                        if resp.status in (429, 503):
-                            await asyncio.sleep(BACKOFF_BASE * (2 ** attempt))
-                            continue
-                        data = await resp.json()
-                        if "matches" in data:
-                            return False, data["matches"]
-                        return True, None
-            except Exception as e:
-                self.logger.error(f"Erreur Safe Browsing: {e}")
-                return None, None
-
-        self.logger.warning("Échec Safe Browsing => INDÉTERMINÉ")
-        return None, None
-
+    # -----------------------------------------------------------------------
+    # 10) VIRUSTOTAL
+    # -----------------------------------------------------------------------
     async def verifier_url_virustotal(self, url: str):
         if not self.VIRUSTOTAL_API_KEY:
             return None, None
@@ -421,28 +424,139 @@ class DefenderCog(commands.Cog):
         except Exception as e:
             self.logger.error(f"Erreur soumission VirusTotal: {e}")
 
-    def mask_dangerous(self, url: str) -> str:
-        return re.sub(r"(?i)^http", "hxxp", url)
+    # -----------------------------------------------------------------------
+    # 11) SAFE BROWSING (OPTIONNEL / PATCHÉ POUR GÉRER HTTP 204)
+    # -----------------------------------------------------------------------
+    async def verifier_url_safe_browsing(self, url: str):
+        if not self.GOOGLE_SAFE_BROWSING_API_KEY:
+            return True, None
 
-    def mask_sensitive_info(self, msg: str) -> str:
-        pattern = re.compile(
-            r"(?i)\b((?:https?://)?(?:www\.)?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:/[^\s]*)?"
-        )
-        return pattern.sub(
-            lambda m: f"{m.group(1).split('.')[0]}***.{'.'.join(m.group(1).split('.')[1:])}",
-            msg
+        endpoint = "https://safebrowsing.googleapis.com/v4/threatMatches:find"
+        payload = {
+            "client": {"clientId": "defender_discord_bot", "clientVersion": "1.0"},
+            "threatInfo": {
+                "threatTypes": [
+                    "MALWARE", "SOCIAL_ENGINEERING",
+                    "POTENTIALLY_HARMFUL_APPLICATION", "UNWANTED_SOFTWARE"
+                ],
+                "platformTypes": ["ANY_PLATFORM"],
+                "threatEntryTypes": ["URL"],
+                "threatEntries": [{"url": url}]
+            }
+        }
+        params = {"key": self.GOOGLE_SAFE_BROWSING_API_KEY}
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                async with async_timeout.timeout(10):
+                    async with self.http_session.post(endpoint, params=params, json=payload) as resp:
+                        if resp.status == 204:
+                            return True, None
+
+                        if resp.status in (429, 503):
+                            await asyncio.sleep(BACKOFF_BASE * (2 ** attempt))
+                            continue
+
+                        data = await resp.json()
+                        if "matches" in data:
+                            return False, data["matches"]
+                        return True, None
+            except Exception as e:
+                self.logger.error(f"Erreur Safe Browsing: {e}")
+                return None, None
+
+        self.logger.warning("Échec Safe Browsing => INDÉTERMINÉ")
+        return None, None
+
+    # -----------------------------------------------------------------------
+    # 12) ENREGISTREMENT DE L’HISTORIQUE
+    # -----------------------------------------------------------------------
+    def enregistrer_historique(self, url: str, statut: str):
+        """Chiffrement du lien avant insertion, pour éviter de stocker en clair."""
+        try:
+            conn = sqlite3.connect(self.DB_FILENAME)
+            cursor = conn.cursor()
+            encrypted = self.fernet.encrypt(url.encode()).decode()
+            cursor.execute("INSERT INTO historique (url, statut) VALUES (?, ?)", (encrypted, statut))
+            conn.commit()
+            conn.close()
+            self.logger.info(f"[Historique] {self.mask_sensitive_info(url)} => {statut}")
+        except sqlite3.Error as e:
+            self.logger.error(f"Erreur BD (historique): {e}")
+
+    # -----------------------------------------------------------------------
+    # 13) VALIDATION ET NETTOYAGE DE L’URL
+    # -----------------------------------------------------------------------
+    async def valider_et_nettoyer_url(self, url: str):
+        url = url.strip()
+        if not self.est_url_valide(url):
+            return None, False
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return None, False
+
+        try:
+            host_only = parsed.netloc.split(":")[0]
+            # Convertir en punycode
+            puny_host = idna.encode(host_only).decode("ascii")
+        except (idna.IDNAError, UnicodeError):
+            self.logger.warning(f"Impossible de punycode => {url}")
+            return None, False
+
+        port_part = ""
+        if ":" in parsed.netloc:
+            port_part = ":" + parsed.netloc.split(":", 1)[1]
+        puny_netloc = puny_host + port_part
+        puny_url = parsed._replace(netloc=puny_netloc).geturl()
+
+        # Bloquer IP privées ?
+        if BLOCK_PRIVATE_IPS:
+            if self.is_private_or_local(puny_host):
+                self.logger.warning(f"Refus d'une IP/host interne => {url}")
+                return None, False
+
+        # Whitelist ?
+        domain = puny_host.lower()
+        whitelisted = any(
+            domain == w or domain.endswith("." + w)
+            for w in self.LISTE_BLANCHE_DOMAINE
         )
 
-    def creer_embed(self, url_affiche: str, statut: str, color: int) -> discord.Embed:
-        embed = discord.Embed(
-            title="Analyse Defender",
-            description=f"**URL analysée :** {url_affiche}",
-            color=color
-        )
-        embed.add_field(name="Statut", value=statut, inline=False)
-        embed.set_footer(text="EVO Defender© By Coca - Analysis via Safe Browsing & VirusTotal")
-        return embed
+        # Expansion des shortlinks
+        if domain in self.SHORTLINK_DOMAINS:
+            puny_url = await self.expand_url(puny_url, max_redirects=3)
 
+        return puny_url, whitelisted
+
+    def est_url_valide(self, url: str) -> bool:
+        if not validators.url(url):
+            return False
+        if len(url) > 2048:
+            return False
+        if self.contient_scripts_malveillants(url):
+            return False
+        for ch in url:
+            if ord(ch) < 0x20:
+                return False
+        return True
+
+    def contient_scripts_malveillants(self, url: str) -> bool:
+        patterns = [
+            r'<script.*?>.*?</script>',
+            r'javascript:',
+            r'(\%3C|\<)(\%2F|\/)script(\%3E|\>)',
+            r'eval\(',
+            r'alert\('
+        ]
+        for pat in patterns:
+            if re.search(pat, url, re.IGNORECASE):
+                return True
+        return False
+
+    # -----------------------------------------------------------------------
+    # 14) EXPANSION DES SHORTLINKS (HEAD/GET)
+    # -----------------------------------------------------------------------
     async def expand_url(self, short_url: str, max_redirects: int = 3) -> str:
         now = time.time()
         if short_url in self.cache_expanded_urls:
@@ -495,42 +609,72 @@ class DefenderCog(commands.Cog):
             self.logger.debug(f"{method} {url} échoue: {e}")
             return None
 
+    # -----------------------------------------------------------------------
+    # 15) DÉTECTION IP PRIVÉE
+    # -----------------------------------------------------------------------
     def is_private_or_local(self, host: str) -> bool:
+        """Retourne True si la résolution du host donne une IP privée/locale."""
         try:
             addr = socket.gethostbyname(host)
-            if addr.startswith("127.") or addr.startswith("10."):
-                return True
-            if addr.startswith("192.168."):
-                return True
-            octets = addr.split(".")
-            if len(octets) == 4:
-                first = int(octets[0])
-                second = int(octets[1])
-                if first == 172 and 16 <= second <= 31:
-                    return True
-            if addr == "0.0.0.0" or addr == "::1":
-                return True
+        except socket.gaierror:
             return False
         except Exception:
             return True
 
+        if addr.startswith("127.") or addr.startswith("10."):
+            return True
+        if addr.startswith("192.168."):
+            return True
 
-# --------------------------------------------------------------
-# AJOUT D'UN MAIN QUI ACTIVE L'INTENT MESSAGE_CONTENT
-# POUR QUE on_message CAPTE LES LIENS
-# --------------------------------------------------------------
+        octets = addr.split(".")
+        if len(octets) == 4:
+            first = int(octets[0])
+            second = int(octets[1])
+            if first == 172 and 16 <= second <= 31:
+                return True
+
+        if addr == "0.0.0.0" or addr == "::1":
+            return True
+
+        return False
+
+    # -----------------------------------------------------------------------
+    # 16) MASQUAGE ET CREATION EMBED
+    # -----------------------------------------------------------------------
+    def mask_dangerous(self, url: str) -> str:
+        return re.sub(r"(?i)^http", "hxxp", url)
+
+    def mask_sensitive_info(self, msg: str) -> str:
+        pattern = re.compile(
+            r"(?i)\b((?:https?://)?(?:www\.)?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:/[^\s]*)?"
+        )
+        return pattern.sub(
+            lambda m: f"{m.group(1).split('.')[0]}***.{'.'.join(m.group(1).split('.')[1:])}",
+            msg
+        )
+
+    def creer_embed(self, url_affiche: str, statut: str, color: int) -> discord.Embed:
+        embed = discord.Embed(
+            title="Analyse Defender",
+            description=f"**URL analysée :** {url_affiche}",
+            color=color
+        )
+        embed.add_field(name="Statut", value=statut, inline=False)
+        embed.set_footer(text="EVO Defender© By Coca - Analysis via PhishTank & VirusTotal")
+        return embed
+
+# ---------------------------------------------------------------------------
+# 17) MAIN BOT
+# ---------------------------------------------------------------------------
 async def main():
-    # 1) On active l'intent message_content
     intents = discord.Intents.default()
     intents.message_content = True
 
-    # 2) On crée le bot
     bot = commands.Bot(command_prefix="!", intents=intents)
 
-    # 3) On charge la Cog Defender
+    # Ajout de la cog Defender
     await bot.add_cog(DefenderCog(bot))
 
-    # 4) On lance le bot
     DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
     if not DISCORD_TOKEN:
         print("Pas de DISCORD_TOKEN défini !")
@@ -538,9 +682,7 @@ async def main():
 
     await bot.start(DISCORD_TOKEN)
 
-
 if __name__ == "__main__":
-    # On démarre l'event loop
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
