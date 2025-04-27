@@ -101,7 +101,7 @@ class DefenderCog(commands.Cog):
     # 4) GESTION DE CHARGEMENT/DECHARGEMENT DU COG
     # -----------------------------------------------------------------------
     async def cog_load(self):
-        """Nouveau hook disponible dans discord.py >= 2.3 pour init asynchrone."""
+        """Nouveau hook (discord.py >= 2.3) pour init asynchrone."""
         self.http_session = aiohttp.ClientSession()
         self.logger.info("ClientSession créée dans cog_load().")
 
@@ -335,6 +335,7 @@ class DefenderCog(commands.Cog):
 
         self.enregistrer_historique(url_nettoyee, statut)
 
+        # Masquage éventuel si c’est dangereux
         url_affiche = (self.mask_dangerous(url_nettoyee)
                        if "DANGEREUX" in statut else url_nettoyee)
         return statut, color, url_affiche
@@ -343,15 +344,24 @@ class DefenderCog(commands.Cog):
     # 9) PHISHTANK (nouvelle source pour phishing)
     # -----------------------------------------------------------------------
     async def verifier_url_phishtank(self, url: str):
-        endpoint = "https://checkurl.phishtank.com/checkurl/"
-        data = {"url": url, "format": "json"}
+        """
+        Retourne (True, None) = Sûr, (False, details) = Danger,
+        ou (None, None) = Indéterminé si l’API échoue.
+        """
+        # Si vous n’avez pas de clé, on tente quand même la requête ?
+        # => Vous pouvez décider de forcer (True, None) si vous voulez ignorer PhishTank
+        #    quand vous n’avez pas de clé. Exemple ci-dessous :
+        if not self.PHISHTANK_APP_KEY:
+            self.logger.info("Pas de clé PhishTank => on suppose SÛR (par défaut).")
+            return True, None
 
-        if self.PHISHTANK_APP_KEY:
-            data["app_key"] = self.PHISHTANK_APP_KEY
+        endpoint = "https://checkurl.phishtank.com/checkurl/"
+        data = {"url": url, "format": "json", "app_key": self.PHISHTANK_APP_KEY}
 
         try:
             async with async_timeout.timeout(10):
                 async with self.http_session.post(endpoint, data=data) as resp:
+                    # Si le service répond mal, on considère Indéterminé
                     if resp.status != 200:
                         return None, None
                     payload = await resp.json()
@@ -373,8 +383,16 @@ class DefenderCog(commands.Cog):
     # 10) VIRUSTOTAL
     # -----------------------------------------------------------------------
     async def verifier_url_virustotal(self, url: str):
+        """
+        Retourne (True, None) = Sûr, (False, details) = Danger,
+        ou (None, None) = Indéterminé (p. ex. si l’API échoue).
+        """
+        # IMPORTANT : si vous n’avez pas de clé API, renvoyez True, None
+        # plutôt que None, None pour ne pas conclure Indéterminé
         if not self.VIRUSTOTAL_API_KEY:
-            return None, None
+            self.logger.info("Pas de clé VirusTotal => on suppose SÛR (par défaut).")
+            return True, None
+
         try:
             url_b64 = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
             endpoint = f"https://www.virustotal.com/api/v3/urls/{url_b64}"
@@ -385,13 +403,14 @@ class DefenderCog(commands.Cog):
                     async with async_timeout.timeout(10):
                         async with self.http_session.get(endpoint, headers=headers) as resp:
                             if resp.status in (429, 503):
-                                # Rate-limit ou service indisponible : backoff exponentiel
+                                # Rate-limit ou service indisponible => backoff exponentiel
                                 await asyncio.sleep(BACKOFF_BASE * (2 ** attempt))
                                 continue
 
                             if resp.status == 404:
                                 # URL inconnue => la soumettre
                                 await self.soumettre_virustotal(url)
+                                # On ne la déclare pas dangereuse ni sûre => Indéterminé ?
                                 return None, None
 
                             resp.raise_for_status()
@@ -409,7 +428,7 @@ class DefenderCog(commands.Cog):
                     self.logger.error(f"Erreur VirusTotal (tentative {attempt+1}): {e}")
                     await asyncio.sleep(BACKOFF_BASE * (2 ** attempt))
 
-            self.logger.warning("Échec VirusTotal => INDÉTERMINÉ")
+            self.logger.warning("Échec complet VirusTotal => Indéterminé")
             return None, None
 
         except Exception as e:
@@ -567,6 +586,7 @@ class DefenderCog(commands.Cog):
         now = time.time()
         if short_url in self.cache_expanded_urls:
             expanded_url, timestamp = self.cache_expanded_urls[short_url]
+            # Si pas expiré, on renvoie directement
             if now - timestamp < self.CACHE_EXPIRATION:
                 return expanded_url
             else:
@@ -675,5 +695,5 @@ class DefenderCog(commands.Cog):
 # 17) FONCTION SETUP POUR LE LOAD_EXTENSION (OBLIGATOIRE)
 # ---------------------------------------------------------------------------
 async def setup(bot: commands.Bot):
-    """Fonction attendue par bot.load_extension("defender") pour ajouter la Cog."""
+    """Fonction attendue par bot.load_extension('defender') pour ajouter la Cog."""
     await bot.add_cog(DefenderCog(bot))
