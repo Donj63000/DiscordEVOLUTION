@@ -11,6 +11,8 @@ from collections import defaultdict
 CONSOLE_CHANNEL_NAME = "console"
 DATA_FILE = "jobs_data.json"
 STAFF_ROLE_NAME = "Staff"
+MIN_LEVEL = 1
+MAX_LEVEL = 200
 
 def normalize_string(s: str) -> str:
     """
@@ -36,17 +38,27 @@ class JobCog(commands.Cog):
     async def initialize_data(self):
         console_channel = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
         if console_channel:
-            # Recherche d'un message contenant ===BOTJOBS=== et un bloc JSON
+            # Recherche d'un message contenant ===BOTJOBS===
             async for msg in console_channel.history(limit=1000):
                 if msg.author == self.bot.user and "===BOTJOBS===" in msg.content:
-                    try:
-                        start_idx = msg.content.index("```json\n") + len("```json\n")
-                        end_idx = msg.content.rindex("\n```")
-                        raw_json = msg.content[start_idx:end_idx]
-                        self.jobs_data = json.loads(raw_json)
-                        break
-                    except:
-                        pass
+                    if "fichier" in msg.content and msg.attachments:
+                        att = discord.utils.find(lambda a: a.filename == "jobs_data.json", msg.attachments)
+                        if att:
+                            try:
+                                data_bytes = await att.read()
+                                self.jobs_data = json.loads(data_bytes.decode("utf-8"))
+                                break
+                            except Exception:
+                                pass
+                    else:
+                        try:
+                            start_idx = msg.content.index("```json\n") + len("```json\n")
+                            end_idx = msg.content.rindex("\n```")
+                            raw_json = msg.content[start_idx:end_idx]
+                            self.jobs_data = json.loads(raw_json)
+                            break
+                        except Exception:
+                            pass
 
         if not self.jobs_data and os.path.exists(DATA_FILE):
             try:
@@ -54,6 +66,8 @@ class JobCog(commands.Cog):
                     self.jobs_data = json.load(f)
             except:
                 self.jobs_data = {}
+
+        await self.migrate_legacy_keys()
 
         self.initialized = True
 
@@ -79,12 +93,38 @@ class JobCog(commands.Cog):
             tmp.write(data_str)
         return "temp_jobs_data.json"
 
-    def get_user_jobs(self, user_id: str):
-        """
-        Retourne un dict : { job_name: level, ... } pour l'utilisateur user_id.
-        """
+    async def migrate_legacy_keys(self):
+        """Convertit les clés basées sur les pseudos en identifiants Discord."""
+        updated = False
+        to_remove = []
+        for key, data in list(self.jobs_data.items()):
+            if not key.isdigit():
+                member = discord.utils.find(
+                    lambda m: m.name.lower() == key.lower() or m.display_name.lower() == key.lower(),
+                    self.bot.get_all_members(),
+                )
+                if member:
+                    new_key = str(member.id)
+                    if new_key not in self.jobs_data:
+                        self.jobs_data[new_key] = {"name": member.display_name, "jobs": {}}
+                    self.jobs_data[new_key]["jobs"].update(data.get("jobs", {}))
+                    if not self.jobs_data[new_key].get("name"):
+                        self.jobs_data[new_key]["name"] = member.display_name
+                    to_remove.append(key)
+                    updated = True
+        for k in to_remove:
+            del self.jobs_data[k]
+        if updated:
+            self.save_data_local()
+
+    def get_user_jobs(self, user_id: str, user_name: str = None):
+        """Retourne un dict { job_name: level } pour l'utilisateur."""
         if user_id in self.jobs_data and "jobs" in self.jobs_data[user_id]:
             return self.jobs_data[user_id]["jobs"]
+        if user_name:
+            for key, data in self.jobs_data.items():
+                if not key.isdigit() and data.get("name", "").lower() == user_name.lower():
+                    return data.get("jobs", {})
         return {}
 
     def find_canonical_job_name_in_db(self, input_name: str) -> str:
@@ -128,6 +168,9 @@ class JobCog(commands.Cog):
         Dialogue interactif : si un métier n'existe pas, on propose de le créer.
         L'utilisateur peut répondre "oui", "non", ou "cancel".
         """
+        if level < MIN_LEVEL or level > MAX_LEVEL:
+            await ctx.send(f"Le niveau doit être compris entre {MIN_LEVEL} et {MAX_LEVEL}.")
+            return
         suggestions = self.suggest_similar_jobs(job_name)
         if suggestions:
             suggestion_text = "\n".join(f"- {s}" for s in suggestions)
@@ -182,8 +225,17 @@ class JobCog(commands.Cog):
         Si un membre quitte, on supprime son entrée de la base.
         """
         user_id = str(member.id)
+        removed = False
         if user_id in self.jobs_data:
             del self.jobs_data[user_id]
+            removed = True
+        else:
+            for key in list(self.jobs_data.keys()):
+                if not key.isdigit() and self.jobs_data[key].get("name", "").lower() == member.display_name.lower():
+                    del self.jobs_data[key]
+                    removed = True
+                    break
+        if removed:
             self.save_data_local()
             console_channel = discord.utils.get(member.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
             if console_channel:
@@ -221,8 +273,9 @@ class JobCog(commands.Cog):
                 "- `!job liste metier` : Afficher la liste de tous les noms de métiers.\n"
                 "- `!job <pseudo>` : Afficher les métiers d'un joueur.\n"
                 "- `!job <job_name>` : Afficher ceux qui ont ce job.\n"
-                "- `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job.\n"
-                "- `!job add <job_name> <niveau>` : Commande directe pour ajouter un job (multi-mots autorisé).\n"
+                "- `!job <job_name> <niveau>` : Ajouter ou mettre à jour votre métier (nom multi-mots accepté).\n"
+                "- `!job del <job_name>` : Supprimer l'un de vos métiers.\n"
+                "- `!job add <job_name> <niveau>` : Alias conservé pour compatibilité.\n"
             )
             await ctx.send(embed=discord.Embed(title="Aide commande !job", description=usage_msg, color=0x00ffff))
             return
@@ -310,6 +363,9 @@ class JobCog(commands.Cog):
             except ValueError:
                 await ctx.send("Syntaxe invalide. Exemple : `!job add Grand Sculpteur 100`.")
                 return
+            if level_int < MIN_LEVEL or level_int > MAX_LEVEL:
+                await ctx.send(f"Le niveau doit être compris entre {MIN_LEVEL} et {MAX_LEVEL}.")
+                return
 
             # Vérifie si le job existe déjà
             canonical = self.find_canonical_job_name_in_db(job_name)
@@ -336,15 +392,36 @@ class JobCog(commands.Cog):
                 await self.dump_data_to_console(ctx)
             return
 
-        # 6) !job <job_name> <level> (version courte, 2 arguments)
-        elif len(args) == 2:
-            job_name, level_str = args
+        # 6) !job del <job_name...>
+        elif len(args) >= 2 and args[0].lower() == "del":
+            job_name = " ".join(args[1:])
+            canonical = self.find_canonical_job_name_in_db(job_name)
+            if canonical is None:
+                await ctx.send(f"Le métier `{job_name}` n'existe pas.")
+                return
+            user_jobs = self.get_user_jobs(author_id, author_name)
+            if canonical not in user_jobs:
+                await ctx.send(f"Vous n'avez pas le métier {canonical}.")
+                return
+            del self.jobs_data[author_id]["jobs"][canonical]
+            self.save_data_local()
+            await ctx.send(f"Le métier {canonical} a été supprimé pour {author_name}.")
+            await self.dump_data_to_console(ctx)
+            return
+
+        # 7) !job <job_name> <level> (ajout rapide, nom multi-mots accepté)
+        elif len(args) >= 2 and args[0].lower() not in ["liste", "me", "add", "del"]:
+            *job_name_tokens, level_str = args
+            job_name = " ".join(job_name_tokens)
             try:
                 level_int = int(level_str)
             except ValueError:
                 # Pas un niveau => pas la syntaxe attendue
                 pass
             else:
+                if level_int < MIN_LEVEL or level_int > MAX_LEVEL:
+                    await ctx.send(f"Le niveau doit être compris entre {MIN_LEVEL} et {MAX_LEVEL}.")
+                    return
                 # Cherche si le job existe déjà
                 canonical = self.find_canonical_job_name_in_db(job_name)
                 if canonical is None:
@@ -370,7 +447,7 @@ class JobCog(commands.Cog):
                     await self.dump_data_to_console(ctx)
                 return
 
-        # 7) !job <pseudo> ou !job <job_name> (1 argument)
+        # 8) !job <pseudo> ou !job <job_name> (1 argument)
         elif len(args) == 1:
             pseudo_or_job = args[0]
             # On cherche si c'est un pseudo EXACT
@@ -428,7 +505,7 @@ class JobCog(commands.Cog):
                     await ctx.send(embed=emb)
                 return
 
-        # 8) Aucune condition ne correspond => Erreur de syntaxe
+        # 9) Aucune condition ne correspond => Erreur de syntaxe
         else:
             usage_msg = (
                 "**Utilisation incorrecte**. Référez-vous ci-dessous :\n\n"
@@ -437,8 +514,9 @@ class JobCog(commands.Cog):
                 "• `!job liste metier` : Afficher la liste de tous les noms de métiers\n"
                 "• `!job <pseudo>` : Afficher les métiers d'un joueur\n"
                 "• `!job <job_name>` : Afficher ceux qui ont un métier correspondant\n"
-                "• `!job <job_name> <niveau>` : Ajouter / mettre à jour votre job (s'il existe ou après confirmation)\n"
-                "• `!job add <job_name> <niveau>` : Ajouter un métier (multi-mots autorisé) au niveau spécifié\n"
+                "• `!job <job_name> <niveau>` : Ajouter ou mettre à jour votre métier\n"
+                "• `!job del <job_name>` : Retirer un métier\n"
+                "• `!job add <job_name> <niveau>` : Alias de la commande d'ajout\n"
             )
             await ctx.send(embed=discord.Embed(title="Erreur de syntaxe", description=usage_msg, color=discord.Color.red()))
 
