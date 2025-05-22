@@ -1,19 +1,67 @@
 # DiscordEVOLUTION
 
-This repository contains a Discord bot used on the EVOLUTION server.
-It provides many features such as statistics, ticket management and an
-interface with Google Gemini.
+Ce dépôt contient le bot Discord utilisé sur le serveur **EVOLUTION**. Il gère l'accueil des nouveaux joueurs, les tickets d'aide, les métiers en jeu et fournit aussi des commandes alimentées par Google Gemini.
 
-## Job Module
+## Préparation du serveur Discord
 
-The `job.py` cog lets players record their in‑game professions.
-Recent improvements include:
+Pour que toutes les fonctionnalités fonctionnent correctement, le serveur doit disposer des rôles et des salons suivants :
 
-- Migration of old entries stored under player nicknames to Discord IDs.
-- Validation of job levels (must be between 1 and 200).
-- Loading of `jobs_data.json` from console attachments.
-- New `!job del <job_name>` command to remove a profession.
-- Job names with spaces are now handled directly with
-  `!job <job_name> <niveau>` (the `add` keyword remains as an alias).
+### Rôles requis
+- **Staff** : donne accès aux commandes d'administration et permet de prendre en charge les tickets.
+- **Membre validé d'Evolution** : rôle appliqué aux membres officiels, nécessaire pour certaines commandes (ex. `!activite`).
+- **Invités/Invité** : rôle optionnel pour les visiteurs temporaires.
+- **Vétéran** : utilisé par le module de promotion `up.py`.
 
-Install dependencies from `requirements.txt` before running the bot.
+### Salons textuels attendus
+- `console` : salon privé où le bot sauvegarde/charge ses fichiers JSON.
+- `ticket` : réception des tickets créés avec la commande `!ticket`.
+- `annonces` : utilisé par `!annonce` et pour les sondages.
+- `organisation` : pour la planification d'activités via `!activite`.
+- `𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥` : canal public où le bot poste un message si les DM sont bloqués.
+- `𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭` : annonces d'entrées ou de départs de la guilde.
+- `𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞` : messages d'arrivée et d'au revoir.
+- `𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥-staff` : salon privé servant aux votes de promotion.
+- `xplock-rondesasa-ronde` : salon dédié aux annonces de PL.
+
+Si vous changez ces noms, pensez à mettre à jour les constantes correspondantes dans les fichiers Python du bot.
+
+## Installation
+
+Clonez ce dépôt puis installez les dépendances :
+
+```bash
+pip install -r requirements.txt
+```
+
+Créez ensuite un fichier `.env` contenant au minimum votre `DISCORD_TOKEN` et la clé `GEMINI_API_KEY` pour l'IA. Lancez le bot avec :
+
+```bash
+python main.py
+```
+
+## Module Job
+
+Le fichier `job.py` permet aux joueurs d'enregistrer leurs professions. Les dernières améliorations incluent :
+
+- Migration des anciennes données basées sur les pseudos vers les identifiants Discord.
+- Validation du niveau saisi (entre 1 et 200).
+- Chargement de `jobs_data.json` depuis le salon `console`.
+- Nouvelle commande `!job del <nom>` pour supprimer un métier.
+- Gestion directe des noms contenant des espaces via `!job <nom du métier> <niveau>` (l'alias `add` reste valable).
+
+## EvoDefender
+
+Le fichier `defender.py` surveille tous les liens postés sur le serveur. Il interroge **PhishTank**, **VirusTotal** et, si disponible,
+**Google Safe Browsing** pour repérer les URLs dangereuses. Les résultats sont consignés dans `historique_defender.db`
+et un journal `defender_discord.log` est créé.
+
+Ajoutez ces variables dans votre `.env` pour activer l'analyse complète :
+
+- `VT_API_KEY` — clé API VirusTotal
+- `PHISHTANK_APP_KEY` — clé PhishTank
+- `GSB_API_KEY` — clé Google Safe Browsing (optionnel)
+- `FERNET_KEY` — clé de chiffrement (sinon `secret.key` est généré)
+
+La commande `!scan <url>` permet d'analyser manuellement un lien. Les messages contenant une URL suspecte
+sont automatiquement modifiés ou supprimés par le module.
+
