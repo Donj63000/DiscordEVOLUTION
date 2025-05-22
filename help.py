@@ -343,5 +343,8 @@ class HelpCog(commands.Cog):
                 await ctx.send(embed=embed)
 
 async def setup(bot: commands.Bot):
-    """Ajoute la classe HelpCog au bot."""
-    await bot.add_cog(HelpCog(bot))
+    """Ajoute la classe HelpCog au bot (une seule fois)."""
+    if bot.get_cog("HelpCog") is None:
+        await bot.add_cog(HelpCog(bot))
+    else:
+        print("[HelpCog] Déjà chargé, on ignore setup().")
