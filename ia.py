@@ -615,7 +615,7 @@ class IACog(commands.Cog):
         """
         Génère un message d'annonce (tag @everyone) de façon IA.
         """
-        st = "Tu es EvolutionBOT, crée une annonce fun et commence par '@everyone'."
+        st = "Tu es EvolutionBOT, crée une annonce sympathique sans trop d'humour et commence par '@everyone'."
         pr = f"{st}\n{user_message}"
         try:
             await ctx.message.delete()
