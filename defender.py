@@ -49,6 +49,9 @@ BACKOFF_BASE = 2              # Base du backoff exponentiel
 BLOCK_PRIVATE_IPS = True      # Bloquer l'accès aux IP privées (SSRF)
 USE_ENV_FERNET_KEY = True     # Tenter la clé FERNET_KEY depuis l'env
 
+# Salon console pour les journaux
+CONSOLE_CHANNEL_NAME = "console"
+
 # ---------------------------------------------------------------------------
 # 3) LA COG DEFENDER
 # ---------------------------------------------------------------------------
@@ -213,6 +216,7 @@ class DefenderCog(commands.Cog):
                 # Si c'est un lien DANGEREUX, on remplace par un placeholder
                 if "DANGEREUX" in statut:
                     new_content = new_content.replace(raw_url, "[dangerous link removed]")
+                    await self.log_threat_to_console(message, raw_url)
 
                 # Calcul de la « sévérité »
                 severity = 0
@@ -659,7 +663,26 @@ class DefenderCog(commands.Cog):
         return False
 
     # -----------------------------------------------------------------------
-    # 16) MASQUAGE ET CREATION EMBED
+    # 16) LOG DES MENACES DANS LE SALON CONSOLE
+    # -----------------------------------------------------------------------
+    async def log_threat_to_console(self, msg: discord.Message, url: str):
+        guild = msg.guild
+        if not guild:
+            return
+        console_channel = discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+        if not console_channel:
+            return
+        timestamp = msg.created_at.strftime("%d/%m/%Y %H:%M")
+        sanitized_url = self.mask_dangerous(url)
+        try:
+            await console_channel.send(
+                f"Menace détectée dans {msg.channel.mention} : {msg.author.mention} a publié {sanitized_url} à {timestamp}"
+            )
+        except Exception as e:
+            self.logger.warning(f"Impossible d'envoyer l'alerte dans console: {e}")
+
+    # -----------------------------------------------------------------------
+    # 17) MASQUAGE ET CREATION EMBED
     # -----------------------------------------------------------------------
     def mask_dangerous(self, url: str) -> str:
         return re.sub(r"(?i)^http", "hxxp", url)
@@ -685,7 +708,7 @@ class DefenderCog(commands.Cog):
 
 
 # ---------------------------------------------------------------------------
-# 17) FONCTION SETUP POUR LE LOAD_EXTENSION (OBLIGATOIRE)
+# 18) FONCTION SETUP POUR LE LOAD_EXTENSION (OBLIGATOIRE)
 # ---------------------------------------------------------------------------
 async def setup(bot: commands.Bot):
     """Fonction attendue par bot.load_extension('defender') pour ajouter la Cog."""
