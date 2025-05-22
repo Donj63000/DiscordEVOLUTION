@@ -546,4 +546,8 @@ class JobCog(commands.Cog):
         await ctx.send(f"Salon console nettoyé, {deleted_count} messages supprimés.")
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(JobCog(bot))
+    """Ajoute JobCog une seule fois pour éviter les doublons."""
+    if bot.get_cog("JobCog") is None:
+        await bot.add_cog(JobCog(bot))
+    else:
+        print("[JobCog] Déjà chargé, on ignore setup().")
