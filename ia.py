@@ -204,7 +204,8 @@ class IACog(commands.Cog):
         self.bot = bot
         # Définition ici des variables essentielles qui existeront
         # après l’initialisation dans cog_load()
-        self.history_limit = 20
+        # Nombre de messages du canal conservés pour le contexte des réponses IA
+        self.history_limit = 100
         self.max_prompt_size = 5000
         self.quota_block_duration = 3600
         self.quota_exceeded_until = 0
