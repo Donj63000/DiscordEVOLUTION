@@ -4,12 +4,14 @@
 import os
 import json
 import unicodedata
+import tempfile
 import discord
 from discord.ext import commands
 from collections import defaultdict
 
 CONSOLE_CHANNEL_NAME = "console"
-DATA_FILE = "jobs_data.json"
+# Stocke les données localement dans le même dossier que ce module
+DATA_FILE = os.path.join(os.path.dirname(__file__), "jobs_data.json")
 STAFF_ROLE_NAME = "Staff"
 MIN_LEVEL = 1
 MAX_LEVEL = 200
@@ -83,15 +85,18 @@ class JobCog(commands.Cog):
         if len(data_str) < 1900:
             await console_channel.send(f"===BOTJOBS===\n```json\n{data_str}\n```")
         else:
+            temp_path = self._as_temp_file(data_str)
             await console_channel.send(
                 "===BOTJOBS=== (fichier)",
-                file=discord.File(fp=self._as_temp_file(data_str), filename="jobs_data.json")
+                file=discord.File(fp=temp_path, filename="jobs_data.json")
             )
+            os.remove(temp_path)
 
     def _as_temp_file(self, data_str: str) -> str:
-        with open("temp_jobs_data.json", "w", encoding="utf-8") as tmp:
-            tmp.write(data_str)
-        return "temp_jobs_data.json"
+        tmp = tempfile.NamedTemporaryFile(delete=False, mode="w", encoding="utf-8", suffix=".json")
+        tmp.write(data_str)
+        tmp.close()
+        return tmp.name
 
     async def migrate_legacy_keys(self):
         """Convertit les clés basées sur les pseudos en identifiants Discord."""
@@ -243,10 +248,12 @@ class JobCog(commands.Cog):
                 if len(data_str) < 1900:
                     await console_channel.send(f"===BOTJOBS===\n```json\n{data_str}\n```")
                 else:
+                    temp_path = self._as_temp_file(data_str)
                     await console_channel.send(
                         "===BOTJOBS=== (fichier)",
-                        file=discord.File(fp=self._as_temp_file(data_str), filename="jobs_data.json")
+                        file=discord.File(fp=temp_path, filename="jobs_data.json")
                     )
+                    os.remove(temp_path)
 
     @commands.command(name="job")
     async def job_command(self, ctx, *args):
