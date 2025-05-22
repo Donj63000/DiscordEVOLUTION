@@ -196,9 +196,7 @@ class DefenderCog(commands.Cog):
 
         found_urls = URL_REGEX.findall(message.content)
         if not found_urls:
-            # Important : laisser passer d’éventuelles commandes
-            await self.bot.process_commands(message)
-            return
+            return  # aucune URL, on laisse simplement le Bot gérer les commandes
 
         new_content = message.content
         results = []
@@ -237,9 +235,7 @@ class DefenderCog(commands.Cog):
                     )
 
         if not results:
-            # Aucune URL valable => on laisse passer les commandes
-            await self.bot.process_commands(message)
-            return
+            return  # aucune URL valide, on laisse le Bot gérer les commandes
 
         # Édition du message si on a supprimé un lien dangereux
         if new_content != message.content:
@@ -274,9 +270,6 @@ class DefenderCog(commands.Cog):
             )
 
         await message.reply(embed=embed, mention_author=False)
-
-        # Enfin, on laisse passer les commandes
-        await self.bot.process_commands(message)
 
     # -----------------------------------------------------------------------
     # 8) ANALYSE PRINCIPALE  (PhishTank, VirusTotal, etc.)
