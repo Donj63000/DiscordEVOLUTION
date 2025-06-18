@@ -3,13 +3,41 @@
 
 import discord
 import asyncio
+import json
+import os
 from discord.ext import commands
 from datetime import datetime
+
+# Constantes de configuration (noms des rôles / salons et délais)
+INVITES_ROLE_NAME = "Invités"
+VALIDATED_ROLE_NAME = "Membre validé d'Evolution"
+GENERAL_CHANNEL_NAME = "𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥"
+RECRUITMENT_CHANNEL_NAME = "𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭"
+WELCOME_CHANNEL_NAME = "𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞"
+TIMEOUT_RESPONSE = 300.0
+DATA_FILE = os.path.join(os.path.dirname(__file__), "welcome_data.json")
 
 class WelcomeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.already_welcomed = set()
+        self.load_welcomed_data()
+
+    def load_welcomed_data(self):
+        if os.path.isfile(DATA_FILE):
+            try:
+                with open(DATA_FILE, "r", encoding="utf-8") as f:
+                    ids = json.load(f)
+                self.already_welcomed = set(int(x) for x in ids)
+            except Exception as e:
+                print(f"[Welcome] Erreur chargement {DATA_FILE}: {e}")
+
+    def save_welcomed_data(self):
+        try:
+            with open(DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(list(self.already_welcomed), f)
+        except Exception as e:
+            print(f"[Welcome] Erreur sauvegarde {DATA_FILE}: {e}")
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -21,20 +49,26 @@ class WelcomeCog(commands.Cog):
             print("[DEBUG] Member déjà accueilli, on arrête.")
             return
         self.already_welcomed.add(member.id)
+        self.save_welcomed_data()
         print("[DEBUG] Ajout de l'ID dans already_welcomed.")
         try:
             dm_channel = await member.create_dm()
-            bienvenue_msg = (
-                f"🎉 **Bienvenue dans Evolution, {member.mention} !** 🎉\n\n"
+            description = (
                 "Nous sommes super contents de t’accueillir parmi nous. "
                 "Avant de commencer, prends juste quelques instants pour parcourir notre **règlement** — "
                 "on préfère que tout se passe dans la bonne ambiance ! 😇\n\n"
-                "D’ailleurs, l’as-tu **lu et accepté** ? \n\n"
+                "D’ailleurs, l’as-tu **lu et accepté** ?\n\n"
                 "*(Pour confirmer, réponds simplement par **oui**.)*\n\n"
                 "*(Si tu ne réponds pas, je t’enverrai un petit rappel.)*"
             )
+            embed = discord.Embed(
+                title=f"🎉 Bienvenue dans Evolution, {member.display_name}! 🎉",
+                description=description,
+                color=discord.Color.green(),
+            )
             file = discord.File("welcome1.png", filename="welcome1.png")
-            await dm_channel.send(content=bienvenue_msg, file=file)
+            embed.set_image(url="attachment://welcome1.png")
+            await dm_channel.send(embed=embed, file=file)
             print("[DEBUG] Message privé de bienvenue envoyé.")
         except discord.Forbidden:
             print("[DEBUG] Impossible d’envoyer un MP (DM bloqués). Utilisation du fallback public.")
@@ -49,7 +83,7 @@ class WelcomeCog(commands.Cog):
             )
 
         try:
-            await self.bot.wait_for("message", timeout=300.0, check=check_reglement)
+            await self.bot.wait_for("message", timeout=TIMEOUT_RESPONSE, check=check_reglement)
             print("[DEBUG] L'utilisateur a accepté le règlement.")
         except asyncio.TimeoutError:
             try:
@@ -77,7 +111,7 @@ class WelcomeCog(commands.Cog):
             )
 
         try:
-            status_response = await self.bot.wait_for("message", timeout=300.0, check=check_status)
+            status_response = await self.bot.wait_for("message", timeout=TIMEOUT_RESPONSE, check=check_status)
             user_status = status_response.content.lower()
             print(f"[DEBUG] L'utilisateur se définit comme {user_status}.")
         except asyncio.TimeoutError:
@@ -89,7 +123,7 @@ class WelcomeCog(commands.Cog):
                 pass
 
         if user_status == "invité":
-            guests_role = discord.utils.get(member.guild.roles, name="Invités")
+            guests_role = discord.utils.get(member.guild.roles, name=INVITES_ROLE_NAME)
             if guests_role:
                 try:
                     await member.add_roles(guests_role)
@@ -111,7 +145,7 @@ class WelcomeCog(commands.Cog):
             return msg.author == member and msg.channel == dm_channel
 
         try:
-            pseudo_response = await self.bot.wait_for("message", timeout=300.0, check=check_pseudo)
+            pseudo_response = await self.bot.wait_for("message", timeout=TIMEOUT_RESPONSE, check=check_pseudo)
             dofus_pseudo = pseudo_response.content.strip()
             print(f"[DEBUG] Pseudo Dofus : {dofus_pseudo}")
         except asyncio.TimeoutError:
@@ -133,7 +167,7 @@ class WelcomeCog(commands.Cog):
             return msg.author == member and msg.channel == dm_channel
 
         try:
-            recruiter_response = await self.bot.wait_for("message", timeout=300.0, check=check_recruteur)
+            recruiter_response = await self.bot.wait_for("message", timeout=TIMEOUT_RESPONSE, check=check_recruteur)
             recruiter_pseudo = recruiter_response.content.strip()
             print(f"[DEBUG] Recruteur : {recruiter_pseudo}")
         except asyncio.TimeoutError:
@@ -145,7 +179,7 @@ class WelcomeCog(commands.Cog):
             print("[DEBUG] Timeout recruteur => 'non'.")
 
         recruitment_date = datetime.now().strftime("%d/%m/%Y")
-        validated_role = discord.utils.get(member.guild.roles, name="Membre validé d'Evolution")
+        validated_role = discord.utils.get(member.guild.roles, name=VALIDATED_ROLE_NAME)
         try:
             await member.edit(nick=dofus_pseudo)
             print("[DEBUG] Surnom modifié.")
@@ -183,7 +217,7 @@ class WelcomeCog(commands.Cog):
         else:
             print("[WARNING] PlayersCog introuvable, pas d'inscription auto.")
 
-        general_channel = discord.utils.get(member.guild.text_channels, name="𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥")
+        general_channel = discord.utils.get(member.guild.text_channels, name=GENERAL_CHANNEL_NAME)
         if general_channel:
             annonce_msg_general = (
                 f"🔥 **Nouvelle recrue en approche** ! 🔥\n\n"
@@ -196,7 +230,7 @@ class WelcomeCog(commands.Cog):
         else:
             print("[DEBUG] Canal '𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥' introuvable.")
 
-        recruitment_channel = discord.utils.get(member.guild.text_channels, name="𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭")
+        recruitment_channel = discord.utils.get(member.guild.text_channels, name=RECRUITMENT_CHANNEL_NAME)
         if recruitment_channel:
             if recruiter_pseudo.lower() == "non":
                 recruiter_info = "n’a pas indiqué de recruteur"
@@ -211,12 +245,14 @@ class WelcomeCog(commands.Cog):
             print("[DEBUG] Canal '𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭' introuvable.")
 
     async def fallback_public_greeting(self, member: discord.Member):
-        general_channel = discord.utils.get(member.guild.text_channels, name="𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥")
+        general_channel = discord.utils.get(member.guild.text_channels, name=GENERAL_CHANNEL_NAME)
+        welcome_channel = discord.utils.get(member.guild.text_channels, name=WELCOME_CHANNEL_NAME)
         if general_channel:
+            extra = f" Passe sur {welcome_channel.mention} pour plus d'informations." if welcome_channel else ""
             await general_channel.send(
                 f"👋 {member.mention}, je n’ai pas pu t’envoyer de message privé ! "
                 "Active tes MP pour finaliser l’accueil. "
-                "En attendant, sois le/la bienvenu·e parmi nous ! 🎉"
+                "En attendant, sois le/la bienvenu·e parmi nous ! 🎉" + extra
             )
         else:
             print("[DEBUG] Fallback impossible : canal #𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥 introuvable.")
