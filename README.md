@@ -26,6 +26,9 @@ Pour que toutes les fonctionnalités fonctionnent correctement, le serveur doit 
 
 Si vous changez ces noms, pensez à mettre à jour les constantes correspondantes dans les fichiers Python du bot.
 
+Le module d'accueil stocke aussi la liste des membres déjà salués dans
+`welcome_data.json` pour éviter les doublons après un redémarrage.
+
 ## Installation
 
 Clonez ce dépôt puis installez les dépendances :
