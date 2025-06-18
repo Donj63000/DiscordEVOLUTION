@@ -53,3 +53,12 @@ Le fichier `job.py` permet aux joueurs d'enregistrer leurs professions. Les dern
 - Nouvelle commande `!job del <nom>` pour supprimer un métier.
 - Gestion directe des noms contenant des espaces via `!job <nom du métier> <niveau>` (l'alias `add` reste valable).
 
+## Modération automatique
+
+Le module `moderation.py` supprime les messages contenant des insultes graves,
+de la discrimination ou des menaces. L'auteur reçoit un avertissement en privé
+et l'incident est consigné dans le salon `𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥-staff`. Après deux
+avertissements, le membre est automatiquement sanctionné par un timeout d'une
+heure. Les commandes `!warnings` et `!resetwarnings` (réservées au rôle
+**Staff**) permettent de consulter ou remettre à zéro le compteur d'un membre.
+
