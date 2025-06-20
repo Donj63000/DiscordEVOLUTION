@@ -56,8 +56,10 @@ Le fichier `job.py` permet aux joueurs d'enregistrer leurs professions. Les dern
 ## Modération automatique
 
 Le module `moderation.py` supprime les messages contenant des insultes graves,
-de la discrimination ou des menaces. L'auteur reçoit un avertissement en privé
-et l'incident est consigné dans le salon `𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥-staff`. Après deux
+de la discrimination ou des menaces. Les mots surveillés sont détectés même si
+des espaces ou de la ponctuation sont insérés entre les lettres afin de
+contourner la modération. L'auteur reçoit un avertissement en privé et
+l'incident est consigné dans le salon `𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥-staff`. Après deux
 avertissements, le membre est automatiquement sanctionné par un timeout d'une
 heure. Les commandes `!warnings` et `!resetwarnings` (réservées au rôle
 **Staff**) permettent de consulter ou remettre à zéro le compteur d'un membre.

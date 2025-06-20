@@ -36,10 +36,20 @@ def chunk_list(txt, size=2000):
 
 def is_exact_match(msg: str, keyword: str) -> bool:
     """
-    Détecte si le 'keyword' est présent de façon isolée (mot entier) dans 'msg'.
+    Détecte si ``keyword`` est présent dans ``msg`` en ignorant les
+    séparateurs tels que les espaces ou la ponctuation.
+
+    Cette implémentation permet de bloquer les variantes comme ``pu te`` ou
+    ``pu!te`` tout en évitant les faux positifs lorsqu'un mot fait partie d'un
+    mot plus long.
     """
-    pattern = r"\b" + re.escape(keyword.lower()) + r"\b"
-    return re.search(pattern, msg) is not None
+
+    letters = re.sub(r"\W+", "", keyword.lower())
+    if not letters:
+        return False
+
+    pattern = r"(?<!\w)" + r"\W*".join(map(re.escape, letters)) + r"(?!\w)"
+    return re.search(pattern, msg.lower()) is not None
 
 ##############################################
 # Listes de mots-clés / intentions
