@@ -8,6 +8,9 @@ import asyncio
 import collections
 import random
 import re
+import unicodedata
+
+from rapidfuzz.distance import Levenshtein
 
 import discord
 from discord.ext import commands, tasks
@@ -34,22 +37,34 @@ def chunk_list(txt, size=2000):
     for i in range(0, len(txt), size):
         yield txt[i:i+size]
 
+def normalize_profanity(text: str) -> str:
+    """Normalise une chaîne pour la détection d'insultes."""
+    # Normalisation basique et retrait des accents
+    nfkd = unicodedata.normalize("NFKD", text.casefold())
+    no_diac = "".join(c for c in nfkd if unicodedata.category(c) != "Mn")
+
+    # Substitutions leet speak courantes
+    leet_table = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"})
+    leet = no_diac.translate(leet_table)
+
+    # On supprime tout sauf les lettres et chiffres
+    return re.sub(r"[^a-z0-9]", "", leet)
+
 def is_exact_match(msg: str, keyword: str) -> bool:
-    """
-    Détecte si ``keyword`` est présent dans ``msg`` en ignorant les
-    séparateurs tels que les espaces ou la ponctuation.
+    """Retourne ``True`` si ``keyword`` apparaît dans ``msg`` (distance ≤ 1)."""
 
-    Cette implémentation permet de bloquer les variantes comme ``pu te`` ou
-    ``pu!te`` tout en évitant les faux positifs lorsqu'un mot fait partie d'un
-    mot plus long.
-    """
-
-    letters = re.sub(r"\W+", "", keyword.lower())
-    if not letters:
+    norm_msg = normalize_profanity(msg)
+    norm_kw = normalize_profanity(keyword)
+    if not norm_kw:
         return False
 
-    pattern = r"(?<!\w)" + r"\W*".join(map(re.escape, letters)) + r"(?!\w)"
-    return re.search(pattern, msg.lower()) is not None
+    klen = len(norm_kw)
+    for l in range(max(1, klen - 1), klen + 2):
+        for i in range(0, len(norm_msg) - l + 1):
+            part = norm_msg[i : i + l]
+            if Levenshtein.distance(part, norm_kw) <= 1:
+                return True
+    return False
 
 ##############################################
 # Listes de mots-clés / intentions
@@ -352,30 +367,28 @@ class IACog(commands.Cog):
         Détecte l'intention (humor, sarcasm, light_provocation, serious_insult,
         discrimination, threat, ou neutral) selon les mots-clés.
         """
-        cleaned = re.sub(r'[^\w\s]', '', msg.lower())
-
         for kw in SERIOUS_INSULT_KEYWORDS:
-            if is_exact_match(cleaned, kw):
+            if is_exact_match(msg, kw):
                 return "serious_insult"
 
         for kw in DISCRIMINATION_KEYWORDS:
-            if is_exact_match(cleaned, kw):
+            if is_exact_match(msg, kw):
                 return "discrimination"
 
         for kw in THREAT_KEYWORDS:
-            if is_exact_match(cleaned, kw):
+            if is_exact_match(msg, kw):
                 return "threat"
 
         for kw in LIGHT_PROVOCATION_KEYWORDS:
-            if is_exact_match(cleaned, kw):
+            if is_exact_match(msg, kw):
                 return "light_provocation"
 
         for kw in HUMOR_KEYWORDS:
-            if is_exact_match(cleaned, kw):
+            if is_exact_match(msg, kw):
                 return "humor"
 
         for kw in SARCASM_KEYWORDS:
-            if is_exact_match(cleaned, kw):
+            if is_exact_match(msg, kw):
                 return "sarcasm"
 
         return "neutral"
