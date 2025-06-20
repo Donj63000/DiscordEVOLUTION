@@ -1,7 +1,23 @@
 # Ignore runtime data and logs
+# Logs
 *.log
+defender_discord.log
+
+# Databases
 *.db
-*_data.json
+historique_defender.db
+
+# Runtime JSON data
+activities_data.json
+jobs_data.json
+players_data.json
+promotions_data.json
+stats_data.json
+warnings_data.json
+welcome_data.json
+
+# Encryption key
 secret.key
+
 __pycache__/
 tests/__pycache__/
