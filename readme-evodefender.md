@@ -17,7 +17,7 @@ EvoDefender est la cog de sécurité du projet **DiscordEVOLUTION**. Son rôle e
    - `VT_API_KEY` pour VirusTotal
    - `GSB_API_KEY` pour Google Safe Browsing
    - `PHISHTANK_APP_KEY` pour PhishTank
-   - `FERNET_KEY` (optionnel, sinon la clef est générée et stockée dans `secret.key`)
+   - `FERNET_KEY` (**obligatoire** et fourni via la variable d'environnement `FERNET_KEY`)
 2. Assurez-vous que le module `defender` est chargé par `main.py`.
 3. Les fichiers `defender_discord.log` et `historique_defender.db` seront créés automatiquement à la première exécution.
 
