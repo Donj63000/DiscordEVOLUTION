@@ -1,0 +1,7 @@
+# Ignore runtime data and logs
+*.log
+*.db
+*_data.json
+secret.key
+__pycache__/
+tests/__pycache__/

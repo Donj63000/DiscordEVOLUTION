@@ -37,7 +37,14 @@ Clonez ce dépôt puis installez les dépendances :
 pip install -r requirements.txt
 ```
 
-Créez ensuite un fichier `.env` contenant au minimum votre `DISCORD_TOKEN` et la clé `GEMINI_API_KEY` pour l'IA. Lancez le bot avec :
+Créez ensuite un fichier `.env` contenant au minimum votre `DISCORD_TOKEN`, la clé `GEMINI_API_KEY` pour l'IA et une `FERNET_KEY` utilisée par `defender.py` pour chiffrer les URL.
+Vous pouvez générer cette clé avec :
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Lancez ensuite le bot avec :
 
 ```bash
 python main.py
