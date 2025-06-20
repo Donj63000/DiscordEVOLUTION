@@ -1,0 +1,46 @@
+{
+  "messages": {
+    "channel_count": {},
+    "role_count": {},
+    "hour_count": {},
+    "user_count": {},
+    "total": 0
+  },
+  "edits": {
+    "channel_count": {},
+    "hour_count": {},
+    "total": 0
+  },
+  "deletions": {
+    "channel_count": {},
+    "hour_count": {},
+    "total": 0
+  },
+  "reactions_added": {
+    "emoji_count": {},
+    "hour_count": {},
+    "total": 0
+  },
+  "reactions_removed": {
+    "emoji_count": {},
+    "hour_count": {},
+    "total": 0
+  },
+  "voice": {
+    "join_count": 0,
+    "leave_count": 0,
+    "channel_joins": {},
+    "channel_leaves": {}
+  },
+  "presence": {
+    "status_changes": {}
+  },
+  "logs": {
+    "messages_created": [],
+    "messages_edited": [],
+    "messages_deleted": [],
+    "reactions": [],
+    "voice": [],
+    "presence": []
+  }
+}
