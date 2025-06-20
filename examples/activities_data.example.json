@@ -1,0 +1,17 @@
+{
+  "next_id": 2,
+  "events": {
+    "1": {
+      "id": 1,
+      "titre": "Démo",
+      "date_str": "2024-01-01 20:00:00",
+      "description": "Soirée découverte",
+      "creator_id": 111111111111111111,
+      "role_id": null,
+      "participants": [],
+      "cancelled": false,
+      "reminder_24_sent": false,
+      "reminder_1_sent": false
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "123456789012345678": {
+    "discord_name": "ExampleUser",
+    "main": "MainCharacter",
+    "mules": ["MuleOne"]
+  },
+  "987654321098765432": {
+    "discord_name": "AnotherUser",
+    "main": "AnotherMain",
+    "mules": []
+  }
+}

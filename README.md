@@ -29,6 +29,19 @@ Si vous changez ces noms, pensez à mettre à jour les constantes correspondante
 Le module d'accueil stocke aussi la liste des membres déjà salués dans
 `welcome_data.json` pour éviter les doublons après un redémarrage.
 
+### Fichiers JSON de sauvegarde
+
+Plusieurs modules utilisent des fichiers `*.json` pour persister leurs données :
+`activities_data.json`, `jobs_data.json`, `players_data.json`,
+`promotions_data.json`, `stats_data.json`, `warnings_data.json` et
+`welcome_data.json`. Ces fichiers sont **créés automatiquement** lors de la
+première exécution du bot. Ils sont enregistrés à côté des modules Python et ne
+sont donc pas suivis par Git. À chaque sauvegarde, leur contenu est également
+publié dans le salon `console` pour servir de sauvegarde distante.
+
+Des exemples anonymisés sont fournis dans le répertoire
+[`examples`](examples/) pour illustrer le format attendu de chaque fichier.
+
 ## Installation
 
 Clonez ce dépôt puis installez les dépendances :
