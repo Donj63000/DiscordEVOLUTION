@@ -10,12 +10,79 @@ import random
 import re
 import unicodedata
 
-from rapidfuzz.distance import Levenshtein
+try:
+    from rapidfuzz.distance import Levenshtein
+except Exception:  # pragma: no cover - fallback if dependency missing
+    def _levenshtein(a: str, b: str) -> int:
+        if a == b:
+            return 0
+        if not a:
+            return len(b)
+        if not b:
+            return len(a)
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a, 1):
+            curr = [i]
+            for j, cb in enumerate(b, 1):
+                ins = curr[j - 1] + 1
+                del_ = prev[j] + 1
+                sub = prev[j - 1] + (ca != cb)
+                curr.append(min(ins, del_, sub))
+            prev = curr
+        return prev[-1]
 
-import discord
-from discord.ext import commands, tasks
-import google.generativeai as genai
-from dotenv import load_dotenv
+    class _Lev:
+        @staticmethod
+        def distance(a: str, b: str) -> int:
+            return _levenshtein(a, b)
+
+    Levenshtein = _Lev()  # type: ignore
+
+try:  # pragma: no cover - optional runtime deps
+    import discord
+    from discord.ext import commands, tasks
+    import google.generativeai as genai
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - provide stubs when missing
+    import types
+
+    class _DummyTasks:
+        def loop(self, *a, **k):
+            def decorator(func):
+                return func
+            return decorator
+
+    class _DummyCommands(types.SimpleNamespace):
+        class Cog:
+            @staticmethod
+            def listener(*a, **k):
+                def decorator(func):
+                    return func
+                return decorator
+
+        class Bot:
+            pass
+
+        def command(self, *a, **k):
+            def decorator(func):
+                return func
+            return decorator
+
+        def has_permissions(self, *a, **k):
+            def decorator(func):
+                return func
+            return decorator
+
+        def has_role(self, *a, **k):
+            def decorator(func):
+                return func
+            return decorator
+
+    discord = types.SimpleNamespace(Message=object, utils=types.SimpleNamespace(get=lambda *a, **k: None))
+    commands = _DummyCommands()
+    tasks = _DummyTasks()
+    genai = None
+    load_dotenv = lambda *a, **k: None
 
 ##############################################
 # Constantes "globales" et fonctions utilitaires
@@ -39,12 +106,22 @@ def chunk_list(txt, size=2000):
 
 def normalize_profanity(text: str) -> str:
     """Normalise une chaîne pour la détection d'insultes."""
-    # Normalisation basique et retrait des accents
+    # Normalisation basique et retrait des accents/combinaisons
     nfkd = unicodedata.normalize("NFKD", text.casefold())
     no_diac = "".join(c for c in nfkd if unicodedata.category(c) != "Mn")
 
+    # Caractères spéciaux courants
+    no_diac = (
+        no_diac.replace("ß", "ss")
+        .replace("œ", "oe")
+        .replace("æ", "ae")
+    )
+
     # Substitutions leet speak courantes
-    leet_table = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"})
+    leet_table = str.maketrans({
+        "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t",
+        "2": "z", "6": "g", "8": "b", "9": "g", "@": "a", "$": "s",
+    })
     leet = no_diac.translate(leet_table)
 
     # On supprime tout sauf les lettres et chiffres
@@ -59,11 +136,12 @@ def is_exact_match(msg: str, keyword: str) -> bool:
         return False
 
     klen = len(norm_kw)
-    for l in range(max(1, klen - 1), klen + 2):
-        for i in range(0, len(norm_msg) - l + 1):
-            part = norm_msg[i : i + l]
-            if Levenshtein.distance(part, norm_kw) <= 1:
-                return True
+    tokens = re.findall(r"[a-z0-9]+", norm_msg)
+    for tok in tokens:
+        if abs(len(tok) - klen) > 1:
+            continue
+        if Levenshtein.distance(tok, norm_kw) <= 1:
+            return True
     return False
 
 ##############################################
