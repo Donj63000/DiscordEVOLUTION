@@ -6,6 +6,7 @@ import json
 import datetime
 import discord
 from discord.ext import commands
+import ia
 
 WARNINGS_FILE = os.path.join(os.path.dirname(__file__), "warnings_data.json")
 STAFF_CHANNEL_NAME = "𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥-staff"
@@ -38,16 +39,25 @@ class ModerationCog(commands.Cog):
         self.save_warnings()
         return self.warnings[user_id]
 
+    def _classify_message(self, msg: str) -> str | None:
+        """Retourne la catégorie d'infraction détectée ou ``None``."""
+        for kw in ia.SERIOUS_INSULT_KEYWORDS:
+            if ia.is_exact_match(msg, kw):
+                return "serious_insult"
+        for kw in ia.DISCRIMINATION_KEYWORDS:
+            if ia.is_exact_match(msg, kw):
+                return "discrimination"
+        for kw in ia.THREAT_KEYWORDS:
+            if ia.is_exact_match(msg, kw):
+                return "threat"
+        return None
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
             return
 
-        ia_cog = self.bot.get_cog("IACog")
-        if ia_cog is None:
-            return
-
-        intent = ia_cog.detect_intention(message.content)
+        intent = self._classify_message(message.content)
         if intent not in ("serious_insult", "discrimination", "threat"):
             return
 
