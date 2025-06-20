@@ -71,3 +71,8 @@ avertissements, le membre est automatiquement sanctionné par un timeout d'une
 heure. Les commandes `!warnings` et `!resetwarnings` (réservées au rôle
 **Staff**) permettent de consulter ou remettre à zéro le compteur d'un membre.
 
+
+## Licence
+
+Ce projet est distribué sous la licence MIT. Consultez le fichier [LICENSE](LICENSE) pour plus de détails.
+
