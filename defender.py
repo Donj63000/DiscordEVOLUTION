@@ -47,7 +47,6 @@ MAX_RETRIES = 3               # Nb de tentatives en cas de 429/503
 BACKOFF_BASE = 2              # Base du backoff exponentiel
 
 BLOCK_PRIVATE_IPS = True      # Bloquer l'accès aux IP privées (SSRF)
-USE_ENV_FERNET_KEY = True     # Tenter la clé FERNET_KEY depuis l'env
 
 # ---------------------------------------------------------------------------
 # 3) LA COG DEFENDER
@@ -79,7 +78,6 @@ class DefenderCog(commands.Cog):
         self.http_session = None
 
         # Fichiers de config
-        self.KEY_FILE = "secret.key"
         self.DB_FILENAME = "historique_defender.db"
         self.LOG_FILENAME = "defender_discord.log"
 
@@ -116,19 +114,10 @@ class DefenderCog(commands.Cog):
     # -----------------------------------------------------------------------
     def init_fernet_key(self):
         env_key = os.getenv("FERNET_KEY", "").strip()
-        if USE_ENV_FERNET_KEY and env_key:
-            self.logger.info("Clé Fernet chargée depuis la variable d'environnement FERNET_KEY.")
-            self.key = env_key.encode()
-        else:
-            if not os.path.exists(self.KEY_FILE):
-                self.key = Fernet.generate_key()
-                with open(self.KEY_FILE, "wb") as f:
-                    f.write(self.key)
-                self.logger.info("Nouvelle clé de chiffrement générée (Defender).")
-            else:
-                with open(self.KEY_FILE, "rb") as f:
-                    self.key = f.read()
-                self.logger.info("Clé de chiffrement chargée (fichier local).")
+        if not env_key:
+            raise RuntimeError("FERNET_KEY environment variable is required")
+        self.logger.info("Clé Fernet chargée depuis la variable d'environnement FERNET_KEY.")
+        self.key = env_key.encode()
 
         self.fernet = Fernet(self.key)
 
