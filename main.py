@@ -73,6 +73,7 @@ async def main():
         "calcul",
         "defender",
         "moderation",
+        "event_conversation",
 
 
 
