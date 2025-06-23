@@ -1,0 +1,242 @@
+# coding: utf-8
+"""Cog providing an interactive workflow to create scheduled events.
+
+The command `!event` starts a private discussion with the user. Messages are
+collected until the user types "terminé" or stops replying for 15 minutes. The
+transcript is summarised via Gemini and parsed into an :class:`EventData`.
+The user receives an embed preview and can confirm or cancel with buttons. On
+confirmation a :class:`discord.GuildScheduledEvent` is created and an embed with
+RSVP buttons is posted in the target channel. Participants receive a temporary
+role which is removed once the event ends.
+"""
+
+import asyncio
+import json
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
+
+import discord
+from discord.ext import commands
+
+
+SYSTEM_PROMPT = (
+    "Tu es EvolutionBOT et tu aides à créer un événement Discord. "
+    "À partir de la conversation suivante, fournis uniquement un JSON strict "
+    "avec les clés: name, description, start_time, end_time, location, "
+    "max_slots. Les dates sont au format JJ/MM/AAAA HH:MM. Mets null si une "
+    "information est manquante. Aucune explication, seulement le JSON."
+)
+
+TIMEOUT = 900.0  # 15 minutes
+
+
+@dataclass
+class EventData:
+    """Simple model for parsed event data."""
+
+    name: str
+    description: str
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    location: Optional[str] = None
+    max_slots: Optional[int] = None
+
+    @staticmethod
+    def from_dict(data: dict) -> "EventData":
+        def parse_dt(val: Optional[str]) -> Optional[datetime]:
+            if not val:
+                return None
+            try:
+                return datetime.strptime(val, "%d/%m/%Y %H:%M")
+            except Exception:
+                return None
+
+        return EventData(
+            name=str(data.get("name", "")),
+            description=str(data.get("description", "")),
+            start_time=parse_dt(data.get("start_time")) or datetime.utcnow(),
+            end_time=parse_dt(data.get("end_time")),
+            location=data.get("location"),
+            max_slots=int(data["max_slots"]) if data.get("max_slots") is not None else None,
+        )
+
+    def to_embed(self) -> discord.Embed:
+        embed = discord.Embed(title=self.name, description=self.description, color=discord.Color.blue())
+        embed.add_field(name="Début", value=self.start_time.strftime("%d/%m/%Y %H:%M"), inline=False)
+        if self.end_time:
+            embed.add_field(name="Fin", value=self.end_time.strftime("%d/%m/%Y %H:%M"), inline=False)
+        if self.location:
+            embed.add_field(name="Lieu", value=self.location, inline=False)
+        if self.max_slots is not None:
+            embed.add_field(name="Places", value=str(self.max_slots), inline=False)
+        return embed
+
+
+class ConfirmView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=TIMEOUT)
+        self.value: Optional[bool] = None
+
+    @discord.ui.button(emoji="✅", style=discord.ButtonStyle.success)
+    async def validate(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = True
+        await interaction.response.defer()
+        self.stop()
+
+    @discord.ui.button(emoji="❌", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = False
+        await interaction.response.defer()
+        self.stop()
+
+
+class RSVPView(discord.ui.View):
+    def __init__(self, role: discord.Role):
+        super().__init__(timeout=None)
+        self.role = role
+
+    @discord.ui.button(label="Je participe ✅", style=discord.ButtonStyle.success)
+    async def rsvp_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.role:
+            try:
+                await interaction.user.add_roles(self.role)
+            except Exception:
+                pass
+        await interaction.response.send_message("Inscription enregistrée !", ephemeral=True)
+
+    @discord.ui.button(label="Me désinscrire ❌", style=discord.ButtonStyle.danger)
+    async def rsvp_no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.role:
+            try:
+                await interaction.user.remove_roles(self.role)
+            except Exception:
+                pass
+        await interaction.response.send_message("Désinscription enregistrée.", ephemeral=True)
+
+
+class EventConversationCog(commands.Cog):
+    def __init__(self, bot: commands.Bot, target_channel: str = "organisation", role_name: str = "Participants événement"):
+        self.bot = bot
+        self.target_channel_name = target_channel
+        self.role_name = role_name
+
+    @staticmethod
+    def _extract_json(text: str) -> str:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end < start:
+            raise ValueError("JSON introuvable")
+        return text[start : end + 1]
+
+    @commands.has_role("Staff")
+    @commands.command(name="event")
+    async def event_command(self, ctx: commands.Context):
+        """Start an interactive event creation session in DM."""
+
+        if ctx.guild is None:
+            return await ctx.send("Cette commande doit être utilisée sur un serveur.")
+
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass
+
+        dm = await ctx.author.create_dm()
+        await dm.send(
+            "Décris-moi ton événement en quelques messages. "
+            "Tape **terminé** quand tu as fini. (15 min d'inactivité pour annuler)"
+        )
+
+        transcript = []
+
+        def check(m: discord.Message) -> bool:
+            return m.author == ctx.author and isinstance(m.channel, discord.DMChannel)
+
+        while True:
+            try:
+                msg = await self.bot.wait_for("message", timeout=TIMEOUT, check=check)
+            except asyncio.TimeoutError:
+                await dm.send("⏱️ Temps écoulé, conversation annulée.")
+                return
+            content = msg.content.strip()
+            if content.lower().startswith("terminé"):
+                break
+            transcript.append(content)
+
+        ia_cog = self.bot.get_cog("IACog")
+        if ia_cog is None:
+            await dm.send("Module IA indisponible.")
+            return
+
+        prompt = f"{SYSTEM_PROMPT}\n\nTRANSCRIPT:\n" + "\n".join(transcript)
+        try:
+            resp, _ = await ia_cog.generate_content_with_fallback_async(prompt)
+        except Exception as e:
+            await dm.send(f"Erreur IA : {e}")
+            return
+
+        try:
+            raw_json = self._extract_json(resp.text if hasattr(resp, "text") else str(resp))
+            data = json.loads(raw_json)
+            event = EventData.from_dict(data)
+        except Exception as e:
+            await dm.send(f"Impossible de parser la réponse IA : {e}")
+            return
+
+        preview = event.to_embed()
+        view = ConfirmView()
+        msg = await dm.send("Voici le résumé de l'événement :", embed=preview, view=view)
+        await view.wait()
+        await msg.edit(view=None)
+        if view.value is not True:
+            await dm.send("Événement annulé.")
+            return
+
+        guild = ctx.guild
+        role = discord.utils.get(guild.roles, name=self.role_name)
+        if role is None:
+            try:
+                role = await guild.create_role(name=self.role_name)
+            except Exception:
+                role = None
+
+        try:
+            scheduled = await guild.create_scheduled_event(
+                name=event.name,
+                description=event.description,
+                start_time=event.start_time,
+                end_time=event.end_time,
+                entity_type=discord.GuildScheduledEventEntityType.external,
+                location=event.location or "Discord",
+                privacy_level=discord.PrivacyLevel.guild_only,
+            )
+        except Exception as e:
+            await dm.send(f"Erreur lors de la création de l'événement : {e}")
+            return
+
+        target_chan = discord.utils.get(guild.text_channels, name=self.target_channel_name)
+        if target_chan is None:
+            await dm.send("Canal cible introuvable pour l'annonce de l'événement.")
+            return
+
+        announce = event.to_embed()
+        announce.set_footer(text="Réagissez avec les boutons ci-dessous pour vous inscrire")
+        view_rsvp = RSVPView(role)
+        await target_chan.send(embed=announce, view=view_rsvp)
+        await dm.send("Événement créé et annoncé avec succès !")
+
+        if role and event.end_time:
+            self.bot.loop.create_task(self._cleanup_role(role, event.end_time))
+
+    async def _cleanup_role(self, role: discord.Role, end_time: datetime):
+        delay = max(0, (end_time - datetime.utcnow()).total_seconds())
+        await asyncio.sleep(delay)
+        try:
+            await role.delete()
+        except Exception:
+            pass
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(EventConversationCog(bot))
