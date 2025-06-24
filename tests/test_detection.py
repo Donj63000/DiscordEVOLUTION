@@ -16,3 +16,8 @@ def test_is_exact_match_variations():
     assert ia.is_exact_match("pûtë", "pute")
     assert ia.is_exact_match("p\u0302u\u0308t\u0301e", "pute")
     assert not ia.is_exact_match("computers", "pute")
+
+
+def test_short_keyword_handling():
+    assert ia.is_exact_match("tg", "tg")
+    assert not ia.is_exact_match("gg", "tg")
