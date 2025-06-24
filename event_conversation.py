@@ -13,7 +13,7 @@ role which is removed once the event ends.
 import asyncio
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List
 
 from models import EventData
@@ -209,6 +209,8 @@ class EventConversationCog(commands.Cog):
             raw_json = self._extract_json(resp.text if hasattr(resp, "text") else str(resp))
             data = json.loads(raw_json)
             event = EventDraft.from_dict(data)
+            if event.end_time is None:
+                event.end_time = event.start_time + timedelta(hours=1)
         except Exception as e:
             await dm.send(f"Impossible de parser la réponse IA : {e}")
             await self.save_conversation_state(user_key, None)
