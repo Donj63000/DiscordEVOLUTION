@@ -74,9 +74,6 @@ async def main():
         "defender",
         "moderation",
         "event_conversation",
-
-
-
     ]
 
     for ext in extensions:
