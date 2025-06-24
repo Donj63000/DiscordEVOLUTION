@@ -13,7 +13,7 @@ role which is removed once the event ends.
 import asyncio
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, List
 
 from models import EventData
@@ -52,14 +52,14 @@ class EventDraft:
             if not val:
                 return None
             try:
-                return datetime.strptime(val, "%d/%m/%Y %H:%M")
+                return datetime.strptime(val, "%d/%m/%Y %H:%M").replace(tzinfo=timezone.utc)
             except Exception:
                 return None
 
         return EventDraft(
             name=str(data.get("name", "")),
             description=str(data.get("description", "")),
-            start_time=parse_dt(data.get("start_time")) or datetime.utcnow(),
+            start_time=parse_dt(data.get("start_time")) or discord.utils.utcnow(),
             end_time=parse_dt(data.get("end_time")),
             location=data.get("location"),
             max_slots=int(data["max_slots"]) if data.get("max_slots") is not None else None,
@@ -286,7 +286,7 @@ class EventConversationCog(commands.Cog):
             self.bot.loop.create_task(self._cleanup_role(role, event.end_time))
 
     async def _cleanup_role(self, role: discord.Role, end_time: datetime):
-        delay = max(0, (end_time - datetime.utcnow()).total_seconds())
+        delay = max(0, (end_time - discord.utils.utcnow()).total_seconds())
         await asyncio.sleep(delay)
         try:
             await role.delete()
