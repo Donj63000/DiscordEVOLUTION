@@ -409,7 +409,6 @@ class IACog(commands.Cog):
             "• !bot <message>\n"
             "• !analyse\n"
             "• !annonce <texte> (Staff)\n"
-            "• !event <texte> (Staff)\n"
             "• !pl <texte>\n"
             "etc.\n"
         )
@@ -520,7 +519,6 @@ class IACog(commands.Cog):
             "!annonce <texte> (Staff)\n"
             "!analyse\n"
             "!bot <message>\n"
-            "!event <texte> (Staff)\n"
             "!pl <texte>\n"
             "Mentionnez @EvolutionBOT pour solliciter l'IA\n"
             "!ia pour revoir ce guide"
@@ -738,57 +736,57 @@ class IACog(commands.Cog):
             else:
                 await ctx.send(str(e))
 
-    @commands.has_role("Staff")
-    @commands.command(name="event")
-    async def event_command(self, ctx, *, user_message=None):
-        """
-        Commande !event <texte> (Staff) : crée un événement dans #organisation.
-        """
-        if not user_message:
-            await ctx.send("Usage: !event <texte>")
-            return
-        chan = discord.utils.get(ctx.guild.text_channels, name=self.event_channel_name)
-        if not chan:
-            await ctx.send("Canal d'organisation introuvable.")
-            return
-
-        if time.time() < self.quota_exceeded_until:
-            qlen = len(self.request_queue)
-            await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
-            self.request_queue.append((ctx, lambda co: self.event_fallback(co, chan, user_message)))
-            self.pending_requests = True
-            return
-
-        await self.event_fallback(ctx, chan, user_message)
-
-    async def event_fallback(self, ctx, chan, user_message: str):
-        """
-        Génère un message d'événement (invitation).
-        """
-        st = "Tu es EvolutionBOT, rédige une invitation d'événement incitant à participer."
-        pr = f"{st}\n\n{user_message}"
-        try:
-            await ctx.message.delete()
-        except:
-            pass
-
-        try:
-            resp, model_used = await self.generate_content_with_fallback_async(pr)
-            if resp and hasattr(resp, "text"):
-                rep = resp.text.strip() or "(vide)"
-                await chan.send(f"**Nouvel Événement [{model_used}] :**")
-                for c in chunk_list(rep):
-                    await chan.send(c)
-                role_val = discord.utils.get(ctx.guild.roles, name="Membre validé d'Evolution")
-                if role_val:
-                    await chan.send(role_val.mention)
-            else:
-                await ctx.send("Événement non généré.")
-        except Exception as e:
-            if "429" in str(e):
-                await ctx.send("Quota dépassé.")
-            else:
-                await ctx.send(str(e))
+    # @commands.has_role("Staff")
+    # @commands.command(name="event")
+    # async def event_command(self, ctx, *, user_message=None):
+    #     """
+    #     Commande !event <texte> (Staff) : crée un événement dans #organisation.
+    #     """
+    #     if not user_message:
+    #         await ctx.send("Usage: !event <texte>")
+    #         return
+    #     chan = discord.utils.get(ctx.guild.text_channels, name=self.event_channel_name)
+    #     if not chan:
+    #         await ctx.send("Canal d'organisation introuvable.")
+    #         return
+    #
+    #     if time.time() < self.quota_exceeded_until:
+    #         qlen = len(self.request_queue)
+    #         await ctx.send(f"IA saturée, requête en file. ({qlen} en file)")
+    #         self.request_queue.append((ctx, lambda co: self.event_fallback(co, chan, user_message)))
+    #         self.pending_requests = True
+    #         return
+    #
+    #     await self.event_fallback(ctx, chan, user_message)
+    #
+    # async def event_fallback(self, ctx, chan, user_message: str):
+    #     """
+    #     Génère un message d'événement (invitation).
+    #     """
+    #     st = "Tu es EvolutionBOT, rédige une invitation d'événement incitant à participer."
+    #     pr = f"{st}\n\n{user_message}"
+    #     try:
+    #         await ctx.message.delete()
+    #     except:
+    #         pass
+    #
+    #     try:
+    #         resp, model_used = await self.generate_content_with_fallback_async(pr)
+    #         if resp and hasattr(resp, "text"):
+    #             rep = resp.text.strip() or "(vide)"
+    #             await chan.send(f"**Nouvel Événement [{model_used}] :**")
+    #             for c in chunk_list(rep):
+    #                 await chan.send(c)
+    #             role_val = discord.utils.get(ctx.guild.roles, name="Membre validé d'Evolution")
+    #             if role_val:
+    #                 await chan.send(role_val.mention)
+    #         else:
+    #             await ctx.send("Événement non généré.")
+    #     except Exception as e:
+    #         if "429" in str(e):
+    #             await ctx.send("Quota dépassé.")
+    #         else:
+    #             await ctx.send(str(e))
 
     @commands.command(name="pl")
     async def pl_command(self, ctx, *, user_message=None):
