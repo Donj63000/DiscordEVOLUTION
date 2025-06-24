@@ -128,7 +128,7 @@ def normalize_profanity(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", leet)
 
 def is_exact_match(msg: str, keyword: str) -> bool:
-    """Retourne ``True`` si ``keyword`` apparaît dans ``msg`` (distance ≤ 1)."""
+    """Retourne ``True`` si ``keyword`` apparaît dans ``msg``."""
 
     norm_msg = normalize_profanity(msg)
     norm_kw = normalize_profanity(keyword)
@@ -137,11 +137,18 @@ def is_exact_match(msg: str, keyword: str) -> bool:
 
     klen = len(norm_kw)
     tokens = re.findall(r"[a-z0-9]+", norm_msg)
-    for tok in tokens:
+    for i, tok in enumerate(tokens):
         if abs(len(tok) - klen) > 1:
             continue
-        if Levenshtein.distance(tok, norm_kw) <= 1:
-            return True
+        dist = Levenshtein.distance(tok, norm_kw)
+        if klen <= 2:
+            if dist == 0:
+                return True
+            if i < len(tokens) - 1 and Levenshtein.distance(tok + tokens[i + 1], norm_kw) == 0:
+                return True
+        else:
+            if dist <= 1:
+                return True
     return False
 
 ##############################################
