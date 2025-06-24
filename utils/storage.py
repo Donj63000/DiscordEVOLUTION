@@ -3,6 +3,8 @@ import json
 import logging
 from typing import Dict, Optional
 
+from models import EventData
+
 import discord
 from discord.ext import commands
 
@@ -20,7 +22,7 @@ class EventStore:
         self.console_channel: Optional[discord.TextChannel] = None
         self.backend = None
         self.db = None
-        self.events: Dict[str, dict] = {}
+        self.events: Dict[str, EventData] = {}
         self.conversations: Dict[str, list] = {}
 
     async def connect(self):
@@ -75,7 +77,7 @@ class EventStore:
 
     async def _load_db(self):
         rows = await self.db.fetch("SELECT id, data FROM events")
-        self.events = {r["id"]: dict(r["data"]) for r in rows}
+        self.events = {r["id"]: EventData.from_dict(dict(r["data"])) for r in rows}
         rows = await self.db.fetch("SELECT id, data FROM conversations")
         self.conversations = {r["id"]: dict(r["data"]) for r in rows}
         logger.info("EventStore: data loaded from PostgreSQL.")
@@ -107,19 +109,21 @@ class EventStore:
                     except Exception:
                         pass
                 if data:
-                    self.events = data.get("events", {})
+                    raw_events = data.get("events", {})
+                    self.events = {eid: EventData.from_dict(ed) for eid, ed in raw_events.items()}
                     self.conversations = data.get("conversations", {})
                     logger.info("EventStore: data loaded from console channel.")
                     break
 
-    async def save_event(self, event_id: str, payload: Dict):
+    async def save_event(self, event_id: str, payload: EventData):
         self.events[event_id] = payload
+        data_dict = payload.model_dump(mode="python", exclude_none=True)
         if self.backend == "postgres" and self.db:
             await self.db.execute(
                 "INSERT INTO events(id, data) VALUES($1, $2)"
                 " ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data",
                 event_id,
-                payload,
+                data_dict,
             )
         else:
             await self._dump_console()
@@ -146,7 +150,10 @@ class EventStore:
         channel = self.console_channel
         if not channel:
             return
-        data = {"events": self.events, "conversations": self.conversations}
+        data = {
+            "events": {eid: e.model_dump(mode="python", exclude_none=True) for eid, e in self.events.items()},
+            "conversations": self.conversations,
+        }
         data_str = json.dumps(data, indent=4, ensure_ascii=False)
         if len(data_str) < 1900:
             await channel.send(f"{self.MARKER}\n```json\n{data_str}\n```")

@@ -3,7 +3,7 @@
 
 The command `!event` starts a private discussion with the user. Messages are
 collected until the user types "terminé" or stops replying for 15 minutes. The
-transcript is summarised via Gemini and parsed into an :class:`EventData`.
+transcript is summarised via Gemini and parsed into an :class:`EventDraft`.
 The user receives an embed preview and can confirm or cancel with buttons. On
 confirmation a :class:`discord.GuildScheduledEvent` is created and an embed with
 RSVP buttons is posted in the target channel. Participants receive a temporary
@@ -15,6 +15,8 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Dict, List
+
+from models import EventData
 
 import discord
 from discord.ext import commands
@@ -34,8 +36,8 @@ TIMEOUT = 900.0  # 15 minutes
 
 
 @dataclass
-class EventData:
-    """Simple model for parsed event data."""
+class EventDraft:
+    """Simple model for parsed event data returned by the LLM."""
 
     name: str
     description: str
@@ -45,7 +47,7 @@ class EventData:
     max_slots: Optional[int] = None
 
     @staticmethod
-    def from_dict(data: dict) -> "EventData":
+    def from_dict(data: dict) -> "EventDraft":
         def parse_dt(val: Optional[str]) -> Optional[datetime]:
             if not val:
                 return None
@@ -54,7 +56,7 @@ class EventData:
             except Exception:
                 return None
 
-        return EventData(
+        return EventDraft(
             name=str(data.get("name", "")),
             description=str(data.get("description", "")),
             start_time=parse_dt(data.get("start_time")) or datetime.utcnow(),
@@ -123,7 +125,7 @@ class EventConversationCog(commands.Cog):
         self.target_channel_name = target_channel
         self.role_name = role_name
         self.store = EventStore(bot)
-        self.events: Dict[str, dict] = {}
+        self.events: Dict[str, EventData] = {}
         self.ongoing_conversations: Dict[str, List[str]] = {}
 
     async def cog_load(self):
@@ -132,7 +134,7 @@ class EventConversationCog(commands.Cog):
         self.events = data.get("events", {})
         self.ongoing_conversations = data.get("conversations", {})
 
-    async def save_event(self, event_id: str, payload: Dict):
+    async def save_event(self, event_id: str, payload: EventData):
         await self.store.save_event(event_id, payload)
 
     async def save_conversation_state(self, user_id: str, transcript: Optional[List[str]]):
@@ -206,7 +208,7 @@ class EventConversationCog(commands.Cog):
         try:
             raw_json = self._extract_json(resp.text if hasattr(resp, "text") else str(resp))
             data = json.loads(raw_json)
-            event = EventData.from_dict(data)
+            event = EventDraft.from_dict(data)
         except Exception as e:
             await dm.send(f"Impossible de parser la réponse IA : {e}")
             await self.save_conversation_state(user_key, None)
@@ -261,7 +263,22 @@ class EventConversationCog(commands.Cog):
         await target_chan.send(embed=announce, view=view_rsvp)
         await dm.send("Événement créé et annoncé avec succès !")
 
-        await self.save_event(str(scheduled.id), event.__dict__)
+        stored = EventData(
+            guild_id=guild.id,
+            channel_id=target_chan.id,
+            title=event.name,
+            description=event.description,
+            starts_at=event.start_time,
+            ends_at=event.end_time,
+            max_participants=event.max_slots,
+            timezone=None,
+            recurrence=None,
+            temp_role_id=role.id if role else None,
+            banner_url=None,
+            author_id=ctx.author.id,
+        )
+
+        await self.save_event(str(scheduled.id), stored)
         await self.save_conversation_state(user_key, None)
         self.ongoing_conversations.pop(user_key, None)
 
