@@ -106,6 +106,20 @@ Pour que cette commande fonctionne sans accroc, le serveur doit :
 
 Les événements créés et l'état des conversations sont sauvegardés via `EventStore`. Par défaut, les données sont publiées dans le salon `console`, mais si la variable d'environnement `DATABASE_URL` est définie, elles sont stockées dans PostgreSQL.
 
+### Architecture interne
+
+La fonctionnalité s'appuie sur plusieurs modules :
+
+- `event_conversation.py` : le cog qui orchestre la discussion privée et crée l'événement planifié.
+- `utils/storage.py` : un `EventStore` capable de persister les événements et conversations soit dans PostgreSQL, soit dans le salon `#console`.
+- `models/event_data.py` : la structure de données commune utilisée pour sauvegarder chaque événement.
+
+L'ancienne commande `!event` de `ia.py` a été supprimée au profit de ce flux guidé par Gemini. Un jeu de tests (`tests/test_event_data.py`) vérifie la validation du modèle `EventData`. Vous pouvez lancer tous les tests avec :
+
+```bash
+pytest -q
+```
+
 ## Modération automatique
 
 Le module `moderation.py` supprime les messages contenant des insultes graves,
