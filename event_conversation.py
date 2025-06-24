@@ -33,6 +33,7 @@ SYSTEM_PROMPT = (
 )
 
 TIMEOUT = 900.0  # 15 minutes
+GENERAL_CHANNEL_NAME = "𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥"
 
 
 @dataclass
@@ -162,10 +163,19 @@ class EventConversationCog(commands.Cog):
             pass
 
         dm = await ctx.author.create_dm()
-        await dm.send(
-            "Décris-moi ton événement en quelques messages. "
-            "Tape **terminé** quand tu as fini. (15 min d'inactivité pour annuler)"
-        )
+        try:
+            await dm.send(
+                "Décris-moi ton événement en quelques messages. "
+                "Tape **terminé** quand tu as fini. (15 min d'inactivité pour annuler)"
+            )
+        except discord.Forbidden:
+            general = discord.utils.get(ctx.guild.text_channels, name=GENERAL_CHANNEL_NAME)
+            if general:
+                await general.send(
+                    f"{ctx.author.mention}, je n'ai pas pu t'envoyer de message privé. "
+                    "Merci d'activer tes DM pour utiliser la commande `!event`."
+                )
+            return
 
         transcript: List[str] = []
         user_key = str(ctx.author.id)
