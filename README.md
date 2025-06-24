@@ -73,6 +73,17 @@ Le fichier `job.py` permet aux joueurs d'enregistrer leurs professions. Les dern
 - Nouvelle commande `!job del <nom>` pour supprimer un métier.
 - Gestion directe des noms contenant des espaces via `!job <nom du métier> <niveau>` (l'alias `add` reste valable).
 
+## Planification d'événements
+
+Le nouveau module `event_conversation.py` fournit la commande `!event` destinée au rôle **Staff**. Lorsque vous l'utilisez :
+
+- Le bot ouvre une conversation privée pour recueillir les détails de l'événement. Envoyez plusieurs messages puis terminez par `terminé`.
+- Le transcript est résumé par Gemini, puis un aperçu vous est présenté avec des boutons pour confirmer ou annuler.
+- Après validation, un événement planifié Discord est créé et un message d'inscription est posté dans `#organisation` avec mention du rôle *Membre validé*.
+- Les participants obtiennent un rôle temporaire qui est supprimé à la fin de l'événement.
+
+Les événements créés et l'état des conversations sont sauvegardés via `EventStore`. Par défaut, les données sont publiées dans le salon `console`, mais si la variable d'environnement `DATABASE_URL` est définie, elles sont stockées dans PostgreSQL.
+
 ## Modération automatique
 
 Le module `moderation.py` supprime les messages contenant des insultes graves,
