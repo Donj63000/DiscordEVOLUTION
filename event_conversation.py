@@ -240,7 +240,7 @@ class EventConversationCog(commands.Cog):
                 description=event.description,
                 start_time=event.start_time,
                 end_time=event.end_time,
-                entity_type=discord.GuildScheduledEventEntityType.external,
+                entity_type=discord.EntityType.external,
                 location=event.location or "Discord",
                 privacy_level=discord.PrivacyLevel.guild_only,
             )
