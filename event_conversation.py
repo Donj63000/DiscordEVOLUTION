@@ -14,10 +14,12 @@ import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, List
 
 import discord
 from discord.ext import commands
+
+from utils.storage import EventStore
 
 
 SYSTEM_PROMPT = (
@@ -120,6 +122,21 @@ class EventConversationCog(commands.Cog):
         self.bot = bot
         self.target_channel_name = target_channel
         self.role_name = role_name
+        self.store = EventStore(bot)
+        self.events: Dict[str, dict] = {}
+        self.ongoing_conversations: Dict[str, List[str]] = {}
+
+    async def cog_load(self):
+        await self.store.connect()
+        data = await self.store.load()
+        self.events = data.get("events", {})
+        self.ongoing_conversations = data.get("conversations", {})
+
+    async def save_event(self, event_id: str, payload: Dict):
+        await self.store.save_event(event_id, payload)
+
+    async def save_conversation_state(self, user_id: str, transcript: Optional[List[str]]):
+        await self.store.save_conversation(user_id, transcript)
 
     @staticmethod
     def _extract_json(text: str) -> str:
@@ -148,7 +165,10 @@ class EventConversationCog(commands.Cog):
             "Tape **terminé** quand tu as fini. (15 min d'inactivité pour annuler)"
         )
 
-        transcript = []
+        transcript: List[str] = []
+        user_key = str(ctx.author.id)
+        self.ongoing_conversations[user_key] = transcript
+        await self.save_conversation_state(user_key, transcript)
 
         def check(m: discord.Message) -> bool:
             return m.author == ctx.author and isinstance(m.channel, discord.DMChannel)
@@ -158,15 +178,20 @@ class EventConversationCog(commands.Cog):
                 msg = await self.bot.wait_for("message", timeout=TIMEOUT, check=check)
             except asyncio.TimeoutError:
                 await dm.send("⏱️ Temps écoulé, conversation annulée.")
+                await self.save_conversation_state(user_key, None)
+                self.ongoing_conversations.pop(user_key, None)
                 return
             content = msg.content.strip()
             if content.lower().startswith("terminé"):
                 break
             transcript.append(content)
+            await self.save_conversation_state(user_key, transcript)
 
         ia_cog = self.bot.get_cog("IACog")
         if ia_cog is None:
             await dm.send("Module IA indisponible.")
+            await self.save_conversation_state(user_key, None)
+            self.ongoing_conversations.pop(user_key, None)
             return
 
         prompt = f"{SYSTEM_PROMPT}\n\nTRANSCRIPT:\n" + "\n".join(transcript)
@@ -174,6 +199,8 @@ class EventConversationCog(commands.Cog):
             resp, _ = await ia_cog.generate_content_with_fallback_async(prompt)
         except Exception as e:
             await dm.send(f"Erreur IA : {e}")
+            await self.save_conversation_state(user_key, None)
+            self.ongoing_conversations.pop(user_key, None)
             return
 
         try:
@@ -182,6 +209,8 @@ class EventConversationCog(commands.Cog):
             event = EventData.from_dict(data)
         except Exception as e:
             await dm.send(f"Impossible de parser la réponse IA : {e}")
+            await self.save_conversation_state(user_key, None)
+            self.ongoing_conversations.pop(user_key, None)
             return
 
         preview = event.to_embed()
@@ -191,6 +220,8 @@ class EventConversationCog(commands.Cog):
         await msg.edit(view=None)
         if view.value is not True:
             await dm.send("Événement annulé.")
+            await self.save_conversation_state(user_key, None)
+            self.ongoing_conversations.pop(user_key, None)
             return
 
         guild = ctx.guild
@@ -213,11 +244,15 @@ class EventConversationCog(commands.Cog):
             )
         except Exception as e:
             await dm.send(f"Erreur lors de la création de l'événement : {e}")
+            await self.save_conversation_state(user_key, None)
+            self.ongoing_conversations.pop(user_key, None)
             return
 
         target_chan = discord.utils.get(guild.text_channels, name=self.target_channel_name)
         if target_chan is None:
             await dm.send("Canal cible introuvable pour l'annonce de l'événement.")
+            await self.save_conversation_state(user_key, None)
+            self.ongoing_conversations.pop(user_key, None)
             return
 
         announce = event.to_embed()
@@ -225,6 +260,10 @@ class EventConversationCog(commands.Cog):
         view_rsvp = RSVPView(role)
         await target_chan.send(embed=announce, view=view_rsvp)
         await dm.send("Événement créé et annoncé avec succès !")
+
+        await self.save_event(str(scheduled.id), event.__dict__)
+        await self.save_conversation_state(user_key, None)
+        self.ongoing_conversations.pop(user_key, None)
 
         if role and event.end_time:
             self.bot.loop.create_task(self._cleanup_role(role, event.end_time))
@@ -240,3 +279,4 @@ class EventConversationCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(EventConversationCog(bot))
+
