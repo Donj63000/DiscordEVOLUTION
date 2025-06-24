@@ -29,6 +29,20 @@ Si vous changez ces noms, pensez à mettre à jour les constantes correspondante
 Le module d'accueil stocke aussi la liste des membres déjà salués dans
 `welcome_data.json` pour éviter les doublons après un redémarrage.
 
+### Permissions du bot
+
+Pour fonctionner correctement, le bot doit disposer de plusieurs autorisations
+sur le serveur :
+
+- **Gérer les événements** afin de créer ou modifier les événements planifiés.
+- **Gérer les rôles** pour attribuer le rôle temporaire *Participants événement*.
+- **Envoyer des messages** et **Gérer les messages** dans les salons listés
+  précédemment, notamment `#organisation` et `#console`.
+
+Veillez également à ce que le bot puisse ouvrir des messages privés aux
+utilisateurs et qu'il soit placé assez haut dans la hiérarchie des rôles pour
+créer le rôle temporaire.
+
 ### Fichiers JSON de sauvegarde
 
 Plusieurs modules utilisent des fichiers `*.json` pour persister leurs données :
@@ -81,6 +95,14 @@ Le nouveau module `event_conversation.py` fournit la commande `!event` destinée
 - Le transcript est résumé par Gemini, puis un aperçu vous est présenté avec des boutons pour confirmer ou annuler.
 - Après validation, un événement planifié Discord est créé et un message d'inscription est posté dans `#organisation` avec mention du rôle *Membre validé*.
 - Les participants obtiennent un rôle temporaire qui est supprimé à la fin de l'événement.
+
+Pour que cette commande fonctionne sans accroc, le serveur doit :
+- comporter un salon `#organisation` où l'annonce sera publiée ;
+- disposer d'un salon `#console` pour la persistance si aucune base PostgreSQL
+  n'est configurée ;
+- posséder un rôle `Staff` (seuls ses membres peuvent lancer `!event`) ;
+- permettre aux membres de recevoir des messages privés du bot, sinon celui-ci
+  les avertira dans `#𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥` pour qu'ils débloquent leurs DM.
 
 Les événements créés et l'état des conversations sont sauvegardés via `EventStore`. Par défaut, les données sont publiées dans le salon `console`, mais si la variable d'environnement `DATABASE_URL` est définie, elles sont stockées dans PostgreSQL.
 
