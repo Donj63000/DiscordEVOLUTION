@@ -236,12 +236,14 @@ class EventConversationCog(commands.Cog):
             except Exception:
                 role = None
 
+        end_time = event.end_time or event.start_time + timedelta(hours=1)
+        event.end_time = end_time
         try:
             scheduled = await guild.create_scheduled_event(
                 name=event.name,
                 description=event.description,
                 start_time=event.start_time,
-                end_time=event.end_time,
+                end_time=end_time,
                 entity_type=discord.EntityType.external,
                 location=event.location or "Discord",
                 privacy_level=discord.PrivacyLevel.guild_only,
@@ -284,8 +286,8 @@ class EventConversationCog(commands.Cog):
         await self.save_conversation_state(user_key, None)
         self.ongoing_conversations.pop(user_key, None)
 
-        if role and event.end_time:
-            self.bot.loop.create_task(self._cleanup_role(role, event.end_time))
+        if role and end_time:
+            self.bot.loop.create_task(self._cleanup_role(role, end_time))
 
     async def _cleanup_role(self, role: discord.Role, end_time: datetime):
         delay = max(0, (end_time - discord.utils.utcnow()).total_seconds())
