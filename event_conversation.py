@@ -23,6 +23,9 @@ from discord.ext import commands
 
 from utils.storage import EventStore
 from utils import parse_duration
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = (
@@ -279,7 +282,14 @@ class EventConversationCog(commands.Cog):
                 location=event.location or "Discord",
                 privacy_level=discord.PrivacyLevel.guild_only,
             )
+        except discord.HTTPException as exc:
+            logger.exception("Création d'événement échouée : %s", exc.text)
+            await dm.send(f"❌ Erreur Discord : {exc.text}")
+            await self.save_conversation_state(user_key, None)
+            self.ongoing_conversations.pop(user_key, None)
+            return
         except Exception as e:
+            logger.exception("Erreur lors de la création de l'événement")
             await dm.send(f"Erreur lors de la création de l'événement : {e}")
             await self.save_conversation_state(user_key, None)
             self.ongoing_conversations.pop(user_key, None)
