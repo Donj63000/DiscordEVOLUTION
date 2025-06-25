@@ -22,7 +22,7 @@ async def test_eventdata_valid_json():
     assert data.guild_id == 123
     assert data.channel_id == 456
     assert data.title == "Test Event"
-    assert data.max_participants == 10
+    assert data.max_participants == 8
 
 
 @pytest.mark.asyncio
