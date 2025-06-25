@@ -244,6 +244,22 @@ class EventConversationCog(commands.Cog):
             self.ongoing_conversations.pop(user_key, None)
             return
 
+        # Normalisation des dates et contrôles avant l'appel API
+        start = event.start_time.astimezone(timezone.utc)
+        end = event.end_time.astimezone(timezone.utc)
+
+        if end <= start:
+            await dm.send("⚠️ L'heure de fin doit être après l'heure de début.")
+            return
+
+        if start < discord.utils.utcnow() + timedelta(minutes=5):
+            await dm.send("⚠️ La date doit être au moins 5\u202fmin dans le futur.")
+            return
+
+        # Mise à jour de l'objet event avec les dates normalisées
+        event.start_time = start
+        event.end_time = end
+
         guild = ctx.guild
         role = discord.utils.get(guild.roles, name=self.role_name)
         if role is None:
