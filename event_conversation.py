@@ -303,6 +303,16 @@ class EventConversationCog(commands.Cog):
             return
 
         announce = event.to_embed()
+        announce.add_field(
+            name="Début",
+            value=start.strftime("%d/%m/%Y %H:%M"),
+            inline=False,
+        )
+        announce.add_field(
+            name="Fin",
+            value=end.strftime("%d/%m/%Y %H:%M"),
+            inline=False,
+        )
         announce.set_footer(text="Réagissez avec les boutons ci-dessous pour vous inscrire")
         view_rsvp = RSVPView(role)
         await target_chan.send(embed=announce, view=view_rsvp)
