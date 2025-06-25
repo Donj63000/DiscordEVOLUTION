@@ -259,6 +259,7 @@ class EventConversationCog(commands.Cog):
         # Mise à jour de l'objet event avec les dates normalisées
         event.start_time = start
         event.end_time = end
+        end_time = end
 
         guild = ctx.guild
         role = discord.utils.get(guild.roles, name=self.role_name)
@@ -268,14 +269,12 @@ class EventConversationCog(commands.Cog):
             except Exception:
                 role = None
 
-        end_time = event.end_time or event.start_time + timedelta(hours=1)
-        event.end_time = end_time
         try:
             scheduled = await guild.create_scheduled_event(
                 name=event.name,
                 description=event.description,
-                start_time=event.start_time,
-                end_time=end_time,
+                start_time=start,
+                end_time=end,  # OBLIGATOIRE pour les événements externes
                 entity_type=discord.EntityType.external,
                 location=event.location or "Discord",
                 privacy_level=discord.PrivacyLevel.guild_only,
