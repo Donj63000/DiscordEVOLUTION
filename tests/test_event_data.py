@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+from datetime import datetime, timedelta, timezone
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -23,6 +24,44 @@ async def test_eventdata_valid_json():
     assert data.channel_id == 456
     assert data.title == "Test Event"
     assert data.max_participants == 10
+
+
+@pytest.mark.asyncio
+async def test_eventdata_default_end_time():
+    start = "2025-01-01T12:00:00+00:00"
+    data = EventData(
+        guild_id=1,
+        channel_id=2,
+        title="Test",
+        description="Desc",
+        starts_at=start,
+    )
+    assert data.ends_at == data.starts_at + timedelta(hours=1)
+
+
+@pytest.mark.asyncio
+async def test_eventdata_timezone_required():
+    with pytest.raises(ValueError):
+        EventData(
+            guild_id=1,
+            channel_id=2,
+            title="Test",
+            description="Desc",
+            starts_at=datetime(2025, 1, 1, 12, 0, 0),
+        )
+
+
+@pytest.mark.asyncio
+async def test_eventdata_end_after_start():
+    with pytest.raises(ValueError):
+        EventData(
+            guild_id=1,
+            channel_id=2,
+            title="Test",
+            description="Desc",
+            starts_at=datetime.now(timezone.utc),
+            ends_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
 
 
 @pytest.mark.asyncio
