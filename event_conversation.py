@@ -216,8 +216,6 @@ class EventConversationCog(commands.Cog):
             raw_json = self._extract_json(resp.text if hasattr(resp, "text") else str(resp))
             data = json.loads(raw_json)
             event = EventDraft.from_dict(data)
-            if event.end_time is None:
-                event.end_time = event.start_time + timedelta(hours=1)
         except Exception as e:
             await dm.send(f"Impossible de parser la réponse IA : {e}")
             await self.save_conversation_state(user_key, None)
@@ -243,7 +241,7 @@ class EventConversationCog(commands.Cog):
             except Exception:
                 role = None
 
-        end_time = event.end_time or event.start_time + timedelta(hours=1)
+        end_time = event.end_time
         event.end_time = end_time
         try:
             scheduled = await guild.create_scheduled_event(
