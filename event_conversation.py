@@ -42,7 +42,9 @@ class EventDraft:
     name: str
     description: str
     start_time: datetime
-    end_time: Optional[datetime] = None
+    # Event end timestamp. Defaults to one hour after ``start_time`` when not
+    # provided by the user.
+    end_time: datetime
     location: Optional[str] = None
     max_slots: Optional[int] = None
 
@@ -56,11 +58,16 @@ class EventDraft:
             except Exception:
                 return None
 
+        start_time = parse_dt(data.get("start_time")) or discord.utils.utcnow()
+        end_time = parse_dt(data.get("end_time"))
+        if end_time is None:
+            end_time = start_time + timedelta(hours=1)
+
         return EventDraft(
             name=str(data.get("name", "")),
             description=str(data.get("description", "")),
-            start_time=parse_dt(data.get("start_time")) or discord.utils.utcnow(),
-            end_time=parse_dt(data.get("end_time")),
+            start_time=start_time,
+            end_time=end_time,
             location=data.get("location"),
             max_slots=int(data["max_slots"]) if data.get("max_slots") is not None else None,
         )
