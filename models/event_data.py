@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 import json
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class EventData(BaseModel):
@@ -20,6 +20,21 @@ class EventData(BaseModel):
     temp_role_id: Optional[int] = None
     banner_url: Optional[str] = None
     author_id: Optional[int] = None
+
+    @field_validator("starts_at", "ends_at")
+    @classmethod
+    def ensure_tzinfo(cls, v: Optional[datetime]):
+        if v is not None and v.tzinfo is None:
+            raise ValueError("datetime must be timezone-aware")
+        return v
+
+    @model_validator(mode="after")
+    def check_dates(cls, data: "EventData"):
+        if data.ends_at is None:
+            data.ends_at = data.starts_at + timedelta(hours=1)
+        elif data.ends_at <= data.starts_at:
+            raise ValueError("ends_at must be after starts_at")
+        return data
 
     def model_dump_json(self, **kwargs) -> str:  # type: ignore[override]
         data = self.model_dump(mode="json", exclude_none=True)

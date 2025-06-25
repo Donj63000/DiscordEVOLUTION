@@ -209,8 +209,6 @@ class EventConversationCog(commands.Cog):
             raw_json = self._extract_json(resp.text if hasattr(resp, "text") else str(resp))
             data = json.loads(raw_json)
             event = EventDraft.from_dict(data)
-            if event.end_time is None:
-                event.end_time = event.start_time + timedelta(hours=1)
         except Exception as e:
             await dm.send(f"Impossible de parser la réponse IA : {e}")
             await self.save_conversation_state(user_key, None)
@@ -236,12 +234,27 @@ class EventConversationCog(commands.Cog):
             except Exception:
                 role = None
 
+        stored = EventData(
+            guild_id=guild.id,
+            channel_id=0,  # placeholder, replaced below
+            title=event.name,
+            description=event.description,
+            starts_at=event.start_time,
+            ends_at=event.end_time,
+            max_participants=event.max_slots,
+            timezone=None,
+            recurrence=None,
+            temp_role_id=None,
+            banner_url=None,
+            author_id=ctx.author.id,
+        )
+
         try:
             scheduled = await guild.create_scheduled_event(
-                name=event.name,
-                description=event.description,
-                start_time=event.start_time,
-                end_time=event.end_time,
+                name=stored.title,
+                description=stored.description,
+                start_time=stored.starts_at,
+                end_time=stored.ends_at,
                 entity_type=discord.EntityType.external,
                 location=event.location or "Discord",
                 privacy_level=discord.PrivacyLevel.guild_only,
@@ -265,27 +278,15 @@ class EventConversationCog(commands.Cog):
         await target_chan.send(embed=announce, view=view_rsvp)
         await dm.send("Événement créé et annoncé avec succès !")
 
-        stored = EventData(
-            guild_id=guild.id,
-            channel_id=target_chan.id,
-            title=event.name,
-            description=event.description,
-            starts_at=event.start_time,
-            ends_at=event.end_time,
-            max_participants=event.max_slots,
-            timezone=None,
-            recurrence=None,
-            temp_role_id=role.id if role else None,
-            banner_url=None,
-            author_id=ctx.author.id,
-        )
+        stored.channel_id = target_chan.id
+        stored.temp_role_id = role.id if role else None
 
         await self.save_event(str(scheduled.id), stored)
         await self.save_conversation_state(user_key, None)
         self.ongoing_conversations.pop(user_key, None)
 
-        if role and event.end_time:
-            self.bot.loop.create_task(self._cleanup_role(role, event.end_time))
+        if role and stored.ends_at:
+            self.bot.loop.create_task(self._cleanup_role(role, stored.ends_at))
 
     async def _cleanup_role(self, role: discord.Role, end_time: datetime):
         delay = max(0, (end_time - discord.utils.utcnow()).total_seconds())
