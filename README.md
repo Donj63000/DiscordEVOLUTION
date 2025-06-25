@@ -76,6 +76,10 @@ Lancez ensuite le bot avec :
 ```bash
 python main.py
 ```
+## Hébergement et persistance
+
+Le bot fonctionne sur un micro serveur gratuit hébergé chez [render.com](https://render.com). Un petit serveur Flask défini dans `alive.py` est régulièrement pingé par **UptimeRobot** afin de le maintenir éveillé. Comme cet hébergement ne propose qu'un stockage éphémère, toutes les données enregistrées localement sont perdues à chaque redémarrage. Seules les informations sauvegardées sur Discord (par exemple dans le salon `#console`) sont conservées.
+
 
 ## Module Job
 
