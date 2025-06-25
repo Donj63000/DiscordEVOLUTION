@@ -22,6 +22,7 @@ import discord
 from discord.ext import commands
 
 from utils.storage import EventStore
+from utils import parse_duration
 
 
 SYSTEM_PROMPT = (
@@ -42,9 +43,8 @@ class EventDraft:
     name: str
     description: str
     start_time: datetime
-    # Event end timestamp. Defaults to one hour after ``start_time`` when not
-    # provided by the user.
-    end_time: datetime
+    # Event end timestamp. May be None if the user did not specify a duration.
+    end_time: Optional[datetime] = None
     location: Optional[str] = None
     max_slots: Optional[int] = None
 
@@ -60,8 +60,6 @@ class EventDraft:
 
         start_time = parse_dt(data.get("start_time")) or discord.utils.utcnow()
         end_time = parse_dt(data.get("end_time"))
-        if end_time is None:
-            end_time = start_time + timedelta(hours=1)
 
         return EventDraft(
             name=str(data.get("name", "")),
@@ -217,7 +215,18 @@ class EventConversationCog(commands.Cog):
             data = json.loads(raw_json)
             event = EventDraft.from_dict(data)
             if event.end_time is None:
-                event.end_time = event.start_time + timedelta(hours=1)
+                await dm.send(
+                    "Combien de temps durera l\u2019événement ? (ex : \"2h\" ou \"01:30\")"
+                )
+                msg = await self.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == ctx.author,
+                    timeout=TIMEOUT,
+                )
+                try:
+                    event.end_time = event.start_time + parse_duration(msg.content)
+                except Exception:
+                    event.end_time = event.start_time + timedelta(hours=1)
         except Exception as e:
             await dm.send(f"Impossible de parser la réponse IA : {e}")
             await self.save_conversation_state(user_key, None)
