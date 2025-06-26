@@ -22,7 +22,7 @@ import discord
 from discord.ext import commands
 
 from utils.storage import EventStore
-from utils import parse_duration
+from utils import parse_duration, parse_french_datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -217,6 +217,13 @@ class EventConversationCog(commands.Cog):
             raw_json = self._extract_json(resp.text if hasattr(resp, "text") else str(resp))
             data = json.loads(raw_json)
             event = EventDraft.from_dict(data)
+
+            # If the parsed date is in the past (Gemini often fails with FR
+            # expressions), try to detect it directly from the transcript.
+            if event.start_time <= discord.utils.utcnow() + timedelta(minutes=5):
+                alt_dt = parse_french_datetime(" ".join(transcript))
+                if alt_dt:
+                    event.start_time = alt_dt
             if event.end_time is None:
                 await dm.send(
                     "Combien de temps durera l\u2019événement ? (ex : \"2h\" ou \"01:30\")"
