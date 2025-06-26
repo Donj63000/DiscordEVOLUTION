@@ -74,6 +74,7 @@ async def main():
         "defender",
         "moderation",
         "event_conversation",
+        "slash_events",
     ]
 
     for ext in extensions:
