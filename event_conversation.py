@@ -35,6 +35,8 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+import dateparser
 from typing import Dict, List, Optional
 
 import discord
@@ -49,6 +51,8 @@ from models import EventData  # votre modèle pydantic / dataclass
 # --------------------------------------------------------------------------- #
 
 _log = logging.getLogger(__name__)
+
+LOCAL_TZ = ZoneInfo("Europe/Paris")
 
 #: délai d’inactivité max dans la conversation DM (secondes)
 DM_TIMEOUT = 15 * 60
@@ -79,23 +83,46 @@ class EventDraft:
     max_slots: Optional[int] = None
 
     @staticmethod
-    def _parse_dt(raw: str | None) -> Optional[datetime]:
-        if not raw:
+    def _parse_dt(raw: str | datetime | None) -> datetime | None:
+        """Transforme *raw* en datetime timezone-aware (UTC)."""
+        if raw is None:
             return None
-        try:
-            # JJ/MM/AAAA HH:MM
-            return datetime.strptime(raw, "%d/%m/%Y %H:%M").replace(tzinfo=timezone.utc)
-        except Exception:
+
+        if isinstance(raw, datetime):
+            dt = raw
+        else:
+            try:
+                dt = datetime.strptime(raw, "%d/%m/%Y %H:%M")
+            except ValueError:
+                dt = dateparser.parse(
+                    raw,
+                    languages=["fr"],
+                    settings={
+                        "TIMEZONE": str(LOCAL_TZ),
+                        "RETURN_AS_TIMEZONE_AWARE": True,
+                        "PREFER_DATES_FROM": "future",
+                    },
+                )
+                _log.debug("Parsing date «%s» → %s", raw, dt)
+
+        if dt is None:
             return None
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=LOCAL_TZ)
+
+        return dt.astimezone(timezone.utc)
 
     @classmethod
     def from_json(cls, obj: dict) -> "EventDraft":
         start = cls._parse_dt(obj.get("start_time"))
         end = cls._parse_dt(obj.get("end_time"))
         if start is None:
-            start = discord.utils.utcnow() + timedelta(hours=1)
-        if end is None or end <= start:
+            raise ValueError("La date de début est introuvable ou mal comprise.")
+        if end is None:
             end = start + timedelta(hours=1)
+        if end <= start:
+            raise ValueError("L’heure de fin doit être après l’heure de début.")
         return cls(
             name=str(obj.get("name") or "Événement"),
             description=str(obj.get("description") or "Aucune description"),
@@ -299,7 +326,12 @@ class EventConversationCog(commands.Cog):
         try:
             resp, _ = await ia_cog.generate_content_with_fallback_async(prompt)
             raw_json = self._extract_json(resp.text if hasattr(resp, "text") else str(resp))
-            draft = EventDraft.from_json(json.loads(raw_json))
+            ai_payload = json.loads(raw_json)
+            try:
+                draft = EventDraft.from_json(ai_payload)
+            except ValueError as exc:
+                await dm.send(f"⛔ {exc}")
+                return
         except Exception as exc:
             self._logger.exception("Échec parsing IA : %s", exc)
             await dm.send(f"Impossible d’analyser la réponse de l’IA.\n```\n{exc}\n```")
