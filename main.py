@@ -74,7 +74,7 @@ async def main():
         "defender",
         "moderation",
         "event_conversation",
-        "slash_events",
+        # "slash_events",  # disabled: duplicate with event_conversation
     ]
 
     for ext in extensions:
