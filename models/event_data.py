@@ -39,7 +39,9 @@ if _HAS_PYDANTIC:
                     data["max_participants"] = min(int(mp), 8)
                 except (TypeError, ValueError):
                     data["max_participants"] = None
-            return cls.model_validate(data)
+            if hasattr(cls, "model_validate"):
+                return cls.model_validate(data)
+            return cls.parse_obj(data)
 
         @classmethod
         def model_validate_json(cls, json_str: str) -> "EventData":
