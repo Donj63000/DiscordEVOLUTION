@@ -7,8 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from models import EventData
 
 
-@pytest.mark.asyncio
-async def test_eventdata_valid_json():
+def test_eventdata_valid_json():
     json_text = json.dumps({
         "guild_id": 123,
         "channel_id": 456,
@@ -25,8 +24,7 @@ async def test_eventdata_valid_json():
     assert data.max_participants == 8
 
 
-@pytest.mark.asyncio
-async def test_eventdata_invalid_json():
+def test_eventdata_invalid_json():
     bad_json = '{"guild_id": 123,'  # malformed JSON
     with pytest.raises(Exception):
         EventData.model_validate_json(bad_json)
