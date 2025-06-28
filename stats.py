@@ -153,12 +153,15 @@ class StatsCog(commands.Cog):
         ch_id = str(message.channel.id)
         msg_stats["channel_count"].setdefault(ch_id, 0)
         msg_stats["channel_count"][ch_id] += 1
-        for role in message.author.roles:
-            if role.is_default():
-                continue
-            r_id = str(role.id)
-            msg_stats["role_count"].setdefault(r_id, 0)
-            msg_stats["role_count"][r_id] += 1
+        roles = []
+        if message.guild is not None:
+            for role in message.author.roles:
+                if role.is_default():
+                    continue
+                r_id = str(role.id)
+                msg_stats["role_count"].setdefault(r_id, 0)
+                msg_stats["role_count"][r_id] += 1
+                roles.append(str(role.id))
         hour_str = str(datetime.now().hour)
         msg_stats["hour_count"].setdefault(hour_str, 0)
         msg_stats["hour_count"][hour_str] += 1
@@ -171,7 +174,7 @@ class StatsCog(commands.Cog):
             "channel_id": ch_id,
             "author_id": user_id,
             "author_name": message.author.name,
-            "roles": [str(r.id) for r in message.author.roles if not r.is_default()],
+            "roles": roles,
             "content": message.content
         }
         self.stats_data["logs"]["messages_created"].append(msg_log)
