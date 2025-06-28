@@ -201,11 +201,20 @@ class ConfirmView(discord.ui.View):
 class RSVPView(discord.ui.View):
     """Boutons d’inscription attachés au message d’annonce."""
 
-    def __init__(self, role: Optional[discord.Role], max_slots: Optional[int]):
+    def __init__(
+        self,
+        role: Optional[discord.Role],
+        max_slots: Optional[int],
+        *,
+        parent_cog: "EventConversationCog",
+        store_data: dict,
+    ):
         super().__init__(timeout=None)
         self.role = role
         self.max_slots = max_slots
-        self._going: set[int] = set()
+        self.parent = parent_cog
+        self.store_data = store_data
+        self._going: set[int] = set(store_data.get("going", []))
 
     # ---------- callbacks ---------- #
 
@@ -221,6 +230,8 @@ class RSVPView(discord.ui.View):
             except discord.Forbidden:
                 pass
         self._going.add(interaction.user.id)
+        self.store_data["going"] = list(self._going)
+        await self.parent.console.upsert(self.store_data)
         await interaction.response.send_message("✅ Inscription enregistrée !", ephemeral=True)
 
     @discord.ui.button(label="Me désinscrire ❌", style=discord.ButtonStyle.danger, custom_id="rsvp_no")
@@ -231,6 +242,8 @@ class RSVPView(discord.ui.View):
             except discord.Forbidden:
                 pass
         self._going.discard(interaction.user.id)
+        self.store_data["going"] = list(self._going)
+        await self.parent.console.upsert(self.store_data)
         await interaction.response.send_message("Désinscription effectuée.", ephemeral=True)
 
 
@@ -375,21 +388,24 @@ class EventConversationCog(commands.Cog):
         if announce_channel is None:
             return await dm.send(f"❌ Canal #{self.announce_channel_name} introuvable.")
 
-        view_rsvp = RSVPView(role, draft.max_slots)
         try:
-            announce_msg = await announce_channel.send(
-                embed=draft.to_announce_embed(), view=view_rsvp
+            announce_msg = await announce_channel.send(embed=draft.to_announce_embed())
+            store_data = {
+                "event_id": scheduled_event.id,
+                "message_id": announce_msg.id,
+                "channel_id": announce_channel.id,
+                "role_id": role.id if role else None,
+                "max_slots": draft.max_slots,
+                "going": [],
+            }
+            view_rsvp = RSVPView(
+                role,
+                draft.max_slots,
+                parent_cog=self,
+                store_data=store_data,
             )
-            await self.console.upsert(
-                {
-                    "event_id": scheduled_event.id,
-                    "message_id": announce_msg.id,
-                    "channel_id": announce_channel.id,
-                    "role_id": role.id if role else None,
-                    "max_slots": draft.max_slots,
-                    "going": [],
-                }
-            )
+            await announce_msg.edit(view=view_rsvp)
+            await self.console.upsert(store_data)
         except discord.Forbidden:
             return await dm.send("Je n’ai pas la permission d’envoyer des messages dans le canal cible.")
 
