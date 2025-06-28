@@ -231,7 +231,8 @@ class RSVPView(discord.ui.View):
                 pass
         self._going.add(interaction.user.id)
         self.store_data["going"] = list(self._going)
-        await self.parent.console.upsert(self.store_data)
+        if self.parent.console:
+            await self.parent.console.upsert(self.store_data)
         await interaction.response.send_message("✅ Inscription enregistrée !", ephemeral=True)
 
     @discord.ui.button(label="Me désinscrire ❌", style=discord.ButtonStyle.danger, custom_id="rsvp_no")
@@ -243,7 +244,8 @@ class RSVPView(discord.ui.View):
                 pass
         self._going.discard(interaction.user.id)
         self.store_data["going"] = list(self._going)
-        await self.parent.console.upsert(self.store_data)
+        if self.parent.console:
+            await self.parent.console.upsert(self.store_data)
         await interaction.response.send_message("Désinscription effectuée.", ephemeral=True)
 
 
