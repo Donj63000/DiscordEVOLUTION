@@ -1,31 +1,22 @@
 # coding: utf-8
 """
-Cog EvolutionBOT : workflow interactif de création d’événements Discord.
+Cog : EventConversation
+-----------------------
+Organise un workflow interactif (DM + IA) permettant aux membres du rôle « Staff »
+de créer un événement Discord (Guild Scheduled Event) et de l’annoncer avec
+des boutons RSVP.
 
-Flux complet
-------------
-1. Un membre du rôle **Staff** lance `!event` dans un salon du serveur.
-2. Le bot ouvre un DM ; l’utilisateur décrit librement l’événement puis tape
-   `terminé`.
-3. Le transcript est envoyé à l’IA (cog “IACog”) ; celle‑ci renvoie un **JSON**
-   (name, description, start_time, …) que l’on parse en :class:`EventDraft`.
-4. Un embed de **pré‑visualisation** est affiché dans le DM avec des boutons
-   ✅ / ❌ (classe :class:`ConfirmView`).
-5. Après validation :
-   * Création d’un **Guild Scheduled Event** (type external).
-   * Annonce dans `#organisation` (ou autre) avec un embed “sexy”.
-   * Ajout de boutons RSVP. Les participants reçoivent le **rôle temporaire**
-     “Participants événement” pour faciliter les pings.
-   * Le rôle est automatiquement supprimé une fois l’événement terminé.
+• `!event` déclenche une DM où l’utilisateur décrit l’événement, puis tape
+  `terminé`.
+• Le transcript est envoyé à l’IA → JSON (name, description, dates, …).
+• Pré‑visualisation dans le DM avec boutons ✅ / ❌.
+• Après validation :
+    – création du Scheduled Event ;
+    – embed d’annonce dans #organisation (ou autre);
+    – rôle temporaire « Participants événement » attribué aux inscrits ;
+    – rôle supprimé automatiquement à la fin.
 
-Principales améliorations
--------------------------
-* Gestion correcte du **channel_id** au lieu de guild_id pour les fetchs.
-* Toutes les dates sont **timezone‑aware UTC** afin d’éviter les écarts.
-* Vérification fine des **permissions** (Add Reactions, Manage Roles, …).
-* Nettoyage robuste des collectors / conversations même après redémarrage
-  (persistance via :class:`EventStore`).
-* Logging détaillé → plus simple à déboguer sur Render.com.
+Dépendances : discord.py ≥ 2.2, dateparser ≥ 1.2, Python ≥ 3.9
 """
 
 from __future__ import annotations
@@ -35,65 +26,76 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
-import dateparser
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
+import dateparser
 import discord
 from discord.ext import commands, tasks
+from zoneinfo import ZoneInfo
 
-# -- helpers maison -----------------------------------------------------------
-# parse_french_datetime("samedi 21h") -> datetime | None
-from utils import parse_french_datetime, parse_duration
-from utils.storage import EventStore
-from models import EventData  # votre modèle pydantic / dataclass
-
+# --- helpers internes (à adapter ou supprimer si inexistants) -------------- #
+from models import EventData               # dataclass / pydantic perso
+from utils import parse_french_datetime    # fallback NLP local
+from utils.storage import EventStore       # persistance JSON/DB
 # --------------------------------------------------------------------------- #
+
+__all__ = ["setup"]
 
 _log = logging.getLogger(__name__)
 
-LOCAL_TZ = ZoneInfo("Europe/Paris")
+# --------------------------------------------------------------------------- #
+# Configuration générale                                                      #
+# --------------------------------------------------------------------------- #
 
-#: délai d’inactivité max dans la conversation DM (secondes)
-DM_TIMEOUT = 15 * 60
-
+LOCAL_TZ = ZoneInfo("Europe/Paris")        # Fuseau local du serveur
+DM_TIMEOUT = 15 * 60                       # 15 min d’inactivité max
+MIN_DELTA = timedelta(minutes=5)           # Discord exige ≥ 5 min dans le futur
+MAX_DESC_LEN = 1_000                       # Limitation API Discord
 SYSTEM_PROMPT = (
     "Tu es EvolutionBOT et tu aides à créer un événement Discord. "
-    "À partir de la conversation suivante, fournis uniquement un JSON strict "
-    'avec les clés obligatoires : name, description, start_time, end_time, '
-    "location, max_slots. Les dates sont au format JJ/MM/AAAA HH:MM. "
-    "Mets null si une information est manquante. **Aucune explication**, "
-    "seulement le JSON."
+    "À partir de la conversation suivante, fournis UNIQUEMENT un JSON strict "
+    'avec les clés : name, description, start_time, end_time, location, max_slots. '
+    "Les dates sont au format JJ/MM/AAAA HH:MM. Mets null si information manquante."
 )
 
+EMBED_COLOR_PREVIEW = 0x3498DB
+EMBED_COLOR_ANNOUNCE = 0x1ABC9C
+
+
 # --------------------------------------------------------------------------- #
-# ------------------------------- DATA MODEL -------------------------------- #
+# Data : brouillon d’événement                                                #
 # --------------------------------------------------------------------------- #
 
 
 @dataclass(slots=True)
 class EventDraft:
-    """Représentation minimaliste de l’événement avant création Discord."""
+    """Représentation minimale avant création du Scheduled Event."""
 
     name: str
     description: str
-    start_time: datetime
-    end_time: datetime
+    start_time: datetime   # toujours UTC & aware
+    end_time: datetime     # toujours UTC & aware
     location: Optional[str] = None
     max_slots: Optional[int] = None
 
+    # --------------------- Parsing helpers -------------------------------- #
+
     @staticmethod
-    def _parse_dt(raw: str | datetime | None) -> datetime | None:
-        """Transforme *raw* en datetime timezone-aware (UTC)."""
+    def _parse_dt(raw: str | datetime | None) -> Optional[datetime]:
+        """Convertit *raw* en datetime timezone‑aware UTC ou renvoie None."""
         if raw is None:
             return None
 
+        # 1) déjà un datetime
         if isinstance(raw, datetime):
             dt = raw
+
+        # 2) JJ/MM/AAAA HH:MM très rapide
         else:
             try:
                 dt = datetime.strptime(raw, "%d/%m/%Y %H:%M")
             except ValueError:
+                # 3) fallback NLP (dateparser FR)
                 dt = dateparser.parse(
                     raw,
                     languages=["fr"],
@@ -103,7 +105,7 @@ class EventDraft:
                         "PREFER_DATES_FROM": "future",
                     },
                 )
-                _log.debug("Parsing date «%s» → %s", raw, dt)
+                _log.debug("dateparser «%s» → %s", raw, dt)
 
         if dt is None:
             return None
@@ -113,82 +115,81 @@ class EventDraft:
 
         return dt.astimezone(timezone.utc)
 
+    # --------------------- Construction depuis JSON ----------------------- #
+
     @classmethod
-    def from_json(cls, obj: dict) -> "EventDraft":
+    def from_json(cls, obj: Dict[str, Any]) -> "EventDraft":
         start = cls._parse_dt(obj.get("start_time"))
         end = cls._parse_dt(obj.get("end_time"))
+
         if start is None:
-            raise ValueError("La date de début est introuvable ou mal comprise.")
+            raise ValueError("La date de début est manquante ou mal comprise.")
+
         if end is None:
             end = start + timedelta(hours=1)
+
         if end <= start:
             raise ValueError("L’heure de fin doit être après l’heure de début.")
+
         return cls(
-            name=str(obj.get("name") or "Événement"),
-            description=str(obj.get("description") or "Aucune description"),
+            name=str(obj.get("name") or "Événement")[:100],
+            description=str(obj.get("description") or "Aucune description")[:MAX_DESC_LEN],
             start_time=start,
             end_time=end,
-            location=obj.get("location"),
+            location=(str(obj["location"]) if obj.get("location") else None),
             max_slots=int(obj["max_slots"]) if obj.get("max_slots") is not None else None,
         )
 
-    # -------- embed helpers ------------------------------------------------ #
+    # --------------------- Embeds utilitaires ----------------------------- #
+
+    def _fmt_dt(self, dt: datetime) -> str:
+        return dt.strftime("%d/%m/%Y %H:%M UTC")
 
     def to_preview_embed(self) -> discord.Embed:
-        """Embed envoyé en DM pour validation."""
-        embed = discord.Embed(title=f"📅 {self.name}", description=self.description, colour=0x3498db)
-        embed.add_field(name="Début", value=self._fmt_dt(self.start_time), inline=False)
-        embed.add_field(name="Fin", value=self._fmt_dt(self.end_time), inline=False)
+        e = discord.Embed(title=f"📅 {self.name}", description=self.description, colour=EMBED_COLOR_PREVIEW)
+        e.add_field(name="Début", value=self._fmt_dt(self.start_time), inline=False)
+        e.add_field(name="Fin", value=self._fmt_dt(self.end_time), inline=False)
         if self.location:
-            embed.add_field(name="Lieu", value=self.location, inline=False)
+            e.add_field(name="Lieu", value=self.location, inline=False)
         if self.max_slots is not None:
-            embed.add_field(name="Places", value=str(self.max_slots), inline=False)
-        return embed
+            e.add_field(name="Places dispo", value=str(self.max_slots), inline=False)
+        return e
 
     def to_announce_embed(self) -> discord.Embed:
-        """Embed publié dans le canal organisation."""
-        embed = discord.Embed(
-            title=f"📣 {self.name}",
-            description=self.description,
-            colour=0x1abc9c,
-        )
-        embed.add_field(
+        e = discord.Embed(title=f"📣 {self.name}", description=self.description, colour=EMBED_COLOR_ANNOUNCE)
+        e.add_field(
             name="Quand",
             value=f"{self._fmt_dt(self.start_time)} • <t:{int(self.start_time.timestamp())}:R>",
             inline=False,
         )
-        embed.add_field(name="Fin", value=self._fmt_dt(self.end_time), inline=False)
+        e.add_field(name="Fin", value=self._fmt_dt(self.end_time), inline=False)
         if self.location:
-            embed.add_field(name="Lieu", value=self.location, inline=False)
+            e.add_field(name="Lieu", value=self.location, inline=False)
         if self.max_slots is not None:
-            embed.add_field(name="Places", value=str(self.max_slots), inline=False)
-        embed.set_footer(text="Clique sur un des boutons pour t’inscrire ⤵️")
-        return embed
-
-    @staticmethod
-    def _fmt_dt(dt: datetime) -> str:  # format FR lisible
-        return dt.astimezone(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+            e.add_field(name="Places dispo", value=str(self.max_slots), inline=False)
+        e.set_footer(text="Clique sur un des boutons pour t’inscrire ⤵️")
+        return e
 
 
 # --------------------------------------------------------------------------- #
-# ------------------------------ UI COMPONENTS ------------------------------ #
+# UI Components (Views)                                                       #
 # --------------------------------------------------------------------------- #
 
 
 class ConfirmView(discord.ui.View):
-    """Deux boutons ✅ / ❌ pour valider la pré‑visualisation."""
+    """Deux boutons ✅ / ❌ pour confirmer ou annuler la création."""
 
     def __init__(self) -> None:
         super().__init__(timeout=DM_TIMEOUT)
         self.value: Optional[bool] = None
 
-    @discord.ui.button(emoji="✅", style=discord.ButtonStyle.success, label="Valider")
+    @discord.ui.button(label="Valider ✅", style=discord.ButtonStyle.success)
     async def _confirm(self, interaction: discord.Interaction, _: discord.ui.Button):
         self.value = True
         await interaction.response.defer()
         self.stop()
 
-    @discord.ui.button(emoji="❌", style=discord.ButtonStyle.danger, label="Annuler")
+    @discord.ui.button(label="Annuler ❌", style=discord.ButtonStyle.danger)
     async def _cancel(self, interaction: discord.Interaction, _: discord.ui.Button):
         self.value = False
         await interaction.response.defer()
@@ -232,12 +233,12 @@ class RSVPView(discord.ui.View):
 
 
 # --------------------------------------------------------------------------- #
-# ------------------------------ MAIN   COG --------------------------------- #
+# Cog principal                                                               #
 # --------------------------------------------------------------------------- #
 
 
 class EventConversationCog(commands.Cog):
-    """Workflow DM + Scheduled Event + annonce."""
+    """Workflow complet de création d’événements assisté par IA."""
 
     def __init__(
         self,
@@ -249,39 +250,28 @@ class EventConversationCog(commands.Cog):
         self.bot = bot
         self.announce_channel_name = announce_channel_name
         self.participant_role_name = participant_role_name
-        self.store = EventStore(bot)  # ↳ persistance JSON/DB
-        # mapping conversation en cours : user_id -> transcript list[str]
+        self.store = EventStore(bot)
         self._conversations: Dict[int, List[str]] = {}
-        self._logger = _log.getChild("EventConversation")
+        self.log = _log.getChild("EventConversation")
 
-    # ---------------- Lifecycle ---------------- #
+    # ------------------------- Cog lifecycle ------------------------------ #
 
     async def cog_load(self) -> None:
         await self.store.connect()
-        # on démarre le background task de cleanup rôles orphelins
         self.cleanup_stale_roles.start()
 
     async def cog_unload(self) -> None:
         self.cleanup_stale_roles.cancel()
 
-    # ---------------- Helpers persistance ---------------- #
-
-    async def _save_conv(self, user_id: int, transcript: Optional[List[str]]):
-        await self.store.save_conversation(str(user_id), transcript)
-
-    async def _save_event(self, event_id: int, payload: EventData):
-        await self.store.save_event(str(event_id), payload)
-
-    # ---------------- Command staff ---------------- #
+    # ---------------------------- Commande -------------------------------- #
 
     @commands.command(name="event")
     @commands.has_role("Staff")
     async def cmd_event(self, ctx: commands.Context) -> None:
-        """Démarre la conversation DM pour créer un événement."""
+        """Lance la conversation DM pour programmer un événement."""
         if ctx.guild is None:
             return await ctx.reply("Cette commande doit être utilisée dans un serveur.")
 
-        # efface le message staff pour garder le canal propre
         try:
             await ctx.message.delete(delay=0)
         except discord.HTTPException:
@@ -289,11 +279,11 @@ class EventConversationCog(commands.Cog):
 
         dm = await ctx.author.create_dm()
         await dm.send(
-            "Décris-moi ton événement en **plusieurs messages**.\n"
-            "Quand tu as fini, tape `terminé`.\n\n"
+            "Décris ton événement en **plusieurs messages** puis tape `terminé`.\n"
             "*(15 min d’inactivité ⇒ annulation)*"
         )
 
+        # ------------------- Collecte DM ------------------- #
         transcript: List[str] = []
         self._conversations[ctx.author.id] = transcript
         await self._save_conv(ctx.author.id, transcript)
@@ -301,14 +291,12 @@ class EventConversationCog(commands.Cog):
         def check(m: discord.Message) -> bool:
             return m.author == ctx.author and isinstance(m.channel, discord.DMChannel)
 
-        # ------------- collecte DM ------------- #
         while True:
             try:
                 msg = await self.bot.wait_for("message", timeout=DM_TIMEOUT, check=check)
             except asyncio.TimeoutError:
                 await dm.send("⏱️ Temps écoulé, conversation annulée.")
-                await self._save_conv(ctx.author.id, None)
-                self._conversations.pop(ctx.author.id, None)
+                await self._clear_conv(ctx.author.id)
                 return
 
             if msg.content.lower().startswith("terminé"):
@@ -316,7 +304,7 @@ class EventConversationCog(commands.Cog):
             transcript.append(msg.content.strip())
             await self._save_conv(ctx.author.id, transcript)
 
-        # ------------- appel IA ------------- #
+        # ------------------- Appel IA ---------------------- #
         ia_cog = self.bot.get_cog("IACog")
         if ia_cog is None:
             await dm.send("❌ Le module IA n’est pas disponible.")
@@ -327,28 +315,21 @@ class EventConversationCog(commands.Cog):
             resp, _ = await ia_cog.generate_content_with_fallback_async(prompt)
             raw_json = self._extract_json(resp.text if hasattr(resp, "text") else str(resp))
             ai_payload = json.loads(raw_json)
-            try:
-                draft = EventDraft.from_json(ai_payload)
-            except ValueError as exc:
-                await dm.send(f"⛔ {exc}")
-                return
-        except Exception as exc:
-            self._logger.exception("Échec parsing IA : %s", exc)
-            await dm.send(f"Impossible d’analyser la réponse de l’IA.\n```\n{exc}\n```")
+            draft = EventDraft.from_json(ai_payload)
+        except Exception as exc:  # noqa: BLE001
+            self.log.exception("Erreur IA/parsing : %s", exc)
+            await dm.send(f"Impossible d’analyser la réponse IA :\n```\n{exc}\n```")
             return
 
-        # date IA trop proche ? on tente un fallback full transcript
-        if draft.start_time <= discord.utils.utcnow() + timedelta(minutes=5):
+        # fallback local si l’IA renvoie une date trop proche
+        if draft.start_time <= discord.utils.utcnow() + MIN_DELTA:
             alt = parse_french_datetime(" ".join(transcript))
             if alt:
+                delta = draft.end_time - draft.start_time
                 draft.start_time = alt
-                draft.end_time = alt + (draft.end_time - draft.start_time)
+                draft.end_time = alt + delta
 
-        # si end_time toujours avant start_time ⇒ +1 h
-        if draft.end_time <= draft.start_time:
-            draft.end_time = draft.start_time + timedelta(hours=1)
-
-        # ------------- preview + validation ------------- #
+        # ------------------- Preview & validation ---------- #
         view_confirm = ConfirmView()
         preview_msg = await dm.send(embed=draft.to_preview_embed(), view=view_confirm)
         await view_confirm.wait()
@@ -356,25 +337,24 @@ class EventConversationCog(commands.Cog):
 
         if view_confirm.value is not True:
             await dm.send("Événement annulé. 👍")
-            await self._save_conv(ctx.author.id, None)
-            self._conversations.pop(ctx.author.id, None)
+            await self._clear_conv(ctx.author.id)
             return
 
-        # ------------- contrôles finaux ------------- #
-        now_utc = discord.utils.utcnow()
-        if draft.start_time <= now_utc + timedelta(minutes=5):
-            return await dm.send("⚠️ La date doit être au moins 5 minutes dans le futur.")
+        # ------------------- Vérifs finales ---------------- #
+        now = discord.utils.utcnow()
+        if draft.start_time <= now + MIN_DELTA:
+            return await dm.send("⚠️ La date de début doit être au moins 5 minutes dans le futur.")
         if draft.end_time <= draft.start_time:
             return await dm.send("⚠️ L’heure de fin doit être après l’heure de début.")
 
-        # ------------- création côté serveur ------------- #
-        guild: discord.Guild = ctx.guild  # type: ignore
+        # ------------------- Création Discord -------------- #
+        guild: discord.Guild = ctx.guild  # type: ignore[assignment]
         role = await self._get_or_create_participant_role(guild)
 
         try:
             scheduled_event = await guild.create_scheduled_event(
                 name=draft.name,
-                description=draft.description[:1000],
+                description=draft.description,
                 start_time=draft.start_time,
                 end_time=draft.end_time,
                 entity_type=discord.EntityType.external,
@@ -382,23 +362,22 @@ class EventConversationCog(commands.Cog):
                 privacy_level=discord.PrivacyLevel.guild_only,
             )
         except discord.HTTPException as exc:
-            self._logger.error("HTTPException create_scheduled_event: %s", exc.text)
-            await dm.send(f"❌ Discord refuse la création : {exc.text}")
-            return
+            self.log.error("create_scheduled_event: %s", exc.text)
+            return await dm.send(f"❌ Impossible de créer l’événement : {exc.text}")
 
         announce_channel = discord.utils.get(guild.text_channels, name=self.announce_channel_name)
         if announce_channel is None:
-            return await dm.send(f"❌ Canal #{self.announce_channel_name} introuvable !")
+            return await dm.send(f"❌ Canal #{self.announce_channel_name} introuvable.")
 
         view_rsvp = RSVPView(role, draft.max_slots)
         try:
             announce_msg = await announce_channel.send(embed=draft.to_announce_embed(), view=view_rsvp)
         except discord.Forbidden:
-            return await dm.send("Je n’ai pas la permission d’envoyer des messages ou des embeds dans le canal cible.")
+            return await dm.send("Je n’ai pas la permission d’envoyer des messages dans le canal cible.")
 
         await dm.send("✅ Événement créé et annoncé ! Merci.")
 
-        # persistance
+        # ------------------- Persistance ------------------- #
         stored = EventData(
             guild_id=guild.id,
             channel_id=announce_channel.id,
@@ -408,28 +387,34 @@ class EventConversationCog(commands.Cog):
             ends_at=draft.end_time,
             max_participants=draft.max_slots,
             timezone="UTC",
-            recurrence=None,
             temp_role_id=role.id if role else None,
-            banner_url=None,
             author_id=ctx.author.id,
-            announce_message_id=announce_msg.id,  # champ optionnel
+            announce_message_id=announce_msg.id,
             discord_event_id=scheduled_event.id,
         )
         await self._save_event(scheduled_event.id, stored)
-        await self._save_conv(ctx.author.id, None)
-        self._conversations.pop(ctx.author.id, None)
+        await self._clear_conv(ctx.author.id)
 
-        # planifie la suppression du rôle
         if role:
             self.bot.loop.create_task(self._schedule_role_cleanup(role, draft.end_time))
 
     # --------------------------------------------------------------------- #
-    # -------------------------   INTERNALS   ----------------------------- #
+    # --------------------  Helpers & persistance  ------------------------ #
     # --------------------------------------------------------------------- #
+
+    async def _save_conv(self, user_id: int, transcript: Optional[List[str]]):
+        self._conversations[user_id] = transcript or []
+        await self.store.save_conversation(str(user_id), transcript)
+
+    async def _clear_conv(self, user_id: int):
+        await self.store.save_conversation(str(user_id), None)
+        self._conversations.pop(user_id, None)
+
+    async def _save_event(self, event_id: int, payload: EventData):
+        await self.store.save_event(str(event_id), payload)
 
     @staticmethod
     def _extract_json(text: str) -> str:
-        """Extrait la première structure JSON trouvée dans *text*."""
         start, end = text.find("{"), text.rfind("}")
         if start == -1 or end == -1 or end < start:
             raise ValueError("JSON introuvable dans la réponse IA.")
@@ -440,28 +425,28 @@ class EventConversationCog(commands.Cog):
         if role:
             return role
         try:
-            return await guild.create_role(name=self.participant_role_name, reason="Rôle participants événements")
+            return await guild.create_role(name=self.participant_role_name, reason="Participants événements")
         except discord.Forbidden:
-            self._logger.warning("Impossible de créer le rôle participants (permissions).")
+            self.log.warning("Permissions insuffisantes pour créer le rôle participants.")
             return None
 
     async def _schedule_role_cleanup(self, role: discord.Role, end_time: datetime):
         delay = max(0, (end_time - discord.utils.utcnow()).total_seconds())
         await asyncio.sleep(delay)
         try:
-            await role.delete(reason="Fin de l’événement – nettoyage rôle temporaire")
+            await role.delete(reason="Fin événement – suppression rôle temporaire")
         except discord.HTTPException:
-            pass  # rôle déjà supprimé ou permissions manquantes
+            pass
 
     # --------------------------------------------------------------------- #
-    # ------------------------  BACKGROUND TASKS  ------------------------- #
+    # -------------------  Background tasks  ------------------------------ #
     # --------------------------------------------------------------------- #
 
     @tasks.loop(hours=6)
     async def cleanup_stale_roles(self):
-        """Supprime les rôles « Participants événement » plus vieux que 7 jours."""
+        """Supprime les rôles « Participants événement » âgés de ≥ 7 jours."""
         for guild in self.bot.guilds:
-            for role in list(guild.roles):
+            for role in guild.roles:
                 if (
                     role.name == self.participant_role_name
                     and (discord.utils.utcnow() - role.created_at).days >= 7
@@ -471,6 +456,10 @@ class EventConversationCog(commands.Cog):
                     except discord.HTTPException:
                         continue
 
+
+# --------------------------------------------------------------------------- #
+# Setup pour discord.py (≥ 2.0)                                               #
+# --------------------------------------------------------------------------- #
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(EventConversationCog(bot))
