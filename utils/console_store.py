@@ -1,58 +1,94 @@
 from __future__ import annotations
-import json, logging, discord
+import json
+import logging
+import discord
+from copy import deepcopy
 
 log = logging.getLogger(__name__)
 CODEBLOCK = "```event"
 
 
 class ConsoleStore:
-    """Petite « base » qui stocke chaque événement dans un message du canal #console."""
+    """Petite « base » : chaque événement est sauvegardé dans #console."""
 
     def __init__(self, bot: discord.Client, channel_name: str = "console"):
         self.bot = bot
         self.channel_name = channel_name
-        self._cache: dict[int, dict] = {}   # event_id -> dict de données + _msg
+        self._cache: dict[int, dict] = {}          # event_id -> dict enrichi + _msg
 
-    # ---------- helpers ---------- #
-    async def _channel(self) -> discord.TextChannel:
+    # ------------------------------------------------------------------ #
+    # Helpers                                                            #
+    # ------------------------------------------------------------------ #
+    async def _channel(self) -> discord.TextChannel | None:
         chan = discord.utils.get(self.bot.get_all_channels(), name=self.channel_name)
         if chan is None:
-            raise RuntimeError(f"Canal #{self.channel_name} introuvable")
-        return chan  # type: ignore[return-value]
+            log.warning("Canal #%s introuvable – persistance désactivée", self.channel_name)
+        return chan
 
-    # ---------- lecture ---------- #
+    def _serialisable(self, data: dict) -> str:
+        """Renvoie la chaîne JSON sans les clés transient (_msg…)."""
+        payload = {k: v for k, v in data.items() if not k.startswith("_")}
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+
+    # ------------------------------------------------------------------ #
+    # Lecture                                                            #
+    # ------------------------------------------------------------------ #
     async def load_all(self) -> dict[int, dict]:
-        """Lit tous les messages ```event epinglés ou récents et remplit _cache."""
         if self._cache:
             return self._cache
         chan = await self._channel()
+        if chan is None:
+            return self._cache
+
         async for msg in chan.history(limit=200):
             if msg.content.startswith(CODEBLOCK):
                 try:
-                    data = json.loads(msg.content[len(CODEBLOCK):].strip("` \n"))
-                    data["_msg"] = msg            # garde le Message pour edit/del
-                    self._cache[data["event_id"]] = data
-                except Exception:                 # message mal formé
-                    log.warning("Message #console incorrect (id=%s)", msg.id)
+                    payload = json.loads(msg.content[len(CODEBLOCK):].strip("` \n"))
+                    payload["_msg"] = msg                       # attache le Message
+                    self._cache[payload["event_id"]] = payload
+                except Exception:
+                    log.warning("Message #console mal formé (id=%s)", msg.id)
         return self._cache
 
-    # ---------- création / mise à jour ---------- #
+    # ------------------------------------------------------------------ #
+    # Création / mise à jour                                             #
+    # ------------------------------------------------------------------ #
     async def upsert(self, data: dict) -> None:
-        """Crée ou met à jour le message qui persiste *data*."""
+        """
+        Crée ou met à jour le message épinglé correspondant à event_id.
+
+        *data* peut contenir des objets non‑sérialisables (ex. discord.Message) ;
+        ils sont retirés avant l'appel à json.dumps().
+        """
         cache = await self.load_all()
         eid = data["event_id"]
-        if eid in cache:                           # update
+
+        # Prépare la chaîne JSON sans les clefs internes
+        json_block = f"{CODEBLOCK}\n{self._serialisable(data)}\n```"
+
+        if eid in cache:                        # mise à jour
             msg: discord.Message = cache[eid]["_msg"]
-            await msg.edit(content=f"{CODEBLOCK}\n{json.dumps(data, indent=2)}\n```")
+            try:
+                await msg.edit(content=json_block)
+            except discord.NotFound:            # message supprimé manuellement
+                cache.pop(eid, None)
+                return await self.upsert(data)  # ré‑essaye en mode création
             cache[eid].update(data)
-        else:                                      # insert
+        else:                                   # création
             chan = await self._channel()
-            msg = await chan.send(f"{CODEBLOCK}\n{json.dumps(data, indent=2)}\n```")
-            await msg.pin(reason="Persistance événements")
+            if chan is None:
+                return                          # persistance désactivée
+            msg = await chan.send(json_block)
+            try:
+                await msg.pin(reason="Persistance événements")
+            except discord.Forbidden:
+                log.warning("Impossible d'épingler le message #console (permissions).")
             data["_msg"] = msg
             cache[eid] = data
 
-    # ---------- suppression ---------- #
+    # ------------------------------------------------------------------ #
+    # Suppression                                                        #
+    # ------------------------------------------------------------------ #
     async def delete(self, event_id: int) -> None:
         cache = await self.load_all()
         if event_id in cache:
