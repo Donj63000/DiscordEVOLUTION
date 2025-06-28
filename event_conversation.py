@@ -446,7 +446,9 @@ class EventConversationCog(commands.Cog):
         await self._clear_conv(ctx.author.id)
 
         if role:
-            self.bot.loop.create_task(self._schedule_role_cleanup(role, draft.end_time))
+            self.bot.loop.create_task(
+                self._schedule_role_cleanup(role, draft.end_time, scheduled_event.id)
+            )
 
     # --------------------------------------------------------------------- #
     # --------------------  Helpers & persistance  ------------------------ #
@@ -480,13 +482,16 @@ class EventConversationCog(commands.Cog):
             self.log.warning("Permissions insuffisantes pour créer le rôle participants.")
             return None
 
-    async def _schedule_role_cleanup(self, role: discord.Role, end_time: datetime):
+    async def _schedule_role_cleanup(
+        self, role: discord.Role, end_time: datetime, event_id: int
+    ) -> None:
         delay = max(0, (end_time - discord.utils.utcnow()).total_seconds())
         await asyncio.sleep(delay)
         try:
             await role.delete(reason="Fin événement – suppression rôle temporaire")
         except discord.HTTPException:
             pass
+        await self.console.delete(event_id)
 
     # --------------------------------------------------------------------- #
     # -------------------  Background tasks  ------------------------------ #
@@ -495,6 +500,8 @@ class EventConversationCog(commands.Cog):
     @tasks.loop(hours=6)
     async def cleanup_stale_roles(self):
         """Supprime les rôles « Participants événement » âgés de ≥ 7 jours."""
+        records = await self.console.load_all()
+        mapping = {data.get("role_id"): eid for eid, data in records.items() if data.get("role_id")}
         for guild in self.bot.guilds:
             for role in guild.roles:
                 if (
@@ -505,6 +512,9 @@ class EventConversationCog(commands.Cog):
                         await role.delete(reason="Nettoyage automatique rôles obsolètes")
                     except discord.HTTPException:
                         continue
+                    event_id = mapping.get(role.id)
+                    if event_id:
+                        await self.console.delete(event_id)
 
 
 # --------------------------------------------------------------------------- #
