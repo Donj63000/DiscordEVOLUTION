@@ -274,10 +274,15 @@ class EventConversationCog(commands.Cog):
 
     async def cog_load(self) -> None:
         self.console = ConsoleStore(self.bot, channel_name="console")
-        await self.console.load_all()      # pré-charge les events
+        try:
+            await self.console.load_all()      # pré-charge les events
+        except RuntimeError:
+            self.log.warning(
+                "Console channel not found; disabling console persistence.")
+            self.console = None
         await self.store.connect()
         # Restauration des RSVPView après reboot
-        records = (await self.console.load_all()).values()
+        records = (await self.console.load_all()).values() if self.console else []
         for rec in records:
             # skip events passés (> 1 jour après fin)
             if "message_id" not in rec:
