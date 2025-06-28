@@ -15,6 +15,7 @@ class ConsoleStore:
         self.bot = bot
         self.channel_name = channel_name
         self._cache: dict[int, dict] = {}
+        self._perms_checked = False
 
     # -- helpers ----------------------------------------------------------- #
 
@@ -22,7 +23,26 @@ class ConsoleStore:
         chan = discord.utils.get(self.bot.get_all_channels(), name=self.channel_name)
         if chan is None:
             raise RuntimeError(f"Canal #{self.channel_name} introuvable.")
+        if not self._perms_checked:
+            await self._ensure_permissions(chan)
+            self._perms_checked = True
         return chan  # type: ignore[return-value]
+
+    async def _ensure_permissions(self, chan: discord.TextChannel) -> None:
+        guild = chan.guild
+        everyone = guild.default_role
+        overwrites = chan.overwrites_for(everyone)
+        if overwrites.view_channel is not False or overwrites.send_messages is not False:
+            overwrites.view_channel = False
+            overwrites.send_messages = False
+            await chan.set_permissions(everyone, overwrite=overwrites)
+        staff = discord.utils.get(guild.roles, name="Staff")
+        if staff:
+            staff_over = chan.overwrites_for(staff)
+            if staff_over.view_channel is not True or staff_over.send_messages is not True:
+                staff_over.view_channel = True
+                staff_over.send_messages = True
+                await chan.set_permissions(staff, overwrite=staff_over)
 
     # -- lecture ----------------------------------------------------------- #
 
@@ -57,6 +77,23 @@ class ConsoleStore:
             await msg.pin(reason="Persistance événements")
             data["_msg"] = msg
             cache[eid] = data
+            await self._cleanup_pins(chan)
+
+    async def _cleanup_pins(self, chan: discord.TextChannel) -> None:
+        pins = await chan.pins()
+        if len(pins) <= 50:
+            return
+        cache = await self.load_all()
+        now = discord.utils.utcnow()
+        for eid, data in list(cache.items()):
+            msg: discord.Message = data.get("_msg")
+            try:
+                event = await msg.guild.fetch_scheduled_event(eid)
+            except Exception:
+                event = None
+            ended = event is None or (event.end_time and event.end_time < now)
+            if ended:
+                await self.delete(eid)
 
     # -- suppression ------------------------------------------------------- #
 
