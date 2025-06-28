@@ -19,7 +19,6 @@ from discord.ext import commands, tasks
 from zoneinfo import ZoneInfo
 
 from models import EventData
-from utils.datetime_utils import parse_french_datetime
 from utils.console_store import ConsoleStore
 from utils.storage import EventStore
 
