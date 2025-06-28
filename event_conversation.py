@@ -38,7 +38,7 @@ from zoneinfo import ZoneInfo
 from models import EventData               # dataclass / pydantic perso
 from utils import parse_fr_datetime    # fallback NLP local
 from utils.storage import EventStore       # persistance JSON/DB
-from utils.console_store import ConsoleStore   # nouvelle importation
+from utils.console_store import ConsoleStore   # persistance via #console
 # --------------------------------------------------------------------------- #
 
 __all__ = ["setup"]
@@ -266,7 +266,7 @@ class EventConversationCog(commands.Cog):
         self.announce_channel_name = announce_channel_name
         self.participant_role_name = participant_role_name
         self.store = EventStore(bot)
-        self.console = ConsoleStore(bot, channel_name="console")
+        self.console: Optional[ConsoleStore] = None
         self._conversations: Dict[int, List[str]] = {}
         self.log = _log.getChild("EventConversation")
 
@@ -274,6 +274,7 @@ class EventConversationCog(commands.Cog):
 
     async def cog_load(self) -> None:
         await self.store.connect()
+        self.console = ConsoleStore(self.bot, channel_name="console")
         # Restauration des RSVPView après reboot
         records = (await self.console.load_all()).values()
         for rec in records:
@@ -421,6 +422,7 @@ class EventConversationCog(commands.Cog):
                 store_data=store_data,
             )
             await announce_msg.edit(view=view_rsvp)
+            assert self.console is not None
             await self.console.upsert(store_data)
         except discord.Forbidden:
             return await dm.send("Je n’ai pas la permission d’envoyer des messages dans le canal cible.")
@@ -491,6 +493,7 @@ class EventConversationCog(commands.Cog):
             await role.delete(reason="Fin événement – suppression rôle temporaire")
         except discord.HTTPException:
             pass
+        assert self.console is not None
         await self.console.delete(event_id)
 
     # --------------------------------------------------------------------- #
@@ -500,6 +503,7 @@ class EventConversationCog(commands.Cog):
     @tasks.loop(hours=6)
     async def cleanup_stale_roles(self):
         """Supprime les rôles « Participants événement » âgés de ≥ 7 jours."""
+        assert self.console is not None
         records = await self.console.load_all()
         mapping = {data.get("role_id"): eid for eid, data in records.items() if data.get("role_id")}
         for guild in self.bot.guilds:
@@ -514,6 +518,7 @@ class EventConversationCog(commands.Cog):
                         continue
                     event_id = mapping.get(role.id)
                     if event_id:
+                        assert self.console is not None
                         await self.console.delete(event_id)
 
 
