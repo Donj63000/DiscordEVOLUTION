@@ -350,6 +350,7 @@ class EventConversationCog(commands.Cog):
             "event_channel_id": private_channel.id,
             "max_slots": draft.max_slots,
             "going": [],
+            "ends_at": draft.end_time.isoformat(),
         }
         view_rsvp = RSVPView(role, draft.max_slots, parent_cog=self, store_data=store_data)
 
@@ -369,7 +370,10 @@ class EventConversationCog(commands.Cog):
     # Helpers create role / channel                                      #
     # ------------------------------------------------------------------ #
     async def _create_event_role(self, guild: discord.Guild, event_name: str) -> discord.Role:
-        role_name = f"Participe à l'event {event_name}"
+        role_name = f"Participe à l'event {event_name}"[:100]
+        existing = discord.utils.get(guild.roles, name=role_name)
+        if existing:
+            return existing
         return await guild.create_role(name=role_name, mentionable=True, reason="Rôle participants event")
 
     async def _create_event_channel(
@@ -379,6 +383,9 @@ class EventConversationCog(commands.Cog):
         category = discord.utils.get(guild.categories, name=EVENT_CAT_NAME)
         if category is None:
             category = await guild.create_category(EVENT_CAT_NAME, reason="Catégorie événements")
+        existing = discord.utils.get(category.text_channels, name=f"event-{slug}")
+        if existing:
+            return existing
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             role: discord.PermissionOverwrite(view_channel=True, send_messages=True),
@@ -423,6 +430,17 @@ class EventConversationCog(commands.Cog):
         view = RSVPView(role, rec.get("max_slots"), parent_cog=self, store_data=rec)
         view._going.update(rec.get("going", []))
         self.bot.add_view(view, message_id=msg.id)
+
+        ends_iso = rec.get("ends_at")
+        channel_id = rec.get("event_channel_id")
+        if ends_iso and channel_id:
+            ends_at = datetime.fromisoformat(ends_iso)
+            if ends_at > discord.utils.utcnow():
+                chan_priv = guild.get_channel(channel_id)
+                if chan_priv and role:
+                    self.bot.loop.create_task(
+                        self._schedule_cleanup(role, chan_priv, ends_at, rec["event_id"])
+                    )
 
     # ------------------------------------------------------------------ #
     # Misc helpers                                                       #
