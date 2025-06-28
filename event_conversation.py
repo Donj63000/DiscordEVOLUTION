@@ -38,6 +38,7 @@ from zoneinfo import ZoneInfo
 from models import EventData               # dataclass / pydantic perso
 from utils import parse_fr_datetime    # fallback NLP local
 from utils.storage import EventStore       # persistance JSON/DB
+from utils.console_store import ConsoleStore   # nouvelle importation
 # --------------------------------------------------------------------------- #
 
 __all__ = ["setup"]
@@ -252,6 +253,7 @@ class EventConversationCog(commands.Cog):
         self.announce_channel_name = announce_channel_name
         self.participant_role_name = participant_role_name
         self.store = EventStore(bot)
+        self.console = ConsoleStore(bot, channel_name="console")
         self._conversations: Dict[int, List[str]] = {}
         self.log = _log.getChild("EventConversation")
 
@@ -375,7 +377,19 @@ class EventConversationCog(commands.Cog):
 
         view_rsvp = RSVPView(role, draft.max_slots)
         try:
-            announce_msg = await announce_channel.send(embed=draft.to_announce_embed(), view=view_rsvp)
+            announce_msg = await announce_channel.send(
+                embed=draft.to_announce_embed(), view=view_rsvp
+            )
+            await self.console.upsert(
+                {
+                    "event_id": scheduled_event.id,
+                    "message_id": announce_msg.id,
+                    "channel_id": announce_channel.id,
+                    "role_id": role.id if role else None,
+                    "max_slots": draft.max_slots,
+                    "going": [],
+                }
+            )
         except discord.Forbidden:
             return await dm.send("Je n’ai pas la permission d’envoyer des messages dans le canal cible.")
 
