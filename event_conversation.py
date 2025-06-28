@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+import dataclasses
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -35,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 # --- helpers internes (à adapter ou supprimer si inexistants) -------------- #
 from models import EventData               # dataclass / pydantic perso
-from utils import parse_french_datetime    # fallback NLP local
+from utils import parse_fr_datetime    # fallback NLP local
 from utils.storage import EventStore       # persistance JSON/DB
 # --------------------------------------------------------------------------- #
 
@@ -323,11 +324,14 @@ class EventConversationCog(commands.Cog):
 
         # fallback local si l’IA renvoie une date trop proche
         if draft.start_time <= discord.utils.utcnow() + MIN_DELTA:
-            alt = parse_french_datetime(" ".join(transcript))
+            alt = parse_fr_datetime(" ".join(transcript))
             if alt:
                 delta = draft.end_time - draft.start_time
-                draft.start_time = alt
-                draft.end_time = alt + delta
+                draft = dataclasses.replace(
+                    draft,
+                    start_time=alt,
+                    end_time=alt + delta,
+                )
 
         # ------------------- Preview & validation ---------- #
         view_confirm = ConfirmView()

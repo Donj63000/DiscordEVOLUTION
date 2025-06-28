@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 from zoneinfo import ZoneInfo
 
 try:  # pragma: no cover - allow running without the dependency
@@ -33,40 +33,51 @@ def parse_duration(s: str) -> timedelta:
     raise ValueError("Format de durée inconnu")
 
 
-def parse_french_datetime(text: str, tz: str = "Europe/Paris") -> datetime | None:
-    """Parse French date expressions.
+PARIS = ZoneInfo("Europe/Paris")
 
-    Tries to use :mod:`dateparser` when available, otherwise falls back to a
-    minimal built-in parser that understands simple patterns like
-    ``"samedi 21h"``. The returned datetime is timezone-aware.
-    """
 
-    base = datetime.now(ZoneInfo(tz))
+def parse_fr_datetime(txt: str) -> datetime | None:
+    """Parse French date expressions and always return an aware UTC datetime."""
 
+    dt = None
     if dateparser is not None:  # pragma: no cover - runtime dependency present
-        return dateparser.parse(
-            text,
+        dt = dateparser.parse(
+            txt,
             languages=["fr"],
             settings={
-                "RELATIVE_BASE": base,
-                "TIMEZONE": tz,
+                "TIMEZONE": str(PARIS),
                 "RETURN_AS_TIMEZONE_AWARE": True,
                 "PREFER_DATES_FROM": "future",
             },
         )
+        if dt and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=PARIS)
 
-    # -------------- Fallback minimal parser --------------
-    m = re.fullmatch(r"(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\s+(\d{1,2})h", text.strip(), re.IGNORECASE)
-    if m:
-        weekday_fr = m.group(1).lower()
-        hour = int(m.group(2))
-        days = {"lundi": 0, "mardi": 1, "mercredi": 2, "jeudi": 3, "vendredi": 4, "samedi": 5, "dimanche": 6}
-        target = days[weekday_fr]
-        diff = (target - base.weekday()) % 7
-        if diff == 0 and base.hour >= hour:
-            diff = 7
-        date = (base + timedelta(days=diff)).date()
-        return datetime.combine(date, time(hour, 0), tzinfo=ZoneInfo(tz))
+    if dt is None:
+        base = datetime.now(PARIS)
+        m = re.fullmatch(
+            r"(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\s+(\d{1,2})h",
+            txt.strip(),
+            re.IGNORECASE,
+        )
+        if m:
+            weekday_fr = m.group(1).lower()
+            hour = int(m.group(2))
+            days = {
+                "lundi": 0,
+                "mardi": 1,
+                "mercredi": 2,
+                "jeudi": 3,
+                "vendredi": 4,
+                "samedi": 5,
+                "dimanche": 6,
+            }
+            target = days[weekday_fr]
+            diff = (target - base.weekday()) % 7
+            if diff == 0 and base.hour >= hour:
+                diff = 7
+            date = (base + timedelta(days=diff)).date()
+            dt = datetime.combine(date, time(hour, 0), tzinfo=PARIS)
 
-    return None
+    return dt.astimezone(timezone.utc) if dt else None
 

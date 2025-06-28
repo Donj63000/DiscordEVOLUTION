@@ -18,7 +18,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils import parse_duration, parse_french_datetime
+from utils import parse_duration, parse_fr_datetime
 
 # --------------------------------------------------------------------------- #
 # ------------------------------- CONSTANTS --------------------------------- #
@@ -105,7 +105,7 @@ class SlashEventCog(commands.Cog):
         quand: Optional[str],
         places: Optional[int],
     ) -> None:
-        date = parse_french_datetime(quand) if quand else None
+        date = parse_fr_datetime(quand) if quand else None
 
         desc = []
         if date:
