@@ -274,6 +274,22 @@ class EventConversationCog(commands.Cog):
 
     async def cog_load(self) -> None:
         await self.store.connect()
+        # Restauration des RSVPView après reboot
+        records = (await self.console.load_all()).values()
+        for rec in records:
+            # skip events passés (> 1 jour après fin)
+            if "message_id" not in rec:
+                continue
+            try:
+                chan = await self.bot.fetch_channel(rec["channel_id"])
+                msg = await chan.fetch_message(rec["message_id"])
+            except discord.NotFound:
+                continue
+
+            role = chan.guild.get_role(rec.get("role_id")) if rec.get("role_id") else None
+            view = RSVPView(role, rec.get("max_slots"), parent_cog=self, store_data=rec)
+            view._going.update(rec.get("going", []))
+            self.bot.add_view(view, message_id=msg.id)
         self.cleanup_stale_roles.start()
 
     async def cog_unload(self) -> None:
