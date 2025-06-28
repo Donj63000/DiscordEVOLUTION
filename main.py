@@ -73,7 +73,6 @@ async def main():
         "calcul",
         "defender",
         "moderation",
-        "event_conversation",
         # "slash_events",  # disabled: duplicate with event_conversation
     ]
 
@@ -84,6 +83,12 @@ async def main():
                 print(f"Extension chargée: {ext}")
             except Exception as e:
                 print(f"Erreur lors du chargement de {ext}: {e}")
+
+    try:
+        await bot.load_extension("event_conversation")
+    except Exception:
+        logging.exception("❌ Échec load_extension")
+        sys.exit(1)
 
     TOKEN = os.getenv("DISCORD_TOKEN")
     await bot.start(TOKEN)
