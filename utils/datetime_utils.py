@@ -81,3 +81,9 @@ def parse_fr_datetime(txt: str) -> datetime | None:
 
     return dt.astimezone(timezone.utc) if dt else None
 
+
+def parse_french_datetime(txt: str) -> datetime | None:
+    """Alias for :func:`parse_fr_datetime` (preferred)."""
+
+    return parse_fr_datetime(txt)
+
