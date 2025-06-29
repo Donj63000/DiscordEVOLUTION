@@ -310,7 +310,7 @@ class EventConversationCog(commands.Cog):
 
         # ----- vérifs -----
         now = discord.utils.utcnow()
-        if draft.start_time <= now + MIN_DELTA:
+        if draft.start_time < now + MIN_DELTA:
             return await dm.send("⚠️ La date de début doit être au moins 5 minutes dans le futur.")
         if draft.end_time <= draft.start_time:
             return await dm.send("⚠️ L’heure de fin doit être après l’heure de début.")
