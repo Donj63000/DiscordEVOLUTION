@@ -53,6 +53,10 @@ première exécution du bot. Ils sont enregistrés à côté des modules Python 
 sont donc pas suivis par Git. À chaque sauvegarde, leur contenu est également
 publié dans le salon `console` pour servir de sauvegarde distante.
 
+Le module de statistiques conserve lui aussi son état dans ce salon : un message
+épinglé contient le JSON complet et est mis à jour régulièrement. Le fichier
+`stats_data.json` n'est donc qu'un cache local provisoire.
+
 Des exemples anonymisés sont fournis dans le répertoire
 [`examples`](examples/) pour illustrer le format attendu de chaque fichier.
 
