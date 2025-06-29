@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 from models import EventData
 from utils.console_store import ConsoleStore
 from utils.storage import EventStore
+from utils.datetime_utils import parse_french_datetime
 
 __all__ = ["setup"]
 
@@ -294,6 +295,15 @@ class EventConversationCog(commands.Cog):
             raw_json = self._extract_json(resp.text if hasattr(resp, "text") else str(resp))
             ai_payload = json.loads(raw_json)
             draft = EventDraft.from_json(ai_payload)
+
+            # -------- Fallback date si IA renvoie un passé / trop proche --------
+            now = discord.utils.utcnow()
+            if draft.start_time <= now + MIN_DELTA:
+                alt = parse_french_datetime(" ".join(transcript))
+                if alt and alt > now + MIN_DELTA:
+                    delta = draft.end_time - draft.start_time
+                    draft.start_time = alt
+                    draft.end_time = alt + delta
         except Exception as exc:
             self.log.exception("Erreur IA/parsing : %s", exc)
             return await dm.send(f"Impossible d’analyser la réponse IA :\n```\n{exc}\n```")
