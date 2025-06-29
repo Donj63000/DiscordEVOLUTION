@@ -1,8 +1,9 @@
 import discord
 from discord.ext import commands, tasks
 import json
-import os
 from datetime import datetime
+
+from utils.stats_store import StatsStore
 
 DATA_FILE = "stats_data.json"
 
@@ -63,36 +64,32 @@ class StatsCog(commands.Cog):
                 "presence": []
             }
         }
-        self.load_stats_data()
+        self.store: StatsStore | None = None
         self.save_loop.start()
 
     def cog_unload(self):
         self.save_loop.cancel()
 
-    def load_stats_data(self):
-        if os.path.isfile(DATA_FILE):
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                for top_key in self.stats_data.keys():
-                    if top_key in loaded:
-                        if isinstance(self.stats_data[top_key], dict) and isinstance(loaded[top_key], dict):
-                            self.stats_data[top_key].update(loaded[top_key])
-                        else:
-                            self.stats_data[top_key] = loaded[top_key]
-            except Exception as e:
-                print(f"[Stats] Erreur lors du chargement de {DATA_FILE} : {e}")
+    async def cog_load(self) -> None:
+        self.store = StatsStore(self.bot, DATA_FILE)
+        loaded = await self.store.load()
+        if loaded:
+            self.stats_data = loaded
 
-    def save_stats_data(self):
-        try:
-            with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.stats_data, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"[Stats] Erreur lors de la sauvegarde : {e}")
+
+    async def save_stats_data(self):
+        if self.store:
+            await self.store.save(self.stats_data)
+        else:
+            try:
+                with open(DATA_FILE, "w", encoding="utf-8") as f:
+                    json.dump(self.stats_data, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                print(f"[Stats] Erreur lors de la sauvegarde : {e}")
 
     @tasks.loop(seconds=60.0)
     async def save_loop(self):
-        self.save_stats_data()
+        await self.save_stats_data()
 
     def reset_stats_data(self):
         self.stats_data = {
@@ -596,7 +593,7 @@ class StatsCog(commands.Cog):
     @commands.has_role("Staff")
     async def stats_reset(self, ctx: commands.Context):
         self.reset_stats_data()
-        self.save_stats_data()
+        await self.save_stats_data()
         await ctx.send("Les statistiques ont été **réinitialisées** avec succès.")
 
     @stats_main.command(name="on")
