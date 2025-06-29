@@ -37,7 +37,7 @@ MAX_DESC_LEN = 1_000
 SYSTEM_PROMPT = (
     "Tu es EvolutionBOT et tu aides à créer un événement Discord. "
     "À partir de la conversation suivante, fournis UNIQUEMENT un JSON strict "
-    'avec les clés : name, description, start_time, end_time, location, max_slots. '
+    'avec les clés : name, description, start_time, end_time, location, max_slots, dungeon_name. '
     "Les dates sont au format JJ/MM/AAAA HH:MM. Mets null si information manquante."
 )
 
@@ -73,6 +73,7 @@ class EventDraft:
     end_time: datetime                   # UTC aware
     location: Optional[str] = None
     max_slots: Optional[int] = None
+    dungeon_name: str = "Donjon"
 
     # ---------- helpers date --------------------------------------------- #
     @staticmethod
@@ -118,6 +119,7 @@ class EventDraft:
             end_time=end,
             location=str(obj["location"]) if obj.get("location") else None,
             max_slots=int(obj["max_slots"]) if obj.get("max_slots") is not None else None,
+            dungeon_name=str(obj.get("dungeon_name") or "Donjon"),
         )
 
     # ---------- embeds ---------------------------------------------------- #
@@ -130,6 +132,7 @@ class EventDraft:
         e.add_field(name="Fin", value=self._fmt_dt(self.end_time), inline=False)
         if self.location:
             e.add_field(name="Lieu", value=self.location, inline=False)
+        e.add_field(name="Donjon", value=self.dungeon_name, inline=False)
         if self.max_slots is not None:
             e.add_field(name="Places dispo", value=str(self.max_slots), inline=False)
         return e
@@ -144,6 +147,7 @@ class EventDraft:
         e.add_field(name="Fin", value=self._fmt_dt(self.end_time), inline=False)
         if self.location:
             e.add_field(name="Lieu", value=self.location, inline=False)
+        e.add_field(name="Donjon", value=self.dungeon_name, inline=False)
         if self.max_slots is not None:
             e.add_field(name="Places dispo", value=str(self.max_slots), inline=False)
         e.set_footer(text="Clique sur un des boutons pour t’inscrire ⤵️")
@@ -328,8 +332,8 @@ class EventConversationCog(commands.Cog):
         guild: discord.Guild = ctx.guild  # type: ignore[assignment]
 
         # --- création rôle + salon privés -------------------------------- #
-        role = await self._create_event_role(guild, draft.name)
-        private_channel = await self._create_event_channel(guild, draft.name, role)
+        role = await self._create_event_role(guild, draft)
+        private_channel = await self._create_event_channel(guild, draft, role)
 
         # --- Guild Scheduled Event --------------------------------------- #
         try:
@@ -358,6 +362,7 @@ class EventConversationCog(commands.Cog):
             "role_id": role.id,
             "event_channel_id": private_channel.id,
             "max_slots": draft.max_slots,
+            "dungeon": draft.dungeon_name,
             "going": [],
             "ends_at": draft.end_time.isoformat(),
         }
@@ -378,17 +383,17 @@ class EventConversationCog(commands.Cog):
     # ------------------------------------------------------------------ #
     # Helpers create role / channel                                      #
     # ------------------------------------------------------------------ #
-    async def _create_event_role(self, guild: discord.Guild, event_name: str) -> discord.Role:
-        role_name = f"Participe à l'event {event_name}"[:100]
+    async def _create_event_role(self, guild: discord.Guild, draft: EventDraft) -> discord.Role:
+        role_name = f"Participe à l'event {draft.name}"[:100]
         existing = discord.utils.get(guild.roles, name=role_name)
         if existing:
             return existing
         return await guild.create_role(name=role_name, mentionable=True, reason="Rôle participants event")
 
     async def _create_event_channel(
-        self, guild: discord.Guild, event_name: str, role: discord.Role
+        self, guild: discord.Guild, draft: EventDraft, role: discord.Role
     ) -> discord.TextChannel:
-        slug = slugify(event_name)
+        slug = slugify(draft.name)
         category = discord.utils.get(guild.categories, name=EVENT_CAT_NAME)
         if category is None:
             category = await guild.create_category(EVENT_CAT_NAME, reason="Catégorie événements")
