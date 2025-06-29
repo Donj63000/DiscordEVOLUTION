@@ -38,7 +38,8 @@ SYSTEM_PROMPT = (
     "Tu es EvolutionBOT et tu aides à créer un événement Discord. "
     "À partir de la conversation suivante, fournis UNIQUEMENT un JSON strict "
     'avec les clés : name, description, start_time, end_time, location, max_slots. '
-    "Les dates sont au format JJ/MM/AAAA HH:MM. Mets null si information manquante."
+    "Les dates doivent être après \"aujourd'hui\" et au format JJ/MM/AAAA HH:MM. "
+    "Mets null si information manquante."
 )
 
 EMBED_COLOR_PREVIEW = 0x3498DB
@@ -320,6 +321,13 @@ class EventConversationCog(commands.Cog):
 
         # ----- vérifs -----
         now = discord.utils.utcnow()
+        if draft.start_time <= now + MIN_DELTA:
+            alt = parse_french_datetime(" ".join(transcript))
+            if alt and alt > now + MIN_DELTA:
+                delta = draft.end_time - draft.start_time
+                draft.start_time = alt
+                draft.end_time = alt + delta
+
         if draft.start_time < now + MIN_DELTA:
             return await dm.send("⚠️ La date de début doit être au moins 5 minutes dans le futur.")
         if draft.end_time <= draft.start_time:
