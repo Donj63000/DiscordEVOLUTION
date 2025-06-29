@@ -416,7 +416,8 @@ class EventConversationCog(commands.Cog):
         self, role: discord.Role, channel: discord.TextChannel, end_time: datetime, event_id: int
     ):
         delay = max(0, (end_time - discord.utils.utcnow()).total_seconds())
-        await asyncio.sleep(delay)
+        if delay:
+            await asyncio.sleep(delay)
         try:
             await channel.delete(reason="Fin de l’événement – suppression salon privé")
         except discord.HTTPException:
@@ -449,9 +450,14 @@ class EventConversationCog(commands.Cog):
         channel_id = rec.get("event_channel_id")
         if ends_iso and channel_id:
             ends_at = datetime.fromisoformat(ends_iso)
-            if ends_at > discord.utils.utcnow():
-                chan_priv = guild.get_channel(channel_id)
-                if chan_priv and role:
+            chan_priv = guild.get_channel(channel_id)
+            now = discord.utils.utcnow()
+            if chan_priv and role:
+                if ends_at <= now:
+                    self.bot.loop.create_task(
+                        self._schedule_cleanup(role, chan_priv, now, rec["event_id"])
+                    )
+                elif ends_at > now:
                     self.bot.loop.create_task(
                         self._schedule_cleanup(role, chan_priv, ends_at, rec["event_id"])
                     )
