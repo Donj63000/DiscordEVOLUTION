@@ -36,13 +36,19 @@ def parse_duration(s: str) -> timedelta:
 PARIS = ZoneInfo("Europe/Paris")
 
 
-def parse_fr_datetime(txt: str) -> datetime | None:
-    """Parse French date expressions and always return an aware UTC datetime."""
+def parse_french_datetime(text: str) -> datetime | None:
+    """Parse French date expressions and return an aware UTC ``datetime``.
+
+    The helper relies on :mod:`dateparser` when available but also implements a
+    minimal fallback to understand simple patterns such as ``"samedi 18h"`` when
+    the dependency is missing. ``None`` is returned if no interpretation was
+    possible.
+    """
 
     dt = None
     if dateparser is not None:  # pragma: no cover - runtime dependency present
         dt = dateparser.parse(
-            txt,
+            text,
             languages=["fr"],
             settings={
                 "TIMEZONE": str(PARIS),
@@ -57,7 +63,7 @@ def parse_fr_datetime(txt: str) -> datetime | None:
         base = datetime.now(PARIS)
         m = re.fullmatch(
             r"(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\s+(\d{1,2})h",
-            txt.strip(),
+            text.strip(),
             re.IGNORECASE,
         )
         if m:
@@ -82,8 +88,8 @@ def parse_fr_datetime(txt: str) -> datetime | None:
     return dt.astimezone(timezone.utc) if dt else None
 
 
-def parse_french_datetime(txt: str) -> datetime | None:
-    """Alias for :func:`parse_fr_datetime` (preferred)."""
+def parse_fr_datetime(text: str) -> datetime | None:
+    """Backward compatibility wrapper for :func:`parse_french_datetime`."""
 
-    return parse_fr_datetime(txt)
+    return parse_french_datetime(text)
 
