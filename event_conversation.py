@@ -242,10 +242,12 @@ class EventConversationCog(commands.Cog):
     # ---------- lifecycle ------------------------------------------------- #
     async def cog_load(self) -> None:
         self.console = ConsoleStore(self.bot, channel_name="console")
-        if await self.console._channel() is not None:
-            await self.console.load_all()
-        # restaure les RSVP après reboot
-        for rec in (await self.console.load_all()).values() if self.console else []:
+        chan = await self.console._channel()
+        if chan is None:
+            return
+
+        records = await self.console.load_all()
+        for rec in records.values():
             await self._restore_view(rec)
 
     # --------------------------------------------------------------------- #
