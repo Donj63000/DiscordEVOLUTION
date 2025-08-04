@@ -357,10 +357,6 @@ class IACog(commands.Cog):
         self.active_chats = {}         # user_id ➜ genai.Chat
         self.SESSION_TTL = 60 * 30   # 30 min d’inactivité
 
-        # On lance la loop "process_queue" (mais elle démarrera
-        # réellement après le cog_load, selon Discord.py).
-        self.process_queue.start()
-
     async def cog_load(self):
         """
         Méthode appelée automatiquement par discord.py quand le Cog est chargé.
@@ -391,9 +387,7 @@ class IACog(commands.Cog):
         Charge la clé d'API et prépare les modèles Generative AI.
         """
         load_dotenv()
-        self.api_key = os.getenv("GEMINI_API_KEY")
-        if not self.api_key:
-            raise ValueError("Missing GEMINI_API_KEY dans .env.")
+        self.api_key = os.environ["GOOGLE_API_KEY"]
         genai.configure(api_key=self.api_key)
         self.model_pro = genai.GenerativeModel("gemini-1.5-pro")
         self.model_flash = genai.GenerativeModel("gemini-1.5-flash")
@@ -974,4 +968,6 @@ async def setup(bot: commands.Bot):
     Méthode appelée par bot.load_extension(...).
     Ajoute simplement le IACog au bot.
     """
-    await bot.add_cog(IACog(bot))
+    cog = IACog(bot)
+    await bot.add_cog(cog)
+    cog.process_queue.start()
