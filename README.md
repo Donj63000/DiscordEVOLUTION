@@ -68,7 +68,7 @@ Clonez ce dépôt puis installez les dépendances :
 pip install -r requirements.txt
 ```
 
-Créez ensuite un fichier `.env` contenant au minimum votre `DISCORD_TOKEN`, la clé `GEMINI_API_KEY` pour l'IA et une `FERNET_KEY` utilisée par `defender.py` pour chiffrer les URL. Cette clé est **obligatoire** et doit être fournie via la variable d'environnement `FERNET_KEY` (par exemple `FERNET_KEY=...`).
+Créez ensuite un fichier `.env` contenant au minimum votre `DISCORD_TOKEN`, la clé `GOOGLE_API_KEY` pour l'IA et une `FERNET_KEY` utilisée par `defender.py` pour chiffrer les URL. Cette clé est **obligatoire** et doit être fournie via la variable d'environnement `FERNET_KEY` (par exemple `FERNET_KEY=...`).
 Vous pouvez générer cette clé avec :
 
 ```bash
