@@ -36,6 +36,8 @@ class HelpCog(commands.Cog):
             name=":bookmark_tabs: Mini-Guides & Commandes Racines",
             value=(
                 "__**!ia**__\n"
+                "> Ouvre une session privée avec Gemini 2.5 Pro.\n\n"
+                "__**!iahelp**__\n"
                 "> Guide sur l’IA (ex.: `!bot`, `!analyse`).\n\n"
                 "__**!membre**__\n"
                 "> Récap global des sous-commandes (ex.: `principal`, `addmule`).\n\n"
