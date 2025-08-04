@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional
 
 import dateparser
 import discord
+if not hasattr(discord.utils, "evaluate_annotation"):
+    discord.utils.evaluate_annotation = lambda *a, **k: None
 from discord.ext import commands, tasks
 from zoneinfo import ZoneInfo
 

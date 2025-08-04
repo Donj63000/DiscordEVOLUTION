@@ -352,7 +352,10 @@ class IACog(commands.Cog):
         self.api_key = None
         self.model_pro = None
         self.model_flash = None
+        self.model_g25 = None          # conversationnel 2.5-pro
         self.knowledge_text = ""
+        self.active_chats = {}         # user_id ➜ genai.Chat
+        self.SESSION_TTL = 60 * 30   # 30 min d’inactivité
 
         # On lance la loop "process_queue" (mais elle démarrera
         # réellement après le cog_load, selon Discord.py).
@@ -394,6 +397,7 @@ class IACog(commands.Cog):
         genai.configure(api_key=self.api_key)
         self.model_pro = genai.GenerativeModel("gemini-1.5-pro")
         self.model_flash = genai.GenerativeModel("gemini-1.5-flash")
+        self.model_g25 = genai.GenerativeModel("gemini-2.5-pro")
 
     def get_knowledge_text(self) -> str:
         """
@@ -412,7 +416,8 @@ class IACog(commands.Cog):
             "=====================================================================\n"
             "LISTE DES COMMANDES DU BOT EVOLUTION\n"
             "=====================================================================\n"
-            "• !ia pour revoir ce guide\n"
+            "• !ia pour une session privée Gemini 2.5 Pro\n"
+            "• !iahelp pour revoir ce guide\n"
             "• !bot <message>\n"
             "• !analyse\n"
             "• !annonce <texte> (Staff)\n"
@@ -435,6 +440,7 @@ class IACog(commands.Cog):
                 except Exception as e:
                     self.logger.warning(f"Erreur dans process_queue : {e}")
             self.pending_requests = False
+        self.purge_sessions()
 
     def cog_unload(self):
         """
@@ -516,10 +522,10 @@ class IACog(commands.Cog):
     # Commandes utilisateur et logique IA
     ##############################################
 
-    @commands.command(name="ia")
+    @commands.command(name="iahelp")
     async def ia_help_command(self, ctx):
         """
-        Commande !ia : affiche le guide sur l'IA.
+        Commande !iahelp : affiche le guide sur l'IA.
         """
         txt = (
             "**Commandes IA :**\n"
@@ -528,9 +534,37 @@ class IACog(commands.Cog):
             "!bot <message>\n"
             "!pl <texte>\n"
             "Mentionnez @EvolutionBOT pour solliciter l'IA\n"
-            "!ia pour revoir ce guide"
+            "!ia pour une session privée Gemini 2.5 Pro\n"
+            "!iahelp pour revoir ce guide"
         )
         await ctx.send(txt)
+
+    @commands.command(name="ia")
+    async def ia_start_command(self, ctx):
+        """Démarre/relance une session privée Gemini 2.5 Pro avec l’utilisateur."""
+        uid = ctx.author.id
+
+        # 1) Crée ou récupère le salon privé
+        dm = await ctx.author.create_dm()
+
+        # 2) Instancie/reprend le chat Gemini
+        if uid not in self.active_chats:
+            self.active_chats[uid] = self.model_g25.start_chat(history=[])
+            await dm.send(
+                "🔒 **Session privée Gemini 2.5 Pro ouverte.** "
+                "Parle‑moi ici pour continuer la conversation."
+            )
+        else:
+            await dm.send("↩️ Session retrouvée. Continue où tu t’es arrêté.")
+
+        # 3) Facultatif : mémoriser le timestamp du dernier accès
+        self.active_chats[uid].last_used = time.time()
+
+        # 4) Efface le message de commande côté serveur pour éviter le bruit
+        try:
+            await ctx.message.delete()
+        except:
+            pass
 
     @commands.command(name="bot")
     async def free_command(self, ctx, *, user_message=None):
@@ -644,6 +678,14 @@ class IACog(commands.Cog):
                 await ctx.send("**Quota IA dépassé**, réessayez plus tard.")
             else:
                 await ctx.send(f"Erreur IA: {e}")
+
+    def is_spam(self, uid: int) -> bool:
+        now = time.time()
+        if uid not in self.spam_times:
+            self.spam_times[uid] = []
+        self.spam_times[uid].append(now)
+        self.spam_times[uid] = [t for t in self.spam_times[uid] if now - t < self.spam_interval]
+        return len(self.spam_times[uid]) > self.spam_threshold
 
     @commands.command(name="analyse")
     async def analyse_command(self, ctx):
@@ -843,6 +885,55 @@ class IACog(commands.Cog):
             else:
                 await ctx.send(str(e))
 
+    async def handle_dm(self, message):
+        uid = message.author.id
+
+        if uid not in self.active_chats:
+            await message.channel.send(
+                "Tape `!ia` sur le serveur pour démarrer une session privée."
+            )
+            return
+
+        if self.is_spam(uid):
+            await message.channel.send("⏳ Ralentis un peu, s’il te plaît.")
+            return
+
+        if time.time() < self.quota_exceeded_until:
+            await message.channel.send("**Quota IA dépassé**, réessaie plus tard.")
+            return
+
+        chat = self.active_chats[uid]
+
+        try:
+            resp = await asyncio.to_thread(chat.send_message, message.content)
+            reply = resp.text.strip() or "(vide)"
+
+            intention = self.detect_intention(message.content)
+            possible_tones = TONE_VARIATIONS.get(intention, TONE_VARIATIONS["neutral"])
+            chosen_tone = random.choice(possible_tones)
+            if intention in ["humor","sarcasm","light_provocation","neutral"]:
+                emo = random.choice(EMOJIS_FRIENDLY)
+            else:
+                emo = random.choice(EMOJIS_FIRM)
+            reply = f"{chosen_tone} {emo}\n\n{reply}"
+
+            for chunk in chunk_list(reply):
+                await message.channel.send(chunk)
+
+            chat.last_used = time.time()
+        except Exception as e:
+            await message.channel.send(f"Erreur IA : {e}")
+
+    def purge_sessions(self):
+        now = time.time()
+        to_delete = [
+            uid
+            for uid, chat in self.active_chats.items()
+            if now - getattr(chat, "last_used", now) > self.SESSION_TTL
+        ]
+        for uid in to_delete:
+            del self.active_chats[uid]
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """
@@ -850,6 +941,10 @@ class IACog(commands.Cog):
         """
         # Ignorer les messages du bot
         if message.author.bot:
+            return
+
+        if isinstance(message.channel, discord.DMChannel):
+            await self.handle_dm(message)
             return
 
         # On récupère le contexte, on vérifie si c'est une commande
