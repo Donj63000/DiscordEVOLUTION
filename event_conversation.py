@@ -15,8 +15,16 @@ from typing import Any, Dict, List, Optional
 
 import dateparser
 import discord
-if not hasattr(discord.utils, "evaluate_annotation"):
-    discord.utils.evaluate_annotation = lambda *a, **k: None
+
+
+def _ensure_utils() -> None:
+    if not hasattr(discord.utils, "evaluate_annotation"):
+        discord.utils.evaluate_annotation = lambda *a, **k: None
+    if not hasattr(discord.utils, "is_inside_class"):
+        discord.utils.is_inside_class = lambda obj: False
+
+
+_ensure_utils()
 from discord.ext import commands, tasks
 from zoneinfo import ZoneInfo
 
@@ -228,6 +236,10 @@ class RSVPView(discord.ui.View):
 # --------------------------------------------------------------------------- #
 
 class EventConversationCog(commands.Cog):
+    def __new__(cls, *args, **kwargs):
+        _ensure_utils()
+        return super().__new__(cls)
+
     def __init__(
         self,
         bot: commands.Bot,
