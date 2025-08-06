@@ -116,6 +116,8 @@ class HelpCog(commands.Cog):
             value=(
                 "__**!bot <message>**__\n"
                 "> Fait appel à l’IA (gemini-1.5-pro) avec le contexte des derniers messages.\n\n"
+                "__**!iaend**__\n"
+                "> Termine votre session IA en cours.\n\n"
                 "__**!analyse**__\n"
                 "> Analyse/résume les 100 derniers messages du salon.\n"
             ),

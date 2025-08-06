@@ -9,6 +9,8 @@ import collections
 import random
 import re
 import unicodedata
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 try:
     from rapidfuzz.distance import Levenshtein
@@ -42,6 +44,7 @@ try:  # pragma: no cover - optional runtime deps
     import discord
     from discord.ext import commands, tasks
     import google.generativeai as genai
+    from google.generativeai import errors as genai_errors
     from dotenv import load_dotenv
 except Exception:  # pragma: no cover - provide stubs when missing
     import types
@@ -63,7 +66,18 @@ except Exception:  # pragma: no cover - provide stubs when missing
         class Bot:
             pass
 
+        class BucketType:
+            user = None
+
+        class Context:
+            pass
+
         def command(self, *a, **k):
+            def decorator(func):
+                return func
+            return decorator
+
+        def cooldown(self, *a, **k):
             def decorator(func):
                 return func
             return decorator
@@ -83,6 +97,22 @@ except Exception:  # pragma: no cover - provide stubs when missing
     tasks = _DummyTasks()
     genai = None
     load_dotenv = lambda *a, **k: None
+    class genai_errors:  # type: ignore
+        class QuotaExceededError(Exception):
+            pass
+
+@dataclass
+class IASession:
+    """Représente une session de chat IA liée à un user ou à un canal."""
+    model_name: str
+    chat: object
+    start_ts: datetime
+    last_activity: datetime
+    history: list = field(default_factory=list)
+
+    @property
+    def expired(self) -> bool:
+        return datetime.utcnow() - self.start_ts > timedelta(minutes=60)
 
 ##############################################
 # Constantes "globales" et fonctions utilitaires
@@ -356,6 +386,8 @@ class IACog(commands.Cog):
         self.knowledge_text = ""
         self.active_chats = {}         # user_id ➜ genai.Chat
         self.SESSION_TTL = 60 * 30   # 30 min d’inactivité
+        self.sessions: dict[int, IASession] = {}
+        self.session_lock = asyncio.Lock()
 
     async def cog_load(self):
         """
@@ -392,6 +424,10 @@ class IACog(commands.Cog):
         self.model_pro = genai.GenerativeModel("gemini-1.5-pro")
         self.model_flash = genai.GenerativeModel("gemini-1.5-flash")
         self.model_g25 = genai.GenerativeModel("gemini-2.5-pro")
+
+    def _new_chat(self, model_name: str, system_prompt: str):
+        model = genai.GenerativeModel(model_name)
+        return model.start_chat(history=[], system_instruction=system_prompt)
 
     def get_knowledge_text(self) -> str:
         """
@@ -441,6 +477,7 @@ class IACog(commands.Cog):
         Si jamais on décharge le Cog, on arrête la boucle.
         """
         self.process_queue.cancel()
+        self.purge_expired_sessions.cancel()
 
     ##############################################
     # Fonctions de détection d'intention
@@ -534,31 +571,46 @@ class IACog(commands.Cog):
         await ctx.send(txt)
 
     @commands.command(name="ia")
-    async def ia_start_command(self, ctx):
-        """Démarre/relance une session privée Gemini 2.5 Pro avec l’utilisateur."""
-        uid = ctx.author.id
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    async def ia_start_command(self, ctx: commands.Context):
+        async with self.session_lock:
+            key = ctx.author.id if ctx.guild is None else ctx.channel.id
+            now = datetime.utcnow()
 
-        # 1) Crée ou récupère le salon privé
-        dm = await ctx.author.create_dm()
+            if key in self.sessions and not self.sessions[key].expired:
+                self.sessions[key].last_activity = now
+                await ctx.reply(
+                    "✅ Session IA déjà active pour encore "
+                    f"{60 - int((now - self.sessions[key].start_ts).total_seconds()//60)} min.",
+                    mention_author=False,
+                )
+                return
 
-        # 2) Instancie/reprend le chat Gemini
-        if uid not in self.active_chats:
-            self.active_chats[uid] = self.model_g25.start_chat(history=[])
-            await dm.send(
-                "🔒 **Session privée Gemini 2.5 Pro ouverte.** "
-                "Parle‑moi ici pour continuer la conversation."
+            model_name = "gemini-pro-2.5" if ctx.guild is None else "gemini-1.5-flash"
+            chat = self._new_chat(
+                model_name,
+                "Tu es l'assistant de la guilde Evolution sur Dofus retro",
             )
+
+            self.sessions[key] = IASession(
+                model_name=model_name,
+                chat=chat,
+                start_ts=now,
+                last_activity=now,
+            )
+
+            await ctx.reply(
+                f"🆕 Session IA démarrée pour 60 min. Modèle : {model_name.split('-')[1].title()}",
+                mention_author=False,
+            )
+
+    @commands.command(name="iaend")
+    async def ia_end_command(self, ctx):
+        key = ctx.author.id if ctx.guild is None else ctx.channel.id
+        if self.sessions.pop(key, None):
+            await ctx.reply("💤 Session IA terminée.", mention_author=False)
         else:
-            await dm.send("↩️ Session retrouvée. Continue où tu t’es arrêté.")
-
-        # 3) Facultatif : mémoriser le timestamp du dernier accès
-        self.active_chats[uid].last_used = time.time()
-
-        # 4) Efface le message de commande côté serveur pour éviter le bruit
-        try:
-            await ctx.message.delete()
-        except:
-            pass
+            await ctx.reply("Aucune session IA active.", mention_author=False)
 
     @commands.command(name="bot")
     async def free_command(self, ctx, *, user_message=None):
@@ -672,6 +724,30 @@ class IACog(commands.Cog):
                 await ctx.send("**Quota IA dépassé**, réessayez plus tard.")
             else:
                 await ctx.send(f"Erreur IA: {e}")
+
+    async def _handle_quota_and_retry(self, session: IASession, message: discord.Message):
+        if session.model_name.startswith("gemini-pro"):
+            flash_chat = self._new_chat(
+                "gemini-1.5-flash",
+                "Tu es l'assistant de la guilde Evolution sur Dofus retro",
+            )
+            flash_chat.history = session.chat.history
+            session.model_name = "gemini-1.5-flash"
+            session.chat = flash_chat
+            self.quota_exceeded_until = time.time() + self.quota_block_duration
+            try:
+                flash_chat.send_message(message.content)
+                await message.reply(
+                    f"⚠️ Quota Pro atteint → passage sur **Flash**.\n\n{flash_chat.last.text}",
+                    mention_author=False,
+                )
+            except Exception as exc:
+                await message.reply(f"Erreur lors de la bascule : {exc}", mention_author=False)
+        else:
+            await message.reply(
+                "Quota Flash épuisé ; merci de réessayer plus tard.",
+                mention_author=False,
+            )
 
     def is_spam(self, uid: int) -> bool:
         now = time.time()
@@ -928,25 +1004,45 @@ class IACog(commands.Cog):
         for uid in to_delete:
             del self.active_chats[uid]
 
+    @tasks.loop(minutes=5)
+    async def purge_expired_sessions(self):
+        async with self.session_lock:
+            for key, sess in list(self.sessions.items()):
+                if sess.expired:
+                    del self.sessions[key]
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """
-        Listener qui intercepte les mentions directes du bot.
-        """
-        # Ignorer les messages du bot
+        """Listener qui intercepte les messages pour les sessions IA."""
         if message.author.bot:
+            return
+
+        key = (
+            message.author.id
+            if isinstance(message.channel, discord.DMChannel)
+            else message.channel.id
+        )
+        session = self.sessions.get(key)
+        if session and not session.expired:
+            session.last_activity = datetime.utcnow()
+            try:
+                session.chat.send_message(message.content)
+                async with message.channel.typing():
+                    response = session.chat.last.text
+            except genai_errors.QuotaExceededError:
+                await self._handle_quota_and_retry(session, message)
+                return
+            await message.reply(response, mention_author=False)
             return
 
         if isinstance(message.channel, discord.DMChannel):
             await self.handle_dm(message)
             return
 
-        # On récupère le contexte, on vérifie si c'est une commande
         c = await self.bot.get_context(message)
         if c.valid and c.command:
             return
 
-        # Si la mention du bot est dedans, on traite comme un appel IA
         if self.bot.user.mention in message.content:
             q = message.content.replace(self.bot.user.mention, "").strip()
             if q:
@@ -971,3 +1067,4 @@ async def setup(bot: commands.Bot):
     cog = IACog(bot)
     await bot.add_cog(cog)
     cog.process_queue.start()
+    cog.purge_expired_sessions.start()
