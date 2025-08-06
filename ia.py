@@ -394,7 +394,11 @@ class IACog(commands.Cog):
         Méthode appelée automatiquement par discord.py quand le Cog est chargé.
         Similaire à l’initialize_data() de Code B : ici on configure l’IA, etc.
         """
-        await self.initialize_ia()
+        try:
+            await self.initialize_ia()
+        except Exception as e:
+            self.logger.exception("💥 Échec d'initialisation IA : %s", e)
+            raise
 
     async def initialize_ia(self):
         """
@@ -419,15 +423,37 @@ class IACog(commands.Cog):
         Charge la clé d'API et prépare les modèles Generative AI.
         """
         load_dotenv()
-        self.api_key = os.environ["GOOGLE_API_KEY"]
-        genai.configure(api_key=self.api_key)
-        self.model_pro = genai.GenerativeModel("gemini-1.5-pro")
-        self.model_flash = genai.GenerativeModel("gemini-1.5-flash")
-        self.model_g25 = genai.GenerativeModel("gemini-2.5-pro")
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "⚠️  GOOGLE_API_KEY manquante. "
+                "Ajoute la variable d’environnement ou le champ dans .env."
+            )
+
+        genai.configure(api_key=api_key)
+        self.api_key = api_key
+
+        # Vérifier la disponibilité des modèles :
+        for model_name in ("gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.5-pro"):
+            try:
+                attr = f"model_{model_name.replace('-', '_').replace('.', '_')}"
+                setattr(self, attr, genai.GenerativeModel(model_name))
+            except genai_errors.NotFound:
+                self.logger.warning(
+                    "Modèle %s indisponible sur ce compte ↦ ignoré", model_name
+                )
 
     def _new_chat(self, model_name: str, system_prompt: str):
         model = genai.GenerativeModel(model_name)
         return model.start_chat(history=[], system_instruction=system_prompt)
+
+    async def _ask_gemini(self, chat, prompt: str) -> str:
+        loop = asyncio.get_running_loop()
+        try:
+            response = await loop.run_in_executor(None, chat.send_message, prompt)
+        except genai_errors.QuotaExceededError as e:
+            raise
+        return response.text.strip()
 
     def get_knowledge_text(self) -> str:
         """
@@ -736,9 +762,9 @@ class IACog(commands.Cog):
             session.chat = flash_chat
             self.quota_exceeded_until = time.time() + self.quota_block_duration
             try:
-                flash_chat.send_message(message.content)
+                resp = await self._ask_gemini(flash_chat, message.content)
                 await message.reply(
-                    f"⚠️ Quota Pro atteint → passage sur **Flash**.\n\n{flash_chat.last.text}",
+                    f"⚠️ Quota Pro atteint → passage sur **Flash**.\n\n{resp}",
                     mention_author=False,
                 )
             except Exception as exc:
@@ -975,8 +1001,8 @@ class IACog(commands.Cog):
         chat = self.active_chats[uid]
 
         try:
-            resp = await asyncio.to_thread(chat.send_message, message.content)
-            reply = resp.text.strip() or "(vide)"
+            resp_text = await self._ask_gemini(chat, message.content)
+            reply = resp_text or "(vide)"
 
             intention = self.detect_intention(message.content)
             possible_tones = TONE_VARIATIONS.get(intention, TONE_VARIATIONS["neutral"])
@@ -1026,9 +1052,8 @@ class IACog(commands.Cog):
         if session and not session.expired:
             session.last_activity = datetime.utcnow()
             try:
-                session.chat.send_message(message.content)
                 async with message.channel.typing():
-                    response = session.chat.last.text
+                    response = await self._ask_gemini(session.chat, message.content)
             except genai_errors.QuotaExceededError:
                 await self._handle_quota_and_retry(session, message)
                 return
