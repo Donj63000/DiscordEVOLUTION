@@ -1,8 +1,16 @@
 import types
+import asyncio
+import time
 from datetime import datetime, timedelta
 import pytest
 
-from ia import IACog, IASession
+import ia
+from ia import (
+    IACog,
+    IASession,
+    GEMINI_MODEL_PRO_25,
+    GEMINI_MODEL_FLASH_15,
+)
 
 class DummyChat:
     def __init__(self):
@@ -11,6 +19,7 @@ class DummyChat:
     def send_message(self, content):
         self.history.append(content)
         self.last.text = "reply"
+        return self.last
 
 class DummyCtx:
     def __init__(self, guild=None):
@@ -49,13 +58,13 @@ async def test_dm_session_uses_pro_model(monkeypatch):
     ctx = DummyCtx(guild=None)
     await cog.ia_start_command(ctx)
     assert ctx.author.id in cog.sessions
-    assert cog.sessions[ctx.author.id].model_name == "gemini-pro-2.5"
+    assert cog.sessions[ctx.author.id].model_name == GEMINI_MODEL_PRO_25
 
 @pytest.mark.asyncio
 async def test_quota_bascule_to_flash(monkeypatch):
     cog = IACog(bot=object())
     session = IASession(
-        model_name="gemini-pro-2.5",
+        model_name=GEMINI_MODEL_PRO_25,
         chat=DummyChat(),
         start_ts=datetime.utcnow(),
         last_activity=datetime.utcnow(),
@@ -64,7 +73,7 @@ async def test_quota_bascule_to_flash(monkeypatch):
     monkeypatch.setattr(cog, "_new_chat", lambda *a, **k: DummyChat())
     msg = DummyMessage()
     await cog._handle_quota_and_retry(session, msg)
-    assert session.model_name == "gemini-1.5-flash"
+    assert session.model_name == GEMINI_MODEL_FLASH_15
     assert "Flash" in msg.channel.last_reply
 
 @pytest.mark.asyncio
@@ -72,7 +81,7 @@ async def test_purge_expired_session_removes():
     cog = IACog(bot=object())
     past = datetime.utcnow() - timedelta(minutes=61)
     session = IASession(
-        model_name="gemini-1.5-flash",
+        model_name=GEMINI_MODEL_FLASH_15,
         chat=DummyChat(),
         start_ts=past,
         last_activity=past,
@@ -80,3 +89,47 @@ async def test_purge_expired_session_removes():
     cog.sessions[1] = session
     await cog.purge_expired_sessions()
     assert not cog.sessions
+
+
+@pytest.mark.asyncio
+async def test_missing_api_key_raises(monkeypatch):
+    cog = IACog(bot=object())
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    with pytest.raises(RuntimeError):
+        cog.configure_gemini()
+
+
+@pytest.mark.asyncio
+async def test_ask_gemini_is_non_blocking():
+    cog = IACog(bot=object())
+
+    class SlowChat:
+        def send_message(self, content):
+            time.sleep(0.2)
+            return types.SimpleNamespace(text="ok")
+
+    chat = SlowChat()
+
+    async def side_task():
+        await asyncio.sleep(0.05)
+        return "done"
+
+    task_ai = asyncio.create_task(cog._ask_gemini(chat, "hi"))
+    result = await asyncio.wait_for(side_task(), timeout=0.1)
+    assert result == "done"
+    await task_ai
+
+
+def test_new_chat_not_found(monkeypatch):
+    cog = IACog(bot=object())
+
+    class NotFound(Exception):
+        pass
+
+    def fake_model(name):
+        raise NotFound("no model")
+
+    monkeypatch.setattr(ia, "genai", types.SimpleNamespace(GenerativeModel=fake_model))
+    monkeypatch.setattr(ia, "genai_errors", types.SimpleNamespace(NotFound=NotFound))
+    with pytest.raises(RuntimeError):
+        cog._new_chat("bad-model", "sys")
