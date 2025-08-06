@@ -1,4 +1,6 @@
 import types
+import asyncio
+import time
 from datetime import datetime, timedelta
 import pytest
 
@@ -11,6 +13,7 @@ class DummyChat:
     def send_message(self, content):
         self.history.append(content)
         self.last.text = "reply"
+        return self.last
 
 class DummyCtx:
     def __init__(self, guild=None):
@@ -80,3 +83,32 @@ async def test_purge_expired_session_removes():
     cog.sessions[1] = session
     await cog.purge_expired_sessions()
     assert not cog.sessions
+
+
+@pytest.mark.asyncio
+async def test_missing_api_key_raises(monkeypatch):
+    cog = IACog(bot=object())
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    with pytest.raises(RuntimeError):
+        cog.configure_gemini()
+
+
+@pytest.mark.asyncio
+async def test_ask_gemini_is_non_blocking():
+    cog = IACog(bot=object())
+
+    class SlowChat:
+        def send_message(self, content):
+            time.sleep(0.2)
+            return types.SimpleNamespace(text="ok")
+
+    chat = SlowChat()
+
+    async def side_task():
+        await asyncio.sleep(0.05)
+        return "done"
+
+    task_ai = asyncio.create_task(cog._ask_gemini(chat, "hi"))
+    result = await asyncio.wait_for(side_task(), timeout=0.1)
+    assert result == "done"
+    await task_ai
