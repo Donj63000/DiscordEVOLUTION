@@ -5,61 +5,44 @@ import logging
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-
 from alive import keep_alive
 
-
-_bot_already_created = False
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+log = logging.getLogger("main")
 
 def create_bot() -> commands.Bot:
-    """
-    Instancie le Bot une seule fois. 
-    Si déjà créé, renvoie None pour éviter un deuxième bot.
-    """
-    global _bot_already_created
-    if _bot_already_created:
-        print("Bot déjà instancié, on ne recrée pas.")
-        return None
-
-    _bot_already_created = True
-
     load_dotenv()
-    TOKEN = os.getenv("DISCORD_TOKEN")
-    if not TOKEN:
-        raise ValueError("Le token Discord est introuvable dans .env")
-
+    if not os.getenv("DISCORD_TOKEN"):
+        raise RuntimeError("DISCORD_TOKEN manquant")
     intents = discord.Intents.default()
     intents.message_content = True
     intents.members = True
-
-
-    new_bot = commands.Bot(command_prefix="!", intents=intents)
-    return new_bot
-
+    bot = commands.Bot(command_prefix="!", intents=intents)
+    return bot
 
 bot = create_bot()
 
 @bot.event
 async def on_ready():
-    print(f"Bot connecté : {bot.user} (ID: {bot.user.id})")
+    log.info("Connecté comme %s (id:%s)", bot.user, bot.user.id)
+    try:
+        await bot.change_presence(activity=discord.Game(name="!ia pour discuter en MP"))
+    except Exception:
+        pass
 
 @bot.command(name="ping")
 async def ping_cmd(ctx):
     await ctx.send("Pong!")
 
-async def main():
-    if bot is None:
+@bot.event
+async def on_command_error(ctx, error):
+    try:
+        await ctx.reply(f"⚠️ {error.__class__.__name__}: {error}", mention_author=False)
+    except Exception:
+        pass
+    log.exception("on_command_error: %s", error)
 
-        print("Bot est None => on skip le lancement pour éviter un second process.")
-        return
-
-
-    bot.remove_command("help")
-
-
-    keep_alive()
-
-
+async def load_extensions():
     extensions = [
         "job",
         "ia",
@@ -74,29 +57,29 @@ async def main():
         "calcul",
         "defender",
         "moderation",
-        # "slash_events",  # disabled: duplicate with event_conversation
     ]
-
     for ext in extensions:
-        if ext not in bot.extensions:
-            try:
-                await bot.load_extension(ext)
-                print(f"Extension chargée: {ext}")
-            except Exception as e:
-                print(f"Erreur lors du chargement de {ext}: {e}")
-
+        try:
+            await bot.load_extension(ext)
+            log.info("Extension chargée: %s", ext)
+        except Exception:
+            log.exception("Échec de chargement de %s", ext)
+            if ext == "ia":
+                sys.exit(1)
     try:
         await bot.load_extension("event_conversation")
+        log.info("Extension chargée: event_conversation")
     except Exception:
-        logging.exception("❌ Échec load_extension")
+        log.exception("Échec load_extension event_conversation")
         sys.exit(1)
+    cmds = [c.name for c in bot.commands]
+    log.info("Commandes enregistrées: %s", cmds)
 
-    TOKEN = os.getenv("DISCORD_TOKEN")
-    await bot.start(TOKEN)
+async def main():
+    bot.remove_command("help")
+    keep_alive()
+    await load_extensions()
+    await bot.start(os.getenv("DISCORD_TOKEN"))
 
 if __name__ == "__main__":
-
-    if bot:
-        asyncio.run(main())
-    else:
-        print("Impossible de lancer main() : bot=None.")
+    asyncio.run(main())
