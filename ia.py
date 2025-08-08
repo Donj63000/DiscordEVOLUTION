@@ -599,25 +599,37 @@ class IACog(commands.Cog):
     @commands.command(name="ia")
     @commands.cooldown(1, 5, commands.BucketType.user)
     async def ia_start_command(self, ctx: commands.Context):
+        """
+        Démarre une session IA **en DM** avec l'utilisateur, quelle que soit la provenance.
+        - Clé de session: user_id
+        - Envoie un message d’accueil en DM
+        - Accuse en salon si la commande a été tapée en guilde
+        """
         async with self.session_lock:
-            key = ctx.author.id if ctx.guild is None else ctx.channel.id
             now = datetime.utcnow()
+            key = ctx.author.id  # <-- FORCÉ: session liée à l'utilisateur
 
-            if key in self.sessions and not self.sessions[key].expired:
-                self.sessions[key].last_activity = now
-                await ctx.reply(
-                    "✅ Session IA déjà active pour encore "
-                    f"{60 - int((now - self.sessions[key].start_ts).total_seconds()//60)} min.",
-                    mention_author=False,
-                )
+            # Session déjà active ?
+            sess = self.sessions.get(key)
+            if sess and not sess.expired:
+                # Rafraîchir l’horodatage d’activité
+                sess.last_activity = now
+                # Accuser en DM (prioritaire), sinon dans le contexte courant
+                try:
+                    dm = ctx.author.dm_channel or await ctx.author.create_dm()
+                    await dm.send("✅ Session IA déjà active. Tu peux continuer ici en MP.")
+                except Exception:
+                    await ctx.reply("✅ Session IA déjà active (MP).", mention_author=False)
                 return
 
-            model_name = "gemini-pro-2.5" if ctx.guild is None else "gemini-1.5-flash"
-            chat = self._new_chat(
-                model_name,
-                "Tu es l'assistant de la guilde Evolution sur Dofus retro",
-            )
+            # Choix du modèle: privilégier le 2.5 Pro si dispo (conforme à configure_gemini)
+            model_name = "gemini-2.5-pro"
+            system_prompt = "Tu es l'assistant de la guilde Evolution sur Dofus Retro."
 
+            # Créer le chat Gemini
+            chat = self._new_chat(model_name, system_prompt)
+
+            # Enregistrer la session (clé = user_id)
             self.sessions[key] = IASession(
                 model_name=model_name,
                 chat=chat,
@@ -625,16 +637,57 @@ class IACog(commands.Cog):
                 last_activity=now,
             )
 
-            await ctx.reply(
-                f"🆕 Session IA démarrée pour 60 min. Modèle : {model_name.split('-')[1].title()}",
-                mention_author=False,
-            )
+            # Essayer d’ouvrir/envoi en DM
+            try:
+                dm = ctx.author.dm_channel or await ctx.author.create_dm()
+                await dm.send(
+                    "🆕 Session IA **privée** démarrée pour 60 min.\n"
+                    "Tu peux maintenant m’écrire directement ici.\n"
+                    "_Commande pour terminer_: `!iaend`."
+                )
+            except Exception as e:
+                # DM fermés: fallback = informer en salon
+                await ctx.reply(
+                    "❗ Impossible de t’écrire en MP (DM fermés ?). "
+                    "Ouvre tes messages privés et retape `!ia`, ou réponds ici avec `!bot <message>`.",
+                    mention_author=False,
+                )
+                return
+
+            # Si la commande a été lancée en salon, on peut nettoyer le message ou accuser
+            if ctx.guild:
+                try:
+                    # facultatif: supprimer la commande pour la discrétion
+                    await ctx.message.delete()
+                except Exception:
+                    pass
+                try:
+                    await ctx.channel.send(
+                        f"📩 {ctx.author.mention} je t’ai ouvert une **conversation privée**. Regarde tes MP.",
+                        delete_after=8
+                    )
+                except Exception:
+                    pass
 
     @commands.command(name="iaend")
-    async def ia_end_command(self, ctx):
-        key = ctx.author.id if ctx.guild is None else ctx.channel.id
-        if self.sessions.pop(key, None):
-            await ctx.reply("💤 Session IA terminée.", mention_author=False)
+    async def ia_end_command(self, ctx: commands.Context):
+        """
+        Termine la session IA **privée** de l’utilisateur.
+        Clé = user_id (cohérent avec ia_start_command).
+        """
+        key = ctx.author.id
+        ended = self.sessions.pop(key, None) is not None
+
+        # Répondre en MP si possible, sinon dans le contexte courant
+        try:
+            dm = ctx.author.dm_channel or await ctx.author.create_dm()
+            await dm.send("💤 Session IA terminée.")
+            return
+        except Exception:
+            pass
+
+        if ended:
+            await ctx.reply("💤 Session IA terminée (MP).", mention_author=False)
         else:
             await ctx.reply("Aucune session IA active.", mention_author=False)
 
@@ -752,7 +805,7 @@ class IACog(commands.Cog):
                 await ctx.send(f"Erreur IA: {e}")
 
     async def _handle_quota_and_retry(self, session: IASession, message: discord.Message):
-        if session.model_name.startswith("gemini-pro"):
+        if session.model_name.endswith("-pro"):
             flash_chat = self._new_chat(
                 "gemini-1.5-flash",
                 "Tu es l'assistant de la guilde Evolution sur Dofus retro",
@@ -982,43 +1035,34 @@ class IACog(commands.Cog):
                 await ctx.send(str(e))
 
     async def handle_dm(self, message):
+        """
+        Si l'utilisateur DM le bot sans session active, créer la session et répondre.
+        Sinon, laisser la logique existante (on_message) traiter la requête.
+        """
         uid = message.author.id
 
-        if uid not in self.active_chats:
-            await message.channel.send(
-                "Tape `!ia` sur le serveur pour démarrer une session privée."
-            )
-            return
+        # Si une session existe déjà, on laisse on_message gérer (il l'a déjà fait avant d'arriver ici).
+        sess = self.sessions.get(uid)
+        if sess and not sess.expired:
+            return  # rien à faire, on_message a répondu
 
-        if self.is_spam(uid):
-            await message.channel.send("⏳ Ralentis un peu, s’il te plaît.")
-            return
-
-        if time.time() < self.quota_exceeded_until:
-            await message.channel.send("**Quota IA dépassé**, réessaie plus tard.")
-            return
-
-        chat = self.active_chats[uid]
-
+        # Pas de session: créer une session privée
         try:
-            resp_text = await self._ask_gemini(chat, message.content)
-            reply = resp_text or "(vide)"
-
-            intention = self.detect_intention(message.content)
-            possible_tones = TONE_VARIATIONS.get(intention, TONE_VARIATIONS["neutral"])
-            chosen_tone = random.choice(possible_tones)
-            if intention in ["humor","sarcasm","light_provocation","neutral"]:
-                emo = random.choice(EMOJIS_FRIENDLY)
-            else:
-                emo = random.choice(EMOJIS_FIRM)
-            reply = f"{chosen_tone} {emo}\n\n{reply}"
-
-            for chunk in chunk_list(reply):
-                await message.channel.send(chunk)
-
-            chat.last_used = time.time()
+            model_name = "gemini-2.5-pro"
+            system_prompt = "Tu es l'assistant de la guilde Evolution sur Dofus Retro."
+            chat = self._new_chat(model_name, system_prompt)
+            self.sessions[uid] = IASession(
+                model_name=model_name,
+                chat=chat,
+                start_ts=datetime.utcnow(),
+                last_activity=datetime.utcnow(),
+            )
+            await message.channel.send(
+                "🆕 Session IA **privée** démarrée (créée automatiquement). "
+                "Tu peux écrire directement ici. Pour terminer: `!iaend`."
+            )
         except Exception as e:
-            await message.channel.send(f"Erreur IA : {e}")
+            await message.channel.send(f"❗ Impossible de démarrer la session IA: {e}")
 
     def purge_sessions(self):
         now = time.time()
