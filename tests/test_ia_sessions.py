@@ -15,15 +15,6 @@ class DummyChat:
         self.last.text = "reply"
         return self.last
 
-class DummyCtx:
-    def __init__(self, guild=None):
-        self.guild = guild
-        self.author = types.SimpleNamespace(id=1)
-        self.channel = types.SimpleNamespace(id=2)
-        self.replies = []
-    async def reply(self, content, mention_author=False):
-        self.replies.append(content)
-
 class DummyChannel:
     def __init__(self):
         self.last_reply = None
@@ -36,6 +27,25 @@ class DummyChannel:
             async def __aexit__(self, exc_type, exc, tb):
                 return None
         return _T()
+
+class DummyAuthor:
+    def __init__(self):
+        self.id = 1
+        self.dm_channel = None
+
+    async def create_dm(self):
+        self.dm_channel = DummyChannel()
+        return self.dm_channel
+
+class DummyCtx:
+    def __init__(self, guild=None):
+        self.guild = guild
+        self.author = DummyAuthor()
+        self.channel = DummyChannel()
+        self.replies = []
+
+    async def reply(self, content, mention_author=False):
+        self.replies.append(content)
 
 class DummyMessage:
     def __init__(self):
@@ -52,13 +62,13 @@ async def test_dm_session_uses_pro_model(monkeypatch):
     ctx = DummyCtx(guild=None)
     await cog.ia_start_command(ctx)
     assert ctx.author.id in cog.sessions
-    assert cog.sessions[ctx.author.id].model_name == "gemini-pro-2.5"
+    assert cog.sessions[ctx.author.id].model_name == "gemini-2.5-pro"
 
 @pytest.mark.asyncio
 async def test_quota_bascule_to_flash(monkeypatch):
     cog = IACog(bot=object())
     session = IASession(
-        model_name="gemini-pro-2.5",
+        model_name="gemini-2.5-pro",
         chat=DummyChat(),
         start_ts=datetime.utcnow(),
         last_activity=datetime.utcnow(),
