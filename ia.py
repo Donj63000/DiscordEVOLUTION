@@ -1,4 +1,3 @@
-
 import os
 import time
 import logging
@@ -36,56 +35,10 @@ except Exception:
             return _levenshtein(a, b)
     Levenshtein = _Lev()  # type: ignore
 
-try:
-    import discord
-    from discord.ext import commands, tasks
-    import google.generativeai as genai
-    from google.generativeai import errors as genai_errors
-    from dotenv import load_dotenv
-except Exception:
-    import types
-    class _DummyTasks:
-        def loop(self, *a, **k):
-            def decorator(func):
-                return func
-            return decorator
-    class _DummyCommands(types.SimpleNamespace):
-        class Cog:
-            @staticmethod
-            def listener(*a, **k):
-                def decorator(func):
-                    return func
-                return decorator
-        class Bot:
-            pass
-        class BucketType:
-            user = None
-        class Context:
-            pass
-        def command(self, *a, **k):
-            def decorator(func):
-                return func
-            return decorator
-        def cooldown(self, *a, **k):
-            def decorator(func):
-                return func
-            return decorator
-        def has_permissions(self, *a, **k):
-            def decorator(func):
-                return func
-            return decorator
-        def has_role(self, *a, **k):
-            def decorator(func):
-                return func
-            return decorator
-    discord = types.SimpleNamespace(Message=object, utils=types.SimpleNamespace(get=lambda *a, **k: None))
-    commands = _DummyCommands()
-    tasks = _DummyTasks()
-    genai = None
-    load_dotenv = lambda *a, **k: None
-    class genai_errors:  # type: ignore
-        class QuotaExceededError(Exception):
-            pass
+import discord
+from discord.ext import commands, tasks
+import google.generativeai as genai
+from dotenv import load_dotenv
 
 @dataclass
 class IASession:
@@ -190,7 +143,8 @@ class IACog(commands.Cog):
         try:
             await self.initialize_ia()
         except Exception as e:
-            self.logger.exception("Init IA: %s", e)
+            if self.logger:
+                self.logger.exception("Init IA: %s", e)
             raise
 
     async def initialize_ia(self):
@@ -206,9 +160,9 @@ class IACog(commands.Cog):
 
     def configure_gemini(self):
         load_dotenv()
-        api_key = os.getenv("GOOGLE_API_KEY")
+        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise RuntimeError("GOOGLE_API_KEY manquante")
+            raise RuntimeError("Clé API Gemini manquante (GOOGLE_API_KEY ou GEMINI_API_KEY)")
         genai.configure(api_key=api_key)
         self.api_key = api_key
         try:
@@ -216,13 +170,11 @@ class IACog(commands.Cog):
         except Exception:
             try:
                 self.model_pro = genai.GenerativeModel("gemini-1.5-pro")
-            except Exception as e:
-                self.logger.warning("Aucun modèle PRO disponible: %s", e)
+            except Exception:
                 self.model_pro = None
         try:
             self.model_flash = genai.GenerativeModel("gemini-1.5-flash")
-        except Exception as e:
-            self.logger.warning("Modèle FLASH indisponible: %s", e)
+        except Exception:
             self.model_flash = None
         try:
             self.model_g25 = genai.GenerativeModel("gemini-2.5-pro")
@@ -237,9 +189,9 @@ class IACog(commands.Cog):
         loop = asyncio.get_running_loop()
         try:
             response = await loop.run_in_executor(None, chat.send_message, prompt)
-        except genai_errors.QuotaExceededError as e:
-            raise
-        return response.text.strip()
+        except Exception as e:
+            raise e
+        return getattr(response, "text", "").strip() or "(vide)"
 
     def get_knowledge_text(self) -> str:
         return (
@@ -315,14 +267,15 @@ class IACog(commands.Cog):
             r = await self.generate_content_async(self.model_pro, prompt)
             return r, "PRO"
         except Exception as e1:
-            if any(x in str(e1).lower() for x in ["429","quota","unavailable"]):
+            t = str(e1).lower()
+            if any(x in t for x in ["429", "quota", "rate", "resourceexhausted", "exceeded"]):
                 if not self.model_flash:
                     raise e1
                 try:
                     r2 = await self.generate_content_async(self.model_flash, prompt)
                     return r2, "FLASH"
                 except Exception as e2:
-                    if "429" in str(e2):
+                    if any(x in str(e2).lower() for x in ["429", "quota", "rate", "resourceexhausted", "exceeded"]):
                         self.quota_exceeded_until = time.time() + self.quota_block_duration
                     raise e2
             else:
@@ -460,7 +413,8 @@ class IACog(commands.Cog):
             else:
                 await ctx.send("Aucune réponse de l'IA.")
         except Exception as e:
-            if "429" in str(e):
+            t = str(e)
+            if any(x in t for x in ["429","quota","Rate","RESOURCE_EXHAUSTED"]):
                 await ctx.send("**Quota IA dépassé**, réessayez plus tard.")
             else:
                 await ctx.send(f"Erreur IA: {e}")
@@ -636,8 +590,8 @@ class IACog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-        c = await self.bot.get_context(message)
-        if c.valid and c.command:
+        ctx = await self.bot.get_context(message)
+        if ctx.valid and ctx.command is not None:
             await self.bot.process_commands(message)
             return
         key = message.author.id if isinstance(message.channel, discord.DMChannel) else message.channel.id
@@ -647,8 +601,12 @@ class IACog(commands.Cog):
             try:
                 async with message.channel.typing():
                     response = await self._ask_gemini(session.chat, message.content)
-            except genai_errors.QuotaExceededError:
-                await self._handle_quota_and_retry(session, message)
+            except Exception as e:
+                t = str(e).lower()
+                if any(x in t for x in ["429","quota","rate","resourceexhausted","exceeded"]):
+                    await self._handle_quota_and_retry(session, message)
+                    return
+                await message.reply(f"Erreur IA: {e}", mention_author=False)
                 return
             await message.reply(response, mention_author=False)
             return
@@ -660,11 +618,11 @@ class IACog(commands.Cog):
             if q:
                 if time.time() < self.quota_exceeded_until:
                     qlen = len(self.request_queue)
-                    await c.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
-                    self.request_queue.append((c, lambda co: self.handle_ai_request(co, q)))
+                    await ctx.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
+                    self.request_queue.append((ctx, lambda co: self.handle_ai_request(co, q)))
                     self.pending_requests = True
                     return
-                await self.handle_ai_request(c, q)
+                await self.handle_ai_request(ctx, q)
 
 async def setup(bot: commands.Bot):
     cog = IACog(bot)
