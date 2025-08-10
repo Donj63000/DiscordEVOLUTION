@@ -418,7 +418,7 @@ class JobCog(commands.Cog):
 
         if len(args) == 1 and args[0].lower() == "me":
             await self.load_from_console(ctx.guild)
-            user_jobs = self.get_user_jobs(author_id)
+            user_jobs = self.get_user_jobs(author_id, author_name)
             if not user_jobs:
                 e = discord.Embed(title="Vos métiers", description=f"{author_name}, vous n'avez aucun métier enregistré.", color=discord.Color.orange())
                 await self.send_logo_embed(ctx, e)
