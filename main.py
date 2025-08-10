@@ -8,6 +8,7 @@ import uuid
 import asyncio
 import logging
 import discord
+from importlib.util import find_spec
 from discord.ext import commands
 from dotenv import load_dotenv
 from alive import keep_alive
@@ -18,15 +19,18 @@ log = logging.getLogger("main")
 
 LOCK_TAG = "===BOTLOCK==="
 
+
 class EvoBot(commands.Bot):
     def __init__(self):
         load_dotenv()
         token = os.getenv("DISCORD_TOKEN")
         if not token:
             raise RuntimeError("DISCORD_TOKEN manquant")
+
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
+
         super().__init__(command_prefix="!", intents=intents)
         self.token = token
         self.INSTANCE_ID = os.getenv("RENDER_INSTANCE_ID") or os.getenv("INSTANCE_ID") or uuid.uuid4().hex
@@ -36,6 +40,7 @@ class EvoBot(commands.Bot):
         self._seen_ids = set()
         self._seen_order = deque()
         self._seen_max = 2048
+
         orig = self.process_commands
 
         async def _once_per_message(message):
@@ -52,12 +57,30 @@ class EvoBot(commands.Bot):
 
         self.process_commands = _once_per_message
 
+    async def _safe_load(self, ext_name: str) -> bool:
+        try:
+            await self.load_extension(ext_name)
+            logging.info("Extension chargée: %s", ext_name)
+            return True
+        except Exception as e:
+            logging.error("Échec de chargement de %s: %s", ext_name, e, exc_info=True)
+            return False
+
+    async def _load_iastaff_anywhere(self):
+        # Essaie d'abord à la racine, puis dans cogs/
+        if find_spec("iastaff") is not None and await self._safe_load("iastaff"):
+            return
+        if find_spec("cogs.iastaff") is not None and await self._safe_load("cogs.iastaff"):
+            return
+        logging.error("Extension iastaff introuvable. Assure-toi d'avoir un fichier 'iastaff.py' "
+                      "à la racine du projet (ou 'cogs/iastaff.py').")
+
     async def setup_hook(self):
         self.remove_command("help")
-        extensions = [
+
+        base_exts = [
             "job",
-            "ia",        # ← on garde l'IA publique (Gemini) telle qu'elle était
-            "iastaff",   # ← nouvelle IA Staff (OpenAI)
+            "ia",           # IA publique (Gemini) – inchangé
             "activite",
             "ticket",
             "players",
@@ -70,18 +93,18 @@ class EvoBot(commands.Bot):
             "defender",
             "moderation",
         ]
-        for ext in extensions:
-            try:
-                await self.load_extension(ext)
-                logging.info("Extension chargée: %s", ext)
-            except Exception:
-                logging.exception("Échec de chargement de %s", ext)
+
+        for ext in base_exts:
+            await self._safe_load(ext)
+
+        # Charge iastaff en prenant en compte l'endroit où le fichier a été posé
+        await self._load_iastaff_anywhere()
 
         try:
             await self.load_extension("event_conversation")
             logging.info("Extension chargée: event_conversation")
-        except Exception:
-            logging.exception("Échec load_extension event_conversation")
+        except Exception as e:
+            logging.error("Échec load_extension event_conversation: %s", e, exc_info=True)
             await self.close()
             os._exit(1)
 
@@ -106,7 +129,7 @@ class EvoBot(commands.Bot):
                     inst = parts[1]
                     try:
                         ts = int(parts[2])
-                    except:
+                    except Exception:
                         ts = 0
                     return msg, inst, ts
         return None, None, None
@@ -140,9 +163,9 @@ class EvoBot(commands.Bot):
                         try:
                             msg = await ch.fetch_message(self._lock_message_id)
                             await msg.edit(content=f"{LOCK_TAG} {self.INSTANCE_ID} {int(time.time())}")
-                        except:
+                        except Exception:
                             pass
-            except:
+            except Exception:
                 pass
             await asyncio.sleep(15)
 
@@ -157,11 +180,14 @@ class EvoBot(commands.Bot):
             self._singleton_ready = True
             asyncio.create_task(self.heartbeat_loop())
 
+
 bot = EvoBot()
+
 
 @bot.command(name="ping")
 async def ping_cmd(ctx):
     await ctx.send("Pong!")
+
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -170,6 +196,7 @@ async def on_command_error(ctx, error):
     except Exception:
         pass
     logging.exception("on_command_error: %s", error)
+
 
 if __name__ == "__main__":
     keep_alive()
