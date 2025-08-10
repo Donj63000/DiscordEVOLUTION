@@ -7,7 +7,7 @@ import re
 import unicodedata
 import tempfile
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from collections import defaultdict
 
 CONSOLE_CHANNEL_NAME = "console"
@@ -130,6 +130,9 @@ class JobCog(commands.Cog):
 
     async def cog_load(self):
         await self.initialize_data()
+        if not self.auto_prune.is_running():
+            self.auto_prune.start()
+        await self.prune_jobs()
 
     async def get_console_channel(self, guild: discord.Guild):
         return discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
@@ -237,80 +240,49 @@ class JobCog(commands.Cog):
         if updated:
             self.save_data_local()
 
-    def get_user_jobs(self, user_id: str, user_name: str = None):
-        if user_id in self.jobs_data and "jobs" in self.jobs_data[user_id]:
-            return self.jobs_data[user_id]["jobs"]
-        if user_name:
-            for key, data in self.jobs_data.items():
-                if not key.isdigit() and data.get("name", "").lower() == user_name.lower():
-                    return data.get("jobs", {})
-        return {}
+    async def compute_member_union_ids(self):
+        union_ids = set()
+        for g in self.bot.guilds:
+            for m in g.members:
+                union_ids.add(m.id)
+            try:
+                async for m in g.fetch_members(limit=None):
+                    union_ids.add(m.id)
+            except:
+                pass
+        return union_ids
 
-    def resolve_job_name(self, input_name: str):
-        n = normalize_string(input_name)
-        if n in ALIAS_LOOKUP:
-            return ALIAS_LOOKUP[n]
-        if n in CANON_LOOKUP:
-            return CANON_LOOKUP[n]
-        for canon in CANONICAL_JOBS_ORDERED:
-            if n == normalize_string(canon):
-                return canon
-        for uid, data in self.jobs_data.items():
-            for jn in data.get("jobs", {}).keys():
-                if n == normalize_string(jn):
-                    return jn
-        return None
+    async def prune_jobs(self):
+        union_ids = await self.compute_member_union_ids()
+        to_remove = []
+        for key in list(self.jobs_data.keys()):
+            if key.isdigit():
+                if int(key) not in union_ids:
+                    to_remove.append(key)
+            else:
+                found = False
+                for m in self.bot.get_all_members():
+                    if m.display_name.lower() == key.lower() or m.name.lower() == key.lower():
+                        found = True
+                        break
+                if not found:
+                    to_remove.append(key)
+        removed = 0
+        for k in to_remove:
+            del self.jobs_data[k]
+            removed += 1
+        if removed > 0:
+            self.save_data_local()
+            for gg in self.bot.guilds:
+                ch = await self.get_console_channel(gg)
+                if ch:
+                    await self.dump_data_to_console(gg)
+                    break
+        return removed
 
-    def suggest_similar_jobs(self, input_name: str, limit=6):
-        n = normalize_string(input_name)
-        pool = set(CANONICAL_JOBS_ORDERED)
-        for uid, data in self.jobs_data.items():
-            for jn in data.get("jobs", {}).keys():
-                pool.add(jn)
-        scored = []
-        for j in pool:
-            d = levenshtein(n, normalize_string(j))
-            scored.append((d, j))
-        scored.sort(key=lambda x: (x[0], normalize_string(x[1])))
-        return [j for _, j in scored[:limit]]
-
-    async def confirm_job_creation_flow(self, ctx, job_name: str, level: int, author_id: str, author_name: str):
-        if level < JOB_MIN_LEVEL or level > JOB_MAX_LEVEL:
-            e = discord.Embed(title="Niveau invalide", description=f"Le niveau doit être compris entre {JOB_MIN_LEVEL} et {JOB_MAX_LEVEL}.", color=discord.Color.red())
-            await self.send_logo_embed(ctx, e)
-            return
-        suggestions = self.suggest_similar_jobs(job_name)
-        if suggestions:
-            suggestion_text = "\n".join(f"- {s}" for s in suggestions)
-            prompt = f"Le métier **{job_name}** n'existe pas encore.\nSuggestions proches :\n{suggestion_text}\n\nTapez **oui** pour créer ce nouveau métier, **non** ou **cancel** pour annuler."
-        else:
-            prompt = f"Le métier **{job_name}** n'existe pas encore.\nTapez **oui** pour créer, **non** ou **cancel** pour annuler."
-        e = discord.Embed(title="Confirmation", description=prompt, color=discord.Color.orange())
-        await self.send_logo_embed(ctx, e)
-
-        def check(m: discord.Message):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["oui", "non", "cancel"]
-
-        try:
-            reply = await self.bot.wait_for("message", timeout=30.0, check=check)
-        except:
-            e = discord.Embed(title="Commande annulée", description="Temps écoulé, commande annulée.", color=discord.Color.red())
-            await self.send_logo_embed(ctx, e)
-            return
-
-        if reply.content.lower() in ["cancel", "non"]:
-            e = discord.Embed(title="Commande terminée", description="Action annulée.", color=discord.Color.light_grey())
-            await self.send_logo_embed(ctx, e)
-            return
-
-        if author_id not in self.jobs_data:
-            self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
-        self.jobs_data[author_id]["name"] = author_name
-        self.jobs_data[author_id]["jobs"][job_name] = level
-        self.save_data_local()
-        await self.dump_data_to_console(ctx.guild)
-        e = discord.Embed(title="Nouveau métier créé", description=f"Le métier **{job_name}** a été créé et défini au niveau {level} pour {author_name}.", color=discord.Color.green())
-        await self.send_logo_embed(ctx, e)
+    @tasks.loop(hours=6)
+    async def auto_prune(self):
+        await self.prune_jobs()
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
@@ -339,6 +311,19 @@ class JobCog(commands.Cog):
         author_id = str(author.id)
         author_name = author.display_name
 
+        if len(args) == 1 and args[0].lower() == "prune":
+            if not any(r.name == STAFF_ROLE_NAME for r in author.roles):
+                e = discord.Embed(title="Accès refusé", description="Commande réservée au Staff.", color=discord.Color.red())
+                await self.send_logo_embed(ctx, e)
+                return
+            removed = await self.prune_jobs()
+            if removed > 0:
+                e = discord.Embed(title="Nettoyage effectué", description=f"{removed} joueurs retirés car absents du serveur.", color=discord.Color.green())
+            else:
+                e = discord.Embed(title="Aucun changement", description="Aucun joueur à retirer.", color=discord.Color.blurple())
+            await self.send_logo_embed(ctx, e)
+            return
+
         if len(args) == 0:
             usage_msg = (
                 "**Utilisation de la commande !job :**\n"
@@ -350,6 +335,7 @@ class JobCog(commands.Cog):
                 "- `!job <job_name> <niveau>` : Ajouter ou mettre à jour votre métier (nom multi-mots accepté).\n"
                 "- `!job del <job_name>` : Supprimer l'un de vos métiers.\n"
                 "- `!job add <job_name> <niveau>` : Alias d'ajout/mise à jour.\n"
+                "- `!job prune` : Retirer automatiquement les joueurs qui ne sont plus sur le serveur.\n"
             )
             e = discord.Embed(title="Aide commande !job", description=usage_msg, color=0x00ffff)
             await self.send_logo_embed(ctx, e)
@@ -372,6 +358,9 @@ class JobCog(commands.Cog):
             await self.load_from_console(ctx.guild)
             known = list(CANONICAL_JOBS_ORDERED)
             extra = set()
+            for uid, data in self.jobs_data.items():
+                for jn in data.get("jobs", {}).items():
+                    pass
             for uid, data in self.jobs_data.items():
                 for jn in data.get("jobs", {}).keys():
                     if jn not in known:
@@ -590,6 +579,7 @@ class JobCog(commands.Cog):
             "• `!job <job_name> <niveau>` : Ajouter ou mettre à jour votre métier\n"
             "• `!job del <job_name>` : Retirer un métier\n"
             "• `!job add <job_name> <niveau>` : Alias de la commande d'ajout\n"
+            "• `!job prune` : Retirer automatiquement les joueurs qui ne sont plus sur le serveur\n"
         )
         e = discord.Embed(title="Erreur de syntaxe", description=usage_msg, color=discord.Color.red())
         await self.send_logo_embed(ctx, e)
