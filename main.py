@@ -54,6 +54,7 @@ class EvoBot(commands.Bot):
         self.remove_command("help")
         extensions = [
             "job",
+            "ia",
             "iastaff",
             "activite",
             "ticket",
