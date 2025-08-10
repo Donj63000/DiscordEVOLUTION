@@ -1,59 +1,57 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import json
 import logging
+import tempfile
+import os
 import discord
 
-log = logging.getLogger(__name__)
-CODEBLOCK = "```stats"
-
+log = logging.getLogger("utils.stats_store")
 
 class StatsStore:
-    """Persist stats data in a pinned message inside #console."""
-
-    def __init__(self, bot: discord.Client, file_path: str, channel_name: str = "console"):
+    def __init__(self, bot, channel_name="console"):
         self.bot = bot
-        self.file_path = file_path
         self.channel_name = channel_name
-        self._msg: discord.Message | None = None
+        self._msg = None
 
-    async def _channel(self) -> discord.TextChannel | None:
-        chan = discord.utils.get(self.bot.get_all_channels(), name=self.channel_name)
-        if chan is None:
-            log.warning("Canal #%s introuvable – persistance désactivée", self.channel_name)
-        return chan
-
-    async def load(self) -> dict | None:
-        chan = await self._channel()
-        if chan is None:
-            return None
-        async for msg in chan.history(limit=200):
-            if msg.author == self.bot.user and msg.content.startswith(CODEBLOCK):
-                try:
-                    data = json.loads(msg.content[len(CODEBLOCK):].strip("` \n"))
-                    self._msg = msg
-                    return data
-                except Exception:
-                    log.warning("Message stats mal formé (id=%s)", msg.id)
+    async def _get_channel(self):
+        for g in self.bot.guilds:
+            ch = discord.utils.get(g.text_channels, name=self.channel_name)
+            if ch:
+                return ch
         return None
 
-    async def save(self, data: dict) -> None:
-        chan = await self._channel()
-        if chan is None:
+    async def save(self, data):
+        chan = await self._get_channel()
+        if not chan:
+            log.warning("Canal #console introuvable – persistance désactivée")
             return
-        json_block = f"{CODEBLOCK}\n{json.dumps(data, indent=2, ensure_ascii=False)}\n```"
-        if self._msg is None:
-            self._msg = await chan.send(json_block)
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        content = f"```json\n{payload}\n```"
+        if len(content) <= 2000:
             try:
-                await self._msg.pin(reason="Persistance statistiques")
-            except discord.Forbidden:
-                log.warning("Impossible d'épingler le message #console (permissions).")
-        else:
-            try:
-                await self._msg.edit(content=json_block)
-            except discord.NotFound:
-                self._msg = None
-                return await self.save(data)
+                if self._msg:
+                    await self._msg.edit(content=content)
+                else:
+                    self._msg = await chan.send(content)
+            except:
+                self._msg = await chan.send(content)
+            return
+        fd, path = tempfile.mkstemp(suffix=".json")
         try:
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            log.warning("Erreur sauvegarde fichier stats: %s", e)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            if self._msg:
+                try:
+                    await self._msg.delete()
+                except:
+                    pass
+                self._msg = None
+            msg = await chan.send("===BOTSTATS=== (fichier)", file=discord.File(path, filename="stats_data.json"))
+            self._msg = msg
+        finally:
+            try:
+                os.remove(path)
+            except:
+                pass
