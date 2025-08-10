@@ -40,7 +40,7 @@ class IAStaff(commands.Cog):
             body["model"] = self.model
         return body
 
-    @commands.command(name="iastaff")
+    @commands.command(name="iastaff", aliases=["staffia"])
     @commands.has_role(STAFF_ROLE_NAME)
     async def iastaff(self, ctx, *, prompt: str):
         async with ctx.typing():
@@ -48,18 +48,6 @@ class IAStaff(commands.Cog):
                 req = self._build_request(prompt)
                 resp = await self.client.responses.create(**req)
                 text = getattr(resp, "output_text", None) or ""
-                if not text:
-                    try:
-                        outputs = getattr(resp, "output", []) or []
-                        fragments = []
-                        for out in outputs:
-                            for c in getattr(out, "content", []) or []:
-                                t = getattr(c, "text", None)
-                                if t:
-                                    fragments.append(t)
-                        text = "\n".join(fragments)
-                    except Exception:
-                        text = ""
             except Exception as e:
                 await ctx.reply(f"❌ Erreur API: {e}", mention_author=False)
                 return
@@ -72,8 +60,7 @@ class IAStaff(commands.Cog):
             if len(chunks) > 1:
                 title += f" ({i}/{len(chunks)})"
             emb = discord.Embed(title=title, description=chunk, color=discord.Color.teal())
-            footer_model = self.model if self.prompt_id is None else f"prompt {self.prompt_id} v{self.prompt_version}"
-            emb.set_footer(text=f"Modèle: {footer_model}")
+            emb.set_footer(text=f"Modèle: {self.model}")
             await ctx.send(embed=emb)
 
 async def setup(bot: commands.Bot):
