@@ -384,23 +384,20 @@ class JobCog(commands.Cog):
                 disp_name = data.get("name", f"ID {uid}")
                 for jn, lv in data.get("jobs", {}).items():
                     jobs_map[jn].append((disp_name, lv))
-            if not jobs_map:
-                await ctx.send("Aucun métier enregistré pour l'instant.")
-                return
-            ordered_names = []
-            for j in CANONICAL_JOBS_ORDERED:
-                if j in jobs_map:
-                    ordered_names.append(j)
+
+            ordered_names = list(CANONICAL_JOBS_ORDERED)
             for j in sorted([n for n in jobs_map.keys() if n not in CANONICAL_JOBS_ORDERED], key=lambda x: normalize_string(x)):
                 ordered_names.append(j)
+
             embed_count = 0
             for chunk in chunk_list(ordered_names, 25):
                 embed_count += 1
                 e = discord.Embed(title=f"Liste complète des métiers (part {embed_count})", color=discord.Color.blurple())
                 for jn in chunk:
                     listing = ""
-                    for (player_name, lv) in sorted(jobs_map[jn], key=lambda x: normalize_string(x[0])):
-                        listing += f"- **{player_name}** : {lv}\n"
+                    if jn in jobs_map:
+                        for (player_name, lv) in sorted(jobs_map[jn], key=lambda x: normalize_string(x[0])):
+                            listing += f"- **{player_name}** : {lv}\n"
                     e.add_field(name=jn, value=listing or "—", inline=False)
                 await ctx.send(embed=e)
             return
@@ -581,5 +578,7 @@ class JobCog(commands.Cog):
         await ctx.send(f"Salon console nettoyé, {deleted_count} messages supprimés.")
 
 async def setup(bot: commands.Bot):
-    if bot.get_cog("JobCog") is None:
-        await bot.add_cog(JobCog(bot))
+    if getattr(bot, "_job_cog_loaded", False):
+        return
+    await bot.add_cog(JobCog(bot))
+    bot._job_cog_loaded = True
