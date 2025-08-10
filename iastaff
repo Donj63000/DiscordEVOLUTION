@@ -33,16 +33,13 @@ class IAStaff(commands.Cog):
         self.prompt_version = os.getenv("OPENAI_STAFF_PROMPT_VERSION", DEFAULT_PROMPT_VERSION)
 
     def _build_request(self, user_text: str):
-        body = {"input": user_text}
         if self.prompt_id:
-            body["prompt"] = {"id": self.prompt_id, "version": self.prompt_version}
-        else:
-            body["model"] = self.model
-        return body
+            return {"prompt": {"id": self.prompt_id, "version": self.prompt_version}, "input": user_text}
+        return {"model": self.model, "input": user_text}
 
     @commands.command(name="iastaff", aliases=["staffia"])
     @commands.has_role(STAFF_ROLE_NAME)
-    async def iastaff(self, ctx, *, prompt: str):
+    async def staffia(self, ctx, *, prompt: str):
         async with ctx.typing():
             try:
                 req = self._build_request(prompt)
