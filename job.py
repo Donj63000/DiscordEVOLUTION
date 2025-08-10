@@ -15,6 +15,8 @@ DATA_FILE = os.path.join(os.path.dirname(__file__), "jobs_data.json")
 STAFF_ROLE_NAME = "Staff"
 JOB_MIN_LEVEL = 1
 JOB_MAX_LEVEL = 100
+LOGO_FILENAME = "metier.png"
+LOGO_PATH = os.path.join(os.path.dirname(__file__), LOGO_FILENAME)
 
 def normalize_string(s: str) -> str:
     s = s.replace("’", "'")
@@ -131,6 +133,17 @@ class JobCog(commands.Cog):
 
     async def get_console_channel(self, guild: discord.Guild):
         return discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+
+    def _logo_embed(self, embed: discord.Embed) -> discord.Embed:
+        if os.path.exists(LOGO_PATH):
+            embed.set_thumbnail(url=f"attachment://{LOGO_FILENAME}")
+        return embed
+
+    async def send_logo_embed(self, ctx, embed: discord.Embed):
+        if os.path.exists(LOGO_PATH):
+            await ctx.send(embed=self._logo_embed(embed), file=discord.File(LOGO_PATH, filename=LOGO_FILENAME))
+        else:
+            await ctx.send(embed=embed)
 
     async def load_from_console(self, guild: discord.Guild):
         ch = await self.get_console_channel(guild)
@@ -263,19 +276,17 @@ class JobCog(commands.Cog):
 
     async def confirm_job_creation_flow(self, ctx, job_name: str, level: int, author_id: str, author_name: str):
         if level < JOB_MIN_LEVEL or level > JOB_MAX_LEVEL:
-            await ctx.send(f"Le niveau doit être compris entre {JOB_MIN_LEVEL} et {JOB_MAX_LEVEL}.")
+            e = discord.Embed(title="Niveau invalide", description=f"Le niveau doit être compris entre {JOB_MIN_LEVEL} et {JOB_MAX_LEVEL}.", color=discord.Color.red())
+            await self.send_logo_embed(ctx, e)
             return
         suggestions = self.suggest_similar_jobs(job_name)
         if suggestions:
             suggestion_text = "\n".join(f"- {s}" for s in suggestions)
-            prompt = (
-                f"Le métier **{job_name}** n'existe pas encore.\n"
-                f"Suggestions proches :\n{suggestion_text}\n\n"
-                f"Tapez **oui** pour créer ce nouveau métier, **non** ou **cancel** pour annuler."
-            )
+            prompt = f"Le métier **{job_name}** n'existe pas encore.\nSuggestions proches :\n{suggestion_text}\n\nTapez **oui** pour créer ce nouveau métier, **non** ou **cancel** pour annuler."
         else:
             prompt = f"Le métier **{job_name}** n'existe pas encore.\nTapez **oui** pour créer, **non** ou **cancel** pour annuler."
-        await ctx.send(prompt)
+        e = discord.Embed(title="Confirmation", description=prompt, color=discord.Color.orange())
+        await self.send_logo_embed(ctx, e)
 
         def check(m: discord.Message):
             return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["oui", "non", "cancel"]
@@ -283,11 +294,13 @@ class JobCog(commands.Cog):
         try:
             reply = await self.bot.wait_for("message", timeout=30.0, check=check)
         except:
-            await ctx.send("Temps écoulé, commande annulée.")
+            e = discord.Embed(title="Commande annulée", description="Temps écoulé, commande annulée.", color=discord.Color.red())
+            await self.send_logo_embed(ctx, e)
             return
 
         if reply.content.lower() in ["cancel", "non"]:
-            await ctx.send("Commande terminée.")
+            e = discord.Embed(title="Commande terminée", description="Action annulée.", color=discord.Color.light_grey())
+            await self.send_logo_embed(ctx, e)
             return
 
         if author_id not in self.jobs_data:
@@ -296,7 +309,8 @@ class JobCog(commands.Cog):
         self.jobs_data[author_id]["jobs"][job_name] = level
         self.save_data_local()
         await self.dump_data_to_console(ctx.guild)
-        await ctx.send(embed=discord.Embed(title="Nouveau métier créé", description=f"Le métier **{job_name}** a été créé et défini au niveau {level} pour {author_name}.", color=discord.Color.green()))
+        e = discord.Embed(title="Nouveau métier créé", description=f"Le métier **{job_name}** a été créé et défini au niveau {level} pour {author_name}.", color=discord.Color.green())
+        await self.send_logo_embed(ctx, e)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
@@ -337,19 +351,21 @@ class JobCog(commands.Cog):
                 "- `!job del <job_name>` : Supprimer l'un de vos métiers.\n"
                 "- `!job add <job_name> <niveau>` : Alias d'ajout/mise à jour.\n"
             )
-            await ctx.send(embed=discord.Embed(title="Aide commande !job", description=usage_msg, color=0x00ffff))
+            e = discord.Embed(title="Aide commande !job", description=usage_msg, color=0x00ffff)
+            await self.send_logo_embed(ctx, e)
             return
 
         if len(args) == 1 and args[0].lower() == "me":
             await self.load_from_console(ctx.guild)
             user_jobs = self.get_user_jobs(author_id)
             if not user_jobs:
-                await ctx.send(embed=discord.Embed(title="Vos métiers", description=f"{author_name}, vous n'avez aucun métier enregistré.", color=discord.Color.orange()))
+                e = discord.Embed(title="Vos métiers", description=f"{author_name}, vous n'avez aucun métier enregistré.", color=discord.Color.orange())
+                await self.send_logo_embed(ctx, e)
             else:
-                emb = discord.Embed(title=f"Métiers de {author_name}", color=discord.Color.green())
+                e = discord.Embed(title=f"Métiers de {author_name}", color=discord.Color.green())
                 for job_name, lvl in sorted(user_jobs.items(), key=lambda kv: normalize_string(kv[0])):
-                    emb.add_field(name=job_name, value=f"Niveau {lvl}", inline=True)
-                await ctx.send(embed=emb)
+                    e.add_field(name=job_name, value=f"Niveau {lvl}", inline=True)
+                await self.send_logo_embed(ctx, e)
             return
 
         if len(args) == 2 and args[0].lower() == "liste" and args[1].lower() == "metier":
@@ -384,7 +400,7 @@ class JobCog(commands.Cog):
                     for i, c in enumerate(parts, start=1):
                         embeds.append(discord.Embed(title=f"{title} (part {i})", description=c, color=discord.Color.purple()))
             for e in embeds:
-                await ctx.send(embed=e)
+                await self.send_logo_embed(ctx, e)
             return
 
         if len(args) == 1 and args[0].lower() == "liste":
@@ -407,7 +423,7 @@ class JobCog(commands.Cog):
                         for (player_name, lv) in sorted(jobs_map[jn], key=lambda x: normalize_string(x[0])):
                             listing += f"- **{player_name}** : {lv}\n"
                     e.add_field(name=jn, value=listing or "—", inline=False)
-                await ctx.send(embed=e)
+                await self.send_logo_embed(ctx, e)
             return
 
         if len(args) >= 3 and args[0].lower() == "add":
@@ -417,10 +433,12 @@ class JobCog(commands.Cog):
             try:
                 level_int = int(level_str)
             except ValueError:
-                await ctx.send("Syntaxe invalide. Exemple : `!job add Grand Sculpteur 100`.")
+                e = discord.Embed(title="Syntaxe invalide", description="Exemple : `!job add Grand Sculpteur 100`.", color=discord.Color.red())
+                await self.send_logo_embed(ctx, e)
                 return
             if level_int < JOB_MIN_LEVEL or level_int > JOB_MAX_LEVEL:
-                await ctx.send(f"Le niveau doit être compris entre {JOB_MIN_LEVEL} et {JOB_MAX_LEVEL}.")
+                e = discord.Embed(title="Niveau invalide", description=f"Le niveau doit être compris entre {JOB_MIN_LEVEL} et {JOB_MAX_LEVEL}.", color=discord.Color.red())
+                await self.send_logo_embed(ctx, e)
                 return
             canonical = self.resolve_job_name(job_input)
             if canonical is None:
@@ -436,7 +454,8 @@ class JobCog(commands.Cog):
             warn = ""
             if canonical in SPECIALIZATION_SET and not any(b in self.jobs_data[author_id]["jobs"] for b in SPECIALIZATION_ALLOWED_BASE):
                 warn = "\n⚠️ Vous n'avez aucun métier de base associé à cette spécialisation."
-            await ctx.send(embed=discord.Embed(title="Mise à jour du métier", description=desc + warn, color=discord.Color.green()))
+            e = discord.Embed(title="Mise à jour du métier", description=desc + warn, color=discord.Color.green())
+            await self.send_logo_embed(ctx, e)
             return
 
         if len(args) >= 2 and args[0].lower() == "del":
@@ -444,16 +463,19 @@ class JobCog(commands.Cog):
             job_input = " ".join(args[1:])
             canonical = self.resolve_job_name(job_input)
             if canonical is None:
-                await ctx.send(f"Le métier `{job_input}` n'existe pas.")
+                e = discord.Embed(title="Métier introuvable", description=f"Le métier `{job_input}` n'existe pas.", color=discord.Color.red())
+                await self.send_logo_embed(ctx, e)
                 return
             user_jobs = self.get_user_jobs(author_id, author_name)
             if canonical not in user_jobs:
-                await ctx.send(f"Vous n'avez pas le métier {canonical}.")
+                e = discord.Embed(title="Impossible", description=f"Vous n'avez pas le métier {canonical}.", color=discord.Color.orange())
+                await self.send_logo_embed(ctx, e)
                 return
             del self.jobs_data[author_id]["jobs"][canonical]
             self.save_data_local()
             await self.dump_data_to_console(ctx.guild)
-            await ctx.send(f"Le métier {canonical} a été supprimé pour {author_name}.")
+            e = discord.Embed(title="Métier supprimé", description=f"Le métier {canonical} a été supprimé pour {author_name}.", color=discord.Color.red())
+            await self.send_logo_embed(ctx, e)
             return
 
         if len(args) >= 2 and args[0].lower() not in ["liste", "me", "add", "del"]:
@@ -466,7 +488,8 @@ class JobCog(commands.Cog):
                 pass
             else:
                 if level_int < JOB_MIN_LEVEL or level_int > JOB_MAX_LEVEL:
-                    await ctx.send(f"Le niveau doit être compris entre {JOB_MIN_LEVEL} et {JOB_MAX_LEVEL}.")
+                    e = discord.Embed(title="Niveau invalide", description=f"Le niveau doit être compris entre {JOB_MIN_LEVEL} et {JOB_MAX_LEVEL}.", color=discord.Color.red())
+                    await self.send_logo_embed(ctx, e)
                     return
                 canonical = self.resolve_job_name(job_input)
                 if canonical is None:
@@ -481,7 +504,8 @@ class JobCog(commands.Cog):
                     warn = ""
                     if canonical in SPECIALIZATION_SET and not any(b in author_jobs["jobs"] for b in SPECIALIZATION_ALLOWED_BASE):
                         warn = "\n⚠️ Vous n'avez aucun métier de base associé à cette spécialisation."
-                    await ctx.send(embed=discord.Embed(title="Mise à jour du métier", description=f"Le métier **{canonical}** (initialement demandé : `{job_input}`) est maintenant défini au niveau **{level_int}** pour **{author_name}**." + warn, color=discord.Color.green()))
+                    e = discord.Embed(title="Mise à jour du métier", description=f"Le métier **{canonical}** (initialement demandé : `{job_input}`) est maintenant défini au niveau **{level_int}** pour **{author_name}**." + warn, color=discord.Color.green())
+                    await self.send_logo_embed(ctx, e)
                 return
 
         if len(args) == 1:
@@ -495,12 +519,13 @@ class JobCog(commands.Cog):
                 user_jobs = self.get_user_jobs(mention_id)
                 disp = self.jobs_data[mention_id].get("name", f"ID {mention_id}")
                 if not user_jobs:
-                    await ctx.send(f"{disp} n'a aucun métier enregistré.")
+                    e = discord.Embed(title="Aucun métier", description=f"{disp} n'a aucun métier enregistré.", color=discord.Color.orange())
+                    await self.send_logo_embed(ctx, e)
                 else:
                     e = discord.Embed(title=f"Métiers de {disp}", color=discord.Color.gold())
                     for jn, lv in sorted(user_jobs.items(), key=lambda kv: normalize_string(kv[0])):
                         e.add_field(name=jn, value=f"Niveau {lv}", inline=True)
-                    await ctx.send(embed=e)
+                    await self.send_logo_embed(ctx, e)
                 return
 
             found_user_id = None
@@ -513,12 +538,13 @@ class JobCog(commands.Cog):
             if found_user_id:
                 user_jobs = self.get_user_jobs(found_user_id)
                 if not user_jobs:
-                    await ctx.send(f"{found_user_name} n'a aucun métier enregistré.")
+                    e = discord.Embed(title="Aucun métier", description=f"{found_user_name} n'a aucun métier enregistré.", color=discord.Color.orange())
+                    await self.send_logo_embed(ctx, e)
                 else:
                     e = discord.Embed(title=f"Métiers de {found_user_name}", color=discord.Color.gold())
                     for jn, lv in sorted(user_jobs.items(), key=lambda kv: normalize_string(kv[0])):
                         e.add_field(name=jn, value=f"Niveau {lv}", inline=True)
-                    await ctx.send(embed=e)
+                    await self.send_logo_embed(ctx, e)
                 return
 
             job_map = defaultdict(list)
@@ -535,21 +561,23 @@ class JobCog(commands.Cog):
                 suggestions = self.suggest_similar_jobs(query)
                 if suggestions:
                     s = "\n".join(f"• {x}" for x in suggestions)
-                    await ctx.send(f"Aucun joueur nommé **{query}**. Métiers proches :\n{s}")
+                    e = discord.Embed(title="Aucun résultat", description=f"Aucun joueur nommé **{query}**. Métiers proches :\n{s}", color=discord.Color.orange())
+                    await self.send_logo_embed(ctx, e)
                 else:
-                    await ctx.send(f"Aucun joueur nommé **{query}** et aucun métier similaire.")
+                    e = discord.Embed(title="Aucun résultat", description=f"Aucun joueur nommé **{query}** et aucun métier similaire.", color=discord.Color.red())
+                    await self.send_logo_embed(ctx, e)
                 return
             sorted_matches = sorted(matching_jobs, key=lambda x: (x not in CANONICAL_JOBS_ORDERED, normalize_string(x)))
             chunk_idx = 0
             for chunk in chunk_list(sorted_matches, 25):
                 chunk_idx += 1
-                emb = discord.Embed(title=f"Résultats de la recherche de métier (part {chunk_idx})", description=f"Recherche : {query}", color=discord.Color.blue())
+                e = discord.Embed(title=f"Résultats de la recherche de métier (part {chunk_idx})", description=f"Recherche : {query}", color=discord.Color.blue())
                 for jn in chunk:
                     listing = ""
                     for (player, lv) in sorted(job_map.get(jn, []), key=lambda x: normalize_string(x[0])):
                         listing += f"- **{player}** : {lv}\n"
-                    emb.add_field(name=jn, value=listing or "—", inline=False)
-                await ctx.send(embed=emb)
+                    e.add_field(name=jn, value=listing or "—", inline=False)
+                await self.send_logo_embed(ctx, e)
             return
 
         usage_msg = (
@@ -563,20 +591,24 @@ class JobCog(commands.Cog):
             "• `!job del <job_name>` : Retirer un métier\n"
             "• `!job add <job_name> <niveau>` : Alias de la commande d'ajout\n"
         )
-        await ctx.send(embed=discord.Embed(title="Erreur de syntaxe", description=usage_msg, color=discord.Color.red()))
+        e = discord.Embed(title="Erreur de syntaxe", description=usage_msg, color=discord.Color.red())
+        await self.send_logo_embed(ctx, e)
 
     @commands.command(name="clear")
     @commands.has_role(STAFF_ROLE_NAME)
     async def clear_console_command(self, ctx, channel_name=None):
         if not channel_name:
-            await ctx.send("Utilisation : `!clear console`")
+            e = discord.Embed(title="Utilisation", description="`!clear console`", color=discord.Color.orange())
+            await self.send_logo_embed(ctx, e)
             return
         if channel_name.lower() != "console":
-            await ctx.send("Pour l'instant, seule la commande `!clear console` est disponible.")
+            e = discord.Embed(title="Commande limitée", description="Pour l'instant, seule la commande `!clear console` est disponible.", color=discord.Color.orange())
+            await self.send_logo_embed(ctx, e)
             return
         channel = await self.get_console_channel(ctx.guild)
         if not channel:
-            await ctx.send("Le salon console n'existe pas.")
+            e = discord.Embed(title="Introuvable", description="Le salon console n'existe pas.", color=discord.Color.red())
+            await self.send_logo_embed(ctx, e)
             return
         deleted_count = 0
         async for msg in channel.history(limit=None, oldest_first=True):
@@ -585,7 +617,8 @@ class JobCog(commands.Cog):
                 deleted_count += 1
             except:
                 pass
-        await ctx.send(f"Salon console nettoyé, {deleted_count} messages supprimés.")
+        e = discord.Embed(title="Nettoyage effectué", description=f"Salon console nettoyé, {deleted_count} messages supprimés.", color=discord.Color.green())
+        await self.send_logo_embed(ctx, e)
 
 async def setup(bot: commands.Bot):
     if getattr(bot, "_job_cog_loaded", False):
