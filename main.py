@@ -17,88 +17,133 @@ log = logging.getLogger("main")
 
 LOCK_TAG = "===BOTLOCK==="
 
-def create_bot() -> commands.Bot:
-    load_dotenv()
-    if not os.getenv("DISCORD_TOKEN"):
-        raise RuntimeError("DISCORD_TOKEN manquant")
-    intents = discord.Intents.default()
-    intents.message_content = True
-    intents.members = True
-    bot = commands.Bot(command_prefix="!", intents=intents)
-    return bot
+class EvoBot(commands.Bot):
+    def __init__(self):
+        load_dotenv()
+        token = os.getenv("DISCORD_TOKEN")
+        if not token:
+            raise RuntimeError("DISCORD_TOKEN manquant")
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        super().__init__(command_prefix="!", intents=intents)
+        self.token = token
+        self.INSTANCE_ID = os.getenv("RENDER_INSTANCE_ID") or os.getenv("INSTANCE_ID") or uuid.uuid4().hex
+        self._singleton_ready = False
+        self._lock_channel_id = None
+        self._lock_message_id = None
+        orig = self.process_commands
+        async def _once_per_message(message):
+            if getattr(message, "_cmds_done", False):
+                return
+            message._cmds_done = True
+            return await orig(message)
+        self.process_commands = _once_per_message
 
-bot = create_bot()
-bot.INSTANCE_ID = os.getenv("RENDER_INSTANCE_ID") or os.getenv("INSTANCE_ID") or uuid.uuid4().hex
-bot._singleton_ready = False
-bot._lock_channel_id = None
-bot._lock_message_id = None
-
-async def find_console_channel():
-    for g in bot.guilds:
-        ch = discord.utils.get(g.text_channels, name="console")
-        if ch:
-            return ch
-    return None
-
-async def parse_latest_lock(ch: discord.TextChannel):
-    async for msg in ch.history(limit=50, oldest_first=False):
-        if msg.author == bot.user and msg.content.startswith(LOCK_TAG):
-            parts = msg.content.split()
-            if len(parts) >= 3:
-                inst = parts[1]
-                try:
-                    ts = int(parts[2])
-                except:
-                    ts = 0
-                return msg, inst, ts
-    return None, None, None
-
-async def acquire_singleton():
-    ch = await find_console_channel()
-    if not ch:
-        return True
-    msg, inst, ts = await parse_latest_lock(ch)
-    now = int(time.time())
-    if msg and inst and inst != bot.INSTANCE_ID and now - ts <= 120:
-        return False
-    my = await ch.send(f"{LOCK_TAG} {bot.INSTANCE_ID} {now}")
-    bot._lock_channel_id = ch.id
-    bot._lock_message_id = my.id
-    last, inst2, ts2 = await parse_latest_lock(ch)
-    if last and last.id != my.id:
-        return False
-    return True
-
-async def heartbeat_loop():
-    while not bot.is_closed():
+    async def setup_hook(self):
+        self.remove_command("help")
+        extensions = [
+            "job",
+            "ia",
+            "activite",
+            "ticket",
+            "players",
+            "sondage",
+            "stats",
+            "help",
+            "welcome",
+            "entree",
+            "calcul",
+            "defender",
+            "moderation",
+        ]
+        for ext in extensions:
+            try:
+                await self.load_extension(ext)
+                logging.info("Extension chargée: %s", ext)
+            except Exception:
+                logging.exception("Échec de chargement de %s", ext)
+                if ext == "ia":
+                    await self.close()
+                    return
         try:
-            if bot._lock_channel_id and bot._lock_message_id:
-                ch = bot.get_channel(bot._lock_channel_id)
-                if ch:
-                    try:
-                        msg = await ch.fetch_message(bot._lock_message_id)
-                        await msg.edit(content=f"{LOCK_TAG} {bot.INSTANCE_ID} {int(time.time())}")
-                    except:
-                        pass
-        except:
-            pass
-        await asyncio.sleep(60)
-
-@bot.event
-async def on_ready():
-    log.info("Connecté comme %s (id:%s)", bot.user, bot.user.id)
-    if not bot._singleton_ready:
-        ok = await acquire_singleton()
-        if not ok:
-            log.warning("Instance concurrente détectée. Fermeture.")
-            await bot.close()
+            await self.load_extension("event_conversation")
+            logging.info("Extension chargée: event_conversation")
+        except Exception:
+            logging.exception("Échec load_extension event_conversation")
+            await self.close()
             return
-        bot._singleton_ready = True
-        bot.loop.create_task(heartbeat_loop())
-    try:
-        await bot.change_presence(activity=discord.Game(name="!ia pour discuter en MP"))
-    except Exception:
-        pass
+        cmds = [c.name for c in self.commands]
+        logging.info("Commandes enregistrées: %s", cmds)
+
+    async def find_console_channel(self):
+        for g in self.guilds:
+            ch = discord.utils.get(g.text_channels, name="console")
+            if ch:
+                return ch
+        return None
+
+    async def parse_latest_lock(self, ch: discord.TextChannel):
+        async for msg in ch.history(limit=50, oldest_first=False):
+            if msg.author == self.user and msg.content.startswith(LOCK_TAG):
+                parts = msg.content.split()
+                if len(parts) >= 3:
+                    inst = parts[1]
+                    try:
+                        ts = int(parts[2])
+                    except:
+                        ts = 0
+                    return msg, inst, ts
+        return None, None, None
+
+    async def acquire_singleton(self):
+        ch = await self.find_console_channel()
+        if not ch:
+            return True
+        msg, inst, ts = await self.parse_latest_lock(ch)
+        now = int(time.time())
+        if msg and inst and inst != self.INSTANCE_ID and now - ts <= 120:
+            return False
+        my = await ch.send(f"{LOCK_TAG} {self.INSTANCE_ID} {now}")
+        self._lock_channel_id = ch.id
+        self._lock_message_id = my.id
+        last, inst2, ts2 = await self.parse_latest_lock(ch)
+        if last and last.id != my.id:
+            return False
+        return True
+
+    async def heartbeat_loop(self):
+        while not self.is_closed():
+            try:
+                if self._lock_channel_id and self._lock_message_id:
+                    ch = self.get_channel(self._lock_channel_id)
+                    if ch:
+                        try:
+                            msg = await ch.fetch_message(self._lock_message_id)
+                            await msg.edit(content=f"{LOCK_TAG} {self.INSTANCE_ID} {int(time.time())}")
+                        except:
+                            pass
+            except:
+                pass
+            await asyncio.sleep(60)
+
+    async def on_ready(self):
+        logging.info("Connecté comme %s (id:%s)", self.user, self.user.id)
+        if not self._singleton_ready:
+            ok = await self.acquire_singleton()
+            if not ok:
+                logging.warning("Instance concurrente détectée. Fermeture.")
+                await self.close()
+                return
+            self._singleton_ready = True
+            asyncio.create_task(self.heartbeat_loop())
+            if os.getenv("KEEP_ALIVE") == "1":
+                try:
+                    keep_alive()
+                except Exception:
+                    logging.exception("keep_alive a échoué")
+
+bot = EvoBot()
 
 @bot.command(name="ping")
 async def ping_cmd(ctx):
@@ -110,47 +155,7 @@ async def on_command_error(ctx, error):
         await ctx.reply(f"⚠️ {error.__class__.__name__}: {error}", mention_author=False)
     except Exception:
         pass
-    log.exception("on_command_error: %s", error)
-
-async def load_extensions():
-    extensions = [
-        "job",
-        "ia",
-        "activite",
-        "ticket",
-        "players",
-        "sondage",
-        "stats",
-        "help",
-        "welcome",
-        "entree",
-        "calcul",
-        "defender",
-        "moderation",
-    ]
-    for ext in extensions:
-        try:
-            await bot.load_extension(ext)
-            log.info("Extension chargée: %s", ext)
-        except Exception:
-            log.exception("Échec de chargement de %s", ext)
-            if ext == "ia":
-                sys.exit(1)
-    try:
-        await bot.load_extension("event_conversation")
-        log.info("Extension chargée: event_conversation")
-    except Exception:
-        log.exception("Échec load_extension event_conversation")
-        sys.exit(1)
-    cmds = [c.name for c in bot.commands]
-    log.info("Commandes enregistrées: %s", cmds)
-
-async def main():
-    bot.remove_command("help")
-    if os.getenv("KEEP_ALIVE") == "1":
-        keep_alive()
-    await load_extensions()
-    await bot.start(os.getenv("DISCORD_TOKEN"))
+    logging.exception("on_command_error: %s", error)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    bot.run(bot.token)
