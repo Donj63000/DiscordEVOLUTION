@@ -37,6 +37,7 @@ class EvoBot(commands.Bot):
         self._seen_order = deque()
         self._seen_max = 2048
         orig = self.process_commands
+
         async def _once_per_message(message):
             mid = getattr(message, "id", None)
             if mid is not None and mid in self._seen_ids:
@@ -48,14 +49,15 @@ class EvoBot(commands.Bot):
                     old = self._seen_order.popleft()
                     self._seen_ids.discard(old)
             return await orig(message)
+
         self.process_commands = _once_per_message
 
     async def setup_hook(self):
         self.remove_command("help")
         extensions = [
             "job",
-            "ia",
-            "iastaff",
+            "ia",        # ← on garde l'IA publique (Gemini) telle qu'elle était
+            "iastaff",   # ← nouvelle IA Staff (OpenAI)
             "activite",
             "ticket",
             "players",
@@ -69,30 +71,20 @@ class EvoBot(commands.Bot):
             "moderation",
         ]
         for ext in extensions:
-            loaded = False
-            for name in (ext, f"cogs.{ext}"):
-                try:
-                    await self.load_extension(name)
-                    logging.info("Extension chargée: %s", name)
-                    loaded = True
-                    break
-                except Exception:
-                    continue
-            if not loaded:
-                logging.exception("Échec de chargement de %s", ext)
-        loaded_ec = False
-        for name in ("event_conversation", "cogs.event_conversation"):
             try:
-                await self.load_extension(name)
-                logging.info("Extension chargée: %s", name)
-                loaded_ec = True
-                break
+                await self.load_extension(ext)
+                logging.info("Extension chargée: %s", ext)
             except Exception:
-                continue
-        if not loaded_ec:
+                logging.exception("Échec de chargement de %s", ext)
+
+        try:
+            await self.load_extension("event_conversation")
+            logging.info("Extension chargée: event_conversation")
+        except Exception:
             logging.exception("Échec load_extension event_conversation")
             await self.close()
             os._exit(1)
+
         cmds = [c.name for c in self.commands]
         logging.info("Commandes enregistrées: %s", cmds)
 
