@@ -147,7 +147,8 @@ async def load_extensions():
 
 async def main():
     bot.remove_command("help")
-    keep_alive()
+    if os.getenv("KEEP_ALIVE") == "1":
+        keep_alive()
     await load_extensions()
     await bot.start(os.getenv("DISCORD_TOKEN"))
 
