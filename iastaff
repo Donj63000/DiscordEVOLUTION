@@ -11,9 +11,8 @@ DEFAULT_MODEL = "gpt-5-nano"
 DEFAULT_PROMPT_ID = "pmpt_689900255180819686efd4ca8cebfc7706a0776e4dbf2240"
 DEFAULT_PROMPT_VERSION = "2"
 
-def split_chunks(text, limit=3900):
-    parts = []
-    buf = ""
+def chunk(text: str, limit: int = 3900):
+    parts, buf = [], ""
     for line in text.split("\n"):
         if len(buf) + len(line) + 1 > limit:
             parts.append(buf)
@@ -34,12 +33,18 @@ class IAStaff(commands.Cog):
 
     def _build_request(self, user_text: str):
         if self.prompt_id:
-            return {"prompt": {"id": self.prompt_id, "version": self.prompt_version}, "input": user_text}
+            return {
+                "prompt": {"id": self.prompt_id, "version": self.prompt_version},
+                "input": user_text,
+            }
         return {"model": self.model, "input": user_text}
 
     @commands.command(name="iastaff", aliases=["staffia"])
     @commands.has_role(STAFF_ROLE_NAME)
-    async def staffia(self, ctx, *, prompt: str):
+    async def iastaff(self, ctx: commands.Context, *, prompt: str):
+        if not prompt.strip():
+            await ctx.reply("Donne-moi une question après la commande, ex: `!iastaff Quel est le plan ?`", mention_author=False)
+            return
         async with ctx.typing():
             try:
                 req = self._build_request(prompt)
@@ -48,16 +53,18 @@ class IAStaff(commands.Cog):
             except Exception as e:
                 await ctx.reply(f"❌ Erreur API: {e}", mention_author=False)
                 return
+
         if not text.strip():
-            await ctx.reply("Aucune réponse.", mention_author=False)
+            await ctx.reply("Je n’ai rien reçu de l’API.", mention_author=False)
             return
-        chunks = split_chunks(text)
-        for i, chunk in enumerate(chunks, 1):
+
+        parts = chunk(text)
+        for i, part in enumerate(parts, 1):
             title = "IA Staff"
-            if len(chunks) > 1:
-                title += f" ({i}/{len(chunks)})"
-            emb = discord.Embed(title=title, description=chunk, color=discord.Color.teal())
-            emb.set_footer(text=f"Modèle: {self.model}")
+            if len(parts) > 1:
+                title += f" ({i}/{len(parts)})"
+            emb = discord.Embed(title=title, description=part, color=discord.Color.teal())
+            emb.set_footer(text=f"Modèle: {self.model}" if not self.prompt_id else "Prompt Playground")
             await ctx.send(embed=emb)
 
 async def setup(bot: commands.Bot):
