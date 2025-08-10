@@ -129,29 +129,52 @@ class JobCog(commands.Cog):
     async def cog_load(self):
         await self.initialize_data()
 
-    async def initialize_data(self):
-        console_channel = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
-        if console_channel:
-            async for msg in console_channel.history(limit=1000):
-                if msg.author == self.bot.user and "===BOTJOBS===" in msg.content:
-                    if "fichier" in msg.content and msg.attachments:
-                        att = discord.utils.find(lambda a: a.filename == "jobs_data.json", msg.attachments)
-                        if att:
-                            try:
-                                data_bytes = await att.read()
-                                self.jobs_data = json.loads(data_bytes.decode("utf-8"))
-                                break
-                            except:
-                                pass
-                    else:
+    async def get_console_channel(self, guild: discord.Guild):
+        return discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+
+    async def load_from_console(self, guild: discord.Guild):
+        ch = await self.get_console_channel(guild)
+        if not ch:
+            return False
+        async for msg in ch.history(limit=5000, oldest_first=False):
+            if msg.author == self.bot.user and "===BOTJOBS===" in msg.content:
+                if "fichier" in msg.content and msg.attachments:
+                    att = discord.utils.find(lambda a: a.filename == "jobs_data.json", msg.attachments)
+                    if att:
                         try:
-                            start_idx = msg.content.index("```json\n") + len("```json\n")
-                            end_idx = msg.content.rindex("\n```")
-                            raw_json = msg.content[start_idx:end_idx]
-                            self.jobs_data = json.loads(raw_json)
-                            break
+                            data_bytes = await att.read()
+                            self.jobs_data = json.loads(data_bytes.decode("utf-8"))
+                            return True
                         except:
-                            pass
+                            continue
+                try:
+                    start_idx = msg.content.index("```json\n") + len("```json\n")
+                    end_idx = msg.content.rindex("\n```")
+                    raw_json = msg.content[start_idx:end_idx]
+                    self.jobs_data = json.loads(raw_json)
+                    return True
+                except:
+                    continue
+        return False
+
+    async def publish_to_console(self, guild: discord.Guild):
+        ch = await self.get_console_channel(guild)
+        if not ch:
+            return False
+        data_str = json.dumps(self.jobs_data, indent=4, ensure_ascii=False)
+        if len(data_str) < 1900:
+            await ch.send(f"===BOTJOBS===\n```json\n{data_str}\n```")
+        else:
+            temp_path = self._as_temp_file(data_str)
+            await ch.send("===BOTJOBS=== (fichier)", file=discord.File(fp=temp_path, filename="jobs_data.json"))
+            os.remove(temp_path)
+        return True
+
+    async def initialize_data(self):
+        for g in self.bot.guilds:
+            ok = await self.load_from_console(g)
+            if ok:
+                break
         if not self.jobs_data and os.path.exists(DATA_FILE):
             try:
                 with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -168,17 +191,9 @@ class JobCog(commands.Cog):
         except:
             pass
 
-    async def dump_data_to_console(self, ctx):
-        console_channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
-        if not console_channel:
-            return
-        data_str = json.dumps(self.jobs_data, indent=4, ensure_ascii=False)
-        if len(data_str) < 1900:
-            await console_channel.send(f"===BOTJOBS===\n```json\n{data_str}\n```")
-        else:
-            temp_path = self._as_temp_file(data_str)
-            await console_channel.send("===BOTJOBS=== (fichier)", file=discord.File(fp=temp_path, filename="jobs_data.json"))
-            os.remove(temp_path)
+    async def dump_data_to_console(self, guild: discord.Guild):
+        await self.publish_to_console(guild)
+        await self.load_from_console(guild)
 
     def _as_temp_file(self, data_str: str) -> str:
         tmp = tempfile.NamedTemporaryFile(delete=False, mode="w", encoding="utf-8", suffix=".json")
@@ -237,7 +252,7 @@ class JobCog(commands.Cog):
         n = normalize_string(input_name)
         pool = set(CANONICAL_JOBS_ORDERED)
         for uid, data in self.jobs_data.items():
-            for jn in data.get("jobs", {}).keys():
+            for jn in data.get("jobs", {}).items():
                 pool.add(jn)
         scored = []
         for j in pool:
@@ -280,9 +295,8 @@ class JobCog(commands.Cog):
         self.jobs_data[author_id]["name"] = author_name
         self.jobs_data[author_id]["jobs"][job_name] = level
         self.save_data_local()
-        embed_ok = discord.Embed(title="Nouveau métier créé", description=f"Le métier **{job_name}** a été créé et défini au niveau {level} pour {author_name}.", color=discord.Color.green())
-        await ctx.send(embed=embed_ok)
-        await self.dump_data_to_console(ctx)
+        await self.dump_data_to_console(ctx.guild)
+        await ctx.send(embed=discord.Embed(title="Nouveau métier créé", description=f"Le métier **{job_name}** a été créé et défini au niveau {level} pour {author_name}.", color=discord.Color.green()))
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
@@ -299,20 +313,13 @@ class JobCog(commands.Cog):
                     break
         if removed:
             self.save_data_local()
-            console_channel = discord.utils.get(member.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
-            if console_channel:
-                data_str = json.dumps(self.jobs_data, indent=4, ensure_ascii=False)
-                if len(data_str) < 1900:
-                    await console_channel.send(f"===BOTJOBS===\n```json\n{data_str}\n```")
-                else:
-                    temp_path = self._as_temp_file(data_str)
-                    await console_channel.send("===BOTJOBS=== (fichier)", file=discord.File(fp=temp_path, filename="jobs_data.json"))
-                    os.remove(temp_path)
+            await self.dump_data_to_console(member.guild)
 
     @commands.command(name="job")
     async def job_command(self, ctx, *args):
         if not self.initialized:
             await self.initialize_data()
+        await self.load_from_console(ctx.guild)
 
         author = ctx.author
         author_id = str(author.id)
@@ -334,6 +341,7 @@ class JobCog(commands.Cog):
             return
 
         if len(args) == 1 and args[0].lower() == "me":
+            await self.load_from_console(ctx.guild)
             user_jobs = self.get_user_jobs(author_id)
             if not user_jobs:
                 await ctx.send(embed=discord.Embed(title="Vos métiers", description=f"{author_name}, vous n'avez aucun métier enregistré.", color=discord.Color.orange()))
@@ -345,6 +353,7 @@ class JobCog(commands.Cog):
             return
 
         if len(args) == 2 and args[0].lower() == "liste" and args[1].lower() == "metier":
+            await self.load_from_console(ctx.guild)
             known = list(CANONICAL_JOBS_ORDERED)
             extra = set()
             for uid, data in self.jobs_data.items():
@@ -379,16 +388,15 @@ class JobCog(commands.Cog):
             return
 
         if len(args) == 1 and args[0].lower() == "liste":
+            await self.load_from_console(ctx.guild)
             jobs_map = defaultdict(list)
             for uid, data in self.jobs_data.items():
                 disp_name = data.get("name", f"ID {uid}")
                 for jn, lv in data.get("jobs", {}).items():
                     jobs_map[jn].append((disp_name, lv))
-
             ordered_names = list(CANONICAL_JOBS_ORDERED)
             for j in sorted([n for n in jobs_map.keys() if n not in CANONICAL_JOBS_ORDERED], key=lambda x: normalize_string(x)):
                 ordered_names.append(j)
-
             embed_count = 0
             for chunk in chunk_list(ordered_names, 25):
                 embed_count += 1
@@ -403,6 +411,7 @@ class JobCog(commands.Cog):
             return
 
         if len(args) >= 3 and args[0].lower() == "add":
+            await self.load_from_console(ctx.guild)
             *job_name_tokens, level_str = args[1:]
             job_input = " ".join(job_name_tokens)
             try:
@@ -422,16 +431,16 @@ class JobCog(commands.Cog):
             self.jobs_data[author_id]["name"] = author_name
             self.jobs_data[author_id]["jobs"][canonical] = level_int
             self.save_data_local()
+            await self.dump_data_to_console(ctx.guild)
             desc = f"Le métier **{canonical}** (initialement demandé : `{job_input}`) a été défini au niveau **{level_int}** pour **{author_name}**."
             warn = ""
             if canonical in SPECIALIZATION_SET and not any(b in self.jobs_data[author_id]["jobs"] for b in SPECIALIZATION_ALLOWED_BASE):
                 warn = "\n⚠️ Vous n'avez aucun métier de base associé à cette spécialisation."
-            emb = discord.Embed(title="Mise à jour du métier", description=desc + warn, color=discord.Color.green())
-            await ctx.send(embed=emb)
-            await self.dump_data_to_console(ctx)
+            await ctx.send(embed=discord.Embed(title="Mise à jour du métier", description=desc + warn, color=discord.Color.green()))
             return
 
         if len(args) >= 2 and args[0].lower() == "del":
+            await self.load_from_console(ctx.guild)
             job_input = " ".join(args[1:])
             canonical = self.resolve_job_name(job_input)
             if canonical is None:
@@ -443,11 +452,12 @@ class JobCog(commands.Cog):
                 return
             del self.jobs_data[author_id]["jobs"][canonical]
             self.save_data_local()
+            await self.dump_data_to_console(ctx.guild)
             await ctx.send(f"Le métier {canonical} a été supprimé pour {author_name}.")
-            await self.dump_data_to_console(ctx)
             return
 
         if len(args) >= 2 and args[0].lower() not in ["liste", "me", "add", "del"]:
+            await self.load_from_console(ctx.guild)
             *job_name_tokens, level_str = args
             job_input = " ".join(job_name_tokens)
             try:
@@ -467,15 +477,15 @@ class JobCog(commands.Cog):
                     author_jobs["jobs"][canonical] = level_int
                     self.jobs_data[author_id] = author_jobs
                     self.save_data_local()
+                    await self.dump_data_to_console(ctx.guild)
                     warn = ""
                     if canonical in SPECIALIZATION_SET and not any(b in author_jobs["jobs"] for b in SPECIALIZATION_ALLOWED_BASE):
                         warn = "\n⚠️ Vous n'avez aucun métier de base associé à cette spécialisation."
-                    emb = discord.Embed(title="Mise à jour du métier", description=f"Le métier **{canonical}** (initialement demandé : `{job_input}`) est maintenant défini au niveau **{level_int}** pour **{author_name}**." + warn, color=discord.Color.green())
-                    await ctx.send(embed=emb)
-                    await self.dump_data_to_console(ctx)
+                    await ctx.send(embed=discord.Embed(title="Mise à jour du métier", description=f"Le métier **{canonical}** (initialement demandé : `{job_input}`) est maintenant défini au niveau **{level_int}** pour **{author_name}**." + warn, color=discord.Color.green()))
                 return
 
         if len(args) == 1:
+            await self.load_from_console(ctx.guild)
             query = args[0]
             mention_id = None
             m = re.fullmatch(r"<@!?(\d+)>", query)
@@ -564,7 +574,7 @@ class JobCog(commands.Cog):
         if channel_name.lower() != "console":
             await ctx.send("Pour l'instant, seule la commande `!clear console` est disponible.")
             return
-        channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+        channel = await self.get_console_channel(ctx.guild)
         if not channel:
             await ctx.send("Le salon console n'existe pas.")
             return
