@@ -240,6 +240,81 @@ class JobCog(commands.Cog):
         if updated:
             self.save_data_local()
 
+    def get_user_jobs(self, user_id: str, user_name: str = None):
+        if user_id in self.jobs_data and "jobs" in self.jobs_data[user_id]:
+            return self.jobs_data[user_id]["jobs"]
+        if user_name:
+            for key, data in self.jobs_data.items():
+                if not key.isdigit() and data.get("name", "").lower() == user_name.lower():
+                    return data.get("jobs", {})
+        return {}
+
+    def resolve_job_name(self, input_name: str):
+        n = normalize_string(input_name)
+        if n in ALIAS_LOOKUP:
+            return ALIAS_LOOKUP[n]
+        if n in CANON_LOOKUP:
+            return CANON_LOOKUP[n]
+        for canon in CANONICAL_JOBS_ORDERED:
+            if n == normalize_string(canon):
+                return canon
+        for uid, data in self.jobs_data.items():
+            for jn in data.get("jobs", {}).keys():
+                if n == normalize_string(jn):
+                    return jn
+        return None
+
+    def suggest_similar_jobs(self, input_name: str, limit=6):
+        n = normalize_string(input_name)
+        pool = set(CANONICAL_JOBS_ORDERED)
+        for uid, data in self.jobs_data.items():
+            for jn in data.get("jobs", {}).keys():
+                pool.add(jn)
+        scored = []
+        for j in pool:
+            d = levenshtein(n, normalize_string(j))
+            scored.append((d, j))
+        scored.sort(key=lambda x: (x[0], normalize_string(x[1])))
+        return [j for _, j in scored[:limit]]
+
+    async def confirm_job_creation_flow(self, ctx, job_name: str, level: int, author_id: str, author_name: str):
+        if level < JOB_MIN_LEVEL or level > JOB_MAX_LEVEL:
+            e = discord.Embed(title="Niveau invalide", description=f"Le niveau doit être compris entre {JOB_MIN_LEVEL} et {JOB_MAX_LEVEL}.", color=discord.Color.red())
+            await self.send_logo_embed(ctx, e)
+            return
+        suggestions = self.suggest_similar_jobs(job_name)
+        if suggestions:
+            suggestion_text = "\n".join(f"- {s}" for s in suggestions)
+            prompt = f"Le métier **{job_name}** n'existe pas encore.\nSuggestions proches :\n{suggestion_text}\n\nTapez **oui** pour créer ce nouveau métier, **non** ou **cancel** pour annuler."
+        else:
+            prompt = f"Le métier **{job_name}** n'existe pas encore.\nTapez **oui** pour créer, **non** ou **cancel** pour annuler."
+        e = discord.Embed(title="Confirmation", description=prompt, color=discord.Color.orange())
+        await self.send_logo_embed(ctx, e)
+
+        def check(m: discord.Message):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["oui", "non", "cancel"]
+
+        try:
+            reply = await self.bot.wait_for("message", timeout=30.0, check=check)
+        except:
+            e = discord.Embed(title="Commande annulée", description="Temps écoulé, commande annulée.", color=discord.Color.red())
+            await self.send_logo_embed(ctx, e)
+            return
+
+        if reply.content.lower() in ["cancel", "non"]:
+            e = discord.Embed(title="Commande terminée", description="Action annulée.", color=discord.Color.light_grey())
+            await self.send_logo_embed(ctx, e)
+            return
+
+        if author_id not in self.jobs_data:
+            self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
+        self.jobs_data[author_id]["name"] = author_name
+        self.jobs_data[author_id]["jobs"][job_name] = level
+        self.save_data_local()
+        await self.dump_data_to_console(ctx.guild)
+        e = discord.Embed(title="Nouveau métier créé", description=f"Le métier **{job_name}** a été créé et défini au niveau {level} pour {author_name}.", color=discord.Color.green())
+        await self.send_logo_embed(ctx, e)
+
     async def compute_member_union_ids(self):
         union_ids = set()
         for g in self.bot.guilds:
@@ -358,9 +433,6 @@ class JobCog(commands.Cog):
             await self.load_from_console(ctx.guild)
             known = list(CANONICAL_JOBS_ORDERED)
             extra = set()
-            for uid, data in self.jobs_data.items():
-                for jn in data.get("jobs", {}).items():
-                    pass
             for uid, data in self.jobs_data.items():
                 for jn in data.get("jobs", {}).keys():
                     if jn not in known:
