@@ -1,5 +1,10 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import sys
+import time
+import uuid
 import asyncio
 import logging
 import discord
@@ -9,6 +14,8 @@ from alive import keep_alive
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("main")
+
+LOCK_TAG = "===BOTLOCK==="
 
 def create_bot() -> commands.Bot:
     load_dotenv()
@@ -21,10 +28,73 @@ def create_bot() -> commands.Bot:
     return bot
 
 bot = create_bot()
+bot.INSTANCE_ID = os.getenv("RENDER_INSTANCE_ID") or os.getenv("INSTANCE_ID") or uuid.uuid4().hex
+bot._singleton_ready = False
+bot._lock_channel_id = None
+bot._lock_message_id = None
+
+async def find_console_channel():
+    for g in bot.guilds:
+        ch = discord.utils.get(g.text_channels, name="console")
+        if ch:
+            return ch
+    return None
+
+async def parse_latest_lock(ch: discord.TextChannel):
+    async for msg in ch.history(limit=50, oldest_first=False):
+        if msg.author == bot.user and msg.content.startswith(LOCK_TAG):
+            parts = msg.content.split()
+            if len(parts) >= 3:
+                inst = parts[1]
+                try:
+                    ts = int(parts[2])
+                except:
+                    ts = 0
+                return msg, inst, ts
+    return None, None, None
+
+async def acquire_singleton():
+    ch = await find_console_channel()
+    if not ch:
+        return True
+    msg, inst, ts = await parse_latest_lock(ch)
+    now = int(time.time())
+    if msg and inst and inst != bot.INSTANCE_ID and now - ts <= 120:
+        return False
+    my = await ch.send(f"{LOCK_TAG} {bot.INSTANCE_ID} {now}")
+    bot._lock_channel_id = ch.id
+    bot._lock_message_id = my.id
+    last, inst2, ts2 = await parse_latest_lock(ch)
+    if last and last.id != my.id:
+        return False
+    return True
+
+async def heartbeat_loop():
+    while not bot.is_closed():
+        try:
+            if bot._lock_channel_id and bot._lock_message_id:
+                ch = bot.get_channel(bot._lock_channel_id)
+                if ch:
+                    try:
+                        msg = await ch.fetch_message(bot._lock_message_id)
+                        await msg.edit(content=f"{LOCK_TAG} {bot.INSTANCE_ID} {int(time.time())}")
+                    except:
+                        pass
+        except:
+            pass
+        await asyncio.sleep(60)
 
 @bot.event
 async def on_ready():
     log.info("Connecté comme %s (id:%s)", bot.user, bot.user.id)
+    if not bot._singleton_ready:
+        ok = await acquire_singleton()
+        if not ok:
+            log.warning("Instance concurrente détectée. Fermeture.")
+            await bot.close()
+            return
+        bot._singleton_ready = True
+        bot.loop.create_task(heartbeat_loop())
     try:
         await bot.change_presence(activity=discord.Game(name="!ia pour discuter en MP"))
     except Exception:
