@@ -69,15 +69,27 @@ class EvoBot(commands.Bot):
             "moderation",
         ]
         for ext in extensions:
-            try:
-                await self.load_extension(ext)
-                logging.info("Extension chargée: %s", ext)
-            except Exception:
+            loaded = False
+            for name in (ext, f"cogs.{ext}"):
+                try:
+                    await self.load_extension(name)
+                    logging.info("Extension chargée: %s", name)
+                    loaded = True
+                    break
+                except Exception:
+                    continue
+            if not loaded:
                 logging.exception("Échec de chargement de %s", ext)
-        try:
-            await self.load_extension("event_conversation")
-            logging.info("Extension chargée: event_conversation")
-        except Exception:
+        loaded_ec = False
+        for name in ("event_conversation", "cogs.event_conversation"):
+            try:
+                await self.load_extension(name)
+                logging.info("Extension chargée: %s", name)
+                loaded_ec = True
+                break
+            except Exception:
+                continue
+        if not loaded_ec:
             logging.exception("Échec load_extension event_conversation")
             await self.close()
             os._exit(1)
