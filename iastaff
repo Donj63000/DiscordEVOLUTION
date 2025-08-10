@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import asyncio
+import discord
+from discord.ext import commands
+from openai import AsyncOpenAI
+
+STAFF_ROLE_NAME = "Staff"
+DEFAULT_MODEL = "gpt-5-nano"
+DEFAULT_PROMPT_ID = "pmpt_689900255180819686efd4ca8cebfc7706a0776e4dbf2240"
+DEFAULT_PROMPT_VERSION = "2"
+
+def split_chunks(text, limit=3900):
+    parts = []
+    buf = ""
+    for line in text.split("\n"):
+        if len(buf) + len(line) + 1 > limit:
+            parts.append(buf)
+            buf = line + "\n"
+        else:
+            buf += line + "\n"
+    if buf:
+        parts.append(buf)
+    return parts or [""]
+
+class IAStaff(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        self.model = os.getenv("OPENAI_STAFF_MODEL", DEFAULT_MODEL)
+        self.prompt_id = os.getenv("OPENAI_STAFF_PROMPT_ID", DEFAULT_PROMPT_ID)
+        self.prompt_version = os.getenv("OPENAI_STAFF_PROMPT_VERSION", DEFAULT_PROMPT_VERSION)
+
+    def _build_request(self, user_text: str):
+        body = {"input": user_text}
+        if self.prompt_id:
+            body["prompt"] = {"id": self.prompt_id, "version": self.prompt_version}
+        else:
+            body["model"] = self.model
+        return body
+
+    @commands.command(name="staffia")
+    @commands.has_role(STAFF_ROLE_NAME)
+    async def staffia(self, ctx, *, prompt: str):
+        async with ctx.typing():
+            try:
+                req = self._build_request(prompt)
+                resp = await self.client.responses.create(**req)
+                text = getattr(resp, "output_text", None) or ""
+            except Exception as e:
+                await ctx.reply(f"❌ Erreur API: {e}", mention_author=False)
+                return
+        if not text.strip():
+            await ctx.reply("Aucune réponse.", mention_author=False)
+            return
+        chunks = split_chunks(text)
+        for i, chunk in enumerate(chunks, 1):
+            title = "IA Staff"
+            if len(chunks) > 1:
+                title += f" ({i}/{len(chunks)})"
+            emb = discord.Embed(title=title, description=chunk, color=discord.Color.teal())
+            emb.set_footer(text=f"Modèle: {self.model}")
+            await ctx.send(embed=emb)
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(IAStaff(bot))
