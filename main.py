@@ -66,6 +66,7 @@ class EvoBot(commands.Bot):
             "calcul",
             "defender",
             "moderation",
+            "iastaff",
         ]
         for ext in extensions:
             try:
