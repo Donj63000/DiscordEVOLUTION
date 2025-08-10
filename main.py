@@ -8,7 +8,6 @@ import uuid
 import asyncio
 import logging
 import discord
-from importlib.util import find_spec
 from discord.ext import commands
 from dotenv import load_dotenv
 from alive import keep_alive
@@ -63,24 +62,56 @@ class EvoBot(commands.Bot):
             logging.info("Extension chargée: %s", ext_name)
             return True
         except Exception as e:
-            logging.error("Échec de chargement de %s: %s", ext_name, e, exc_info=True)
+            logging.warning("Impossible de charger %s: %s", ext_name, e, exc_info=True)
             return False
 
     async def _load_iastaff_anywhere(self):
-        # Essaie d'abord à la racine, puis dans cogs/
-        if find_spec("iastaff") is not None and await self._safe_load("iastaff"):
-            return
-        if find_spec("cogs.iastaff") is not None and await self._safe_load("cogs.iastaff"):
-            return
-        logging.error("Extension iastaff introuvable. Assure-toi d'avoir un fichier 'iastaff.py' "
-                      "à la racine du projet (ou 'cogs/iastaff.py').")
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        tried = []
+
+        # 1) Essai direct à la racine
+        if await self._safe_load("iastaff"):
+            return True
+        tried.append("iastaff")
+
+        # 2) Dossier DiscordEVOLUTION/
+        de_dir = os.path.join(base_dir, "DiscordEVOLUTION")
+        if os.path.isfile(os.path.join(de_dir, "iastaff.py")):
+            if de_dir not in sys.path:
+                sys.path.insert(0, de_dir)
+            if await self._safe_load("iastaff"):
+                return True
+            tried.append(f"{de_dir} + iastaff")
+
+        # 3) Dossier cogs/
+        cogs_dir = os.path.join(base_dir, "cogs")
+        if os.path.isfile(os.path.join(cogs_dir, "iastaff.py")):
+            if cogs_dir not in sys.path:
+                sys.path.insert(0, cogs_dir)
+            if await self._safe_load("iastaff"):
+                return True
+            tried.append(f"{cogs_dir} + iastaff")
+
+        # 4) Noms package si les dossiers sont des packages (avec __init__.py)
+        for name in ("DiscordEVOLUTION.iastaff", "cogs.iastaff"):
+            if await self._safe_load(name):
+                return True
+            tried.append(name)
+
+        logging.error(
+            "Extension iastaff introuvable. Emplacements testés: %s. "
+            "Place iastaff.py à la racine (recommandé) ou ajoute __init__.py au dossier et charge via <dossier>.iastaff.",
+            ", ".join(tried),
+        )
+        return False
 
     async def setup_hook(self):
         self.remove_command("help")
 
         base_exts = [
             "job",
-            "ia",           # IA publique (Gemini) – inchangé
+            "ia",
             "activite",
             "ticket",
             "players",
@@ -92,13 +123,11 @@ class EvoBot(commands.Bot):
             "calcul",
             "defender",
             "moderation",
-            "iastaff",
         ]
 
         for ext in base_exts:
             await self._safe_load(ext)
 
-        # Charge iastaff en prenant en compte l'endroit où le fichier a été posé
         await self._load_iastaff_anywhere()
 
         try:
