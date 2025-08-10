@@ -252,7 +252,7 @@ class JobCog(commands.Cog):
         n = normalize_string(input_name)
         pool = set(CANONICAL_JOBS_ORDERED)
         for uid, data in self.jobs_data.items():
-            for jn in data.get("jobs", {}).items():
+            for jn in data.get("jobs", {}).keys():
                 pool.add(jn)
         scored = []
         for j in pool:
