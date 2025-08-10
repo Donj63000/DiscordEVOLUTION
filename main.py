@@ -11,6 +11,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 from alive import keep_alive
+from collections import deque
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("main")
@@ -32,11 +33,20 @@ class EvoBot(commands.Bot):
         self._singleton_ready = False
         self._lock_channel_id = None
         self._lock_message_id = None
+        self._seen_ids = set()
+        self._seen_order = deque()
+        self._seen_max = 2048
         orig = self.process_commands
         async def _once_per_message(message):
-            if getattr(message, "_cmds_done", False):
+            mid = getattr(message, "id", None)
+            if mid is not None and mid in self._seen_ids:
                 return
-            message._cmds_done = True
+            if mid is not None:
+                self._seen_ids.add(mid)
+                self._seen_order.append(mid)
+                if len(self._seen_order) > self._seen_max:
+                    old = self._seen_order.popleft()
+                    self._seen_ids.discard(old)
             return await orig(message)
         self.process_commands = _once_per_message
 
@@ -65,14 +75,14 @@ class EvoBot(commands.Bot):
                 logging.exception("Échec de chargement de %s", ext)
                 if ext == "ia":
                     await self.close()
-                    return
+                    os._exit(1)
         try:
             await self.load_extension("event_conversation")
             logging.info("Extension chargée: event_conversation")
         except Exception:
             logging.exception("Échec load_extension event_conversation")
             await self.close()
-            return
+            os._exit(1)
         cmds = [c.name for c in self.commands]
         logging.info("Commandes enregistrées: %s", cmds)
 
@@ -124,7 +134,7 @@ class EvoBot(commands.Bot):
                         if not last or last.id != self._lock_message_id:
                             logging.warning("Perte du lock au profit de %s, fermeture.", inst or "inconnu")
                             await self.close()
-                            return
+                            os._exit(0)
                         try:
                             msg = await ch.fetch_message(self._lock_message_id)
                             await msg.edit(content=f"{LOCK_TAG} {self.INSTANCE_ID} {int(time.time())}")
@@ -141,14 +151,9 @@ class EvoBot(commands.Bot):
             if not ok:
                 logging.warning("Instance concurrente détectée. Fermeture.")
                 await self.close()
-                return
+                os._exit(0)
             self._singleton_ready = True
             asyncio.create_task(self.heartbeat_loop())
-            if os.getenv("KEEP_ALIVE") == "1":
-                try:
-                    keep_alive()
-                except Exception:
-                    logging.exception("keep_alive a échoué")
 
 bot = EvoBot()
 
@@ -165,4 +170,5 @@ async def on_command_error(ctx, error):
     logging.exception("on_command_error: %s", error)
 
 if __name__ == "__main__":
+    keep_alive()
     bot.run(bot.token)
