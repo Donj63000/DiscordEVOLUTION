@@ -76,11 +76,14 @@ class EvoBot(commands.Bot):
         cmds = [c.name for c in self.commands]
         logging.info("Commandes enregistrées: %s", cmds)
 
-    async def find_console_channel(self):
-        for g in self.guilds:
-            ch = discord.utils.get(g.text_channels, name="console")
-            if ch:
-                return ch
+    async def wait_console_channel(self, timeout=30):
+        start = time.time()
+        while time.time() - start < timeout:
+            for g in self.guilds:
+                ch = discord.utils.get(g.text_channels, name="console")
+                if ch:
+                    return ch
+            await asyncio.sleep(1)
         return None
 
     async def parse_latest_lock(self, ch: discord.TextChannel):
@@ -96,21 +99,20 @@ class EvoBot(commands.Bot):
                     return msg, inst, ts
         return None, None, None
 
-    async def acquire_singleton(self):
-        ch = await self.find_console_channel()
+    async def acquire_leadership(self):
+        ch = await self.wait_console_channel(timeout=30)
         if not ch:
+            logging.warning("Salon #console introuvable: pas de lock distribué, on continue.")
             return True
-        msg, inst, ts = await self.parse_latest_lock(ch)
-        now = int(time.time())
-        if msg and inst and inst != self.INSTANCE_ID and now - ts <= 120:
-            return False
-        my = await ch.send(f"{LOCK_TAG} {self.INSTANCE_ID} {now}")
+        my = await ch.send(f"{LOCK_TAG} {self.INSTANCE_ID} {int(time.time())}")
         self._lock_channel_id = ch.id
         self._lock_message_id = my.id
-        last, inst2, ts2 = await self.parse_latest_lock(ch)
-        if last and last.id != my.id:
-            return False
-        return True
+        last, inst, ts = await self.parse_latest_lock(ch)
+        if last and last.id == my.id:
+            logging.info("Lock acquis par %s", self.INSTANCE_ID)
+            return True
+        logging.warning("Lock non acquis, une autre instance est leader.")
+        return False
 
     async def heartbeat_loop(self):
         while not self.is_closed():
@@ -118,6 +120,11 @@ class EvoBot(commands.Bot):
                 if self._lock_channel_id and self._lock_message_id:
                     ch = self.get_channel(self._lock_channel_id)
                     if ch:
+                        last, inst, ts = await self.parse_latest_lock(ch)
+                        if not last or last.id != self._lock_message_id:
+                            logging.warning("Perte du lock au profit de %s, fermeture.", inst or "inconnu")
+                            await self.close()
+                            return
                         try:
                             msg = await ch.fetch_message(self._lock_message_id)
                             await msg.edit(content=f"{LOCK_TAG} {self.INSTANCE_ID} {int(time.time())}")
@@ -125,12 +132,12 @@ class EvoBot(commands.Bot):
                             pass
             except:
                 pass
-            await asyncio.sleep(60)
+            await asyncio.sleep(15)
 
     async def on_ready(self):
         logging.info("Connecté comme %s (id:%s)", self.user, self.user.id)
         if not self._singleton_ready:
-            ok = await self.acquire_singleton()
+            ok = await self.acquire_leadership()
             if not ok:
                 logging.warning("Instance concurrente détectée. Fermeture.")
                 await self.close()
