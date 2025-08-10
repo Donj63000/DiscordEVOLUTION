@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import os
-import asyncio
 import discord
 from discord.ext import commands
 from openai import AsyncOpenAI
@@ -41,14 +40,26 @@ class IAStaff(commands.Cog):
             body["model"] = self.model
         return body
 
-    @commands.command(name="staffia")
+    @commands.command(name="iastaff")
     @commands.has_role(STAFF_ROLE_NAME)
-    async def staffia(self, ctx, *, prompt: str):
+    async def iastaff(self, ctx, *, prompt: str):
         async with ctx.typing():
             try:
                 req = self._build_request(prompt)
                 resp = await self.client.responses.create(**req)
                 text = getattr(resp, "output_text", None) or ""
+                if not text:
+                    try:
+                        outputs = getattr(resp, "output", []) or []
+                        fragments = []
+                        for out in outputs:
+                            for c in getattr(out, "content", []) or []:
+                                t = getattr(c, "text", None)
+                                if t:
+                                    fragments.append(t)
+                        text = "\n".join(fragments)
+                    except Exception:
+                        text = ""
             except Exception as e:
                 await ctx.reply(f"❌ Erreur API: {e}", mention_author=False)
                 return
@@ -61,7 +72,8 @@ class IAStaff(commands.Cog):
             if len(chunks) > 1:
                 title += f" ({i}/{len(chunks)})"
             emb = discord.Embed(title=title, description=chunk, color=discord.Color.teal())
-            emb.set_footer(text=f"Modèle: {self.model}")
+            footer_model = self.model if self.prompt_id is None else f"prompt {self.prompt_id} v{self.prompt_version}"
+            emb.set_footer(text=f"Modèle: {footer_model}")
             await ctx.send(embed=emb)
 
 async def setup(bot: commands.Bot):
