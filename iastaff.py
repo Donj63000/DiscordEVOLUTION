@@ -19,7 +19,7 @@ STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
 
 DEFAULT_MODEL = os.getenv("OPENAI_STAFF_MODEL", "gpt-5-nano")
 DEFAULT_PROMPT_ID = os.getenv("OPENAI_STAFF_PROMPT_ID", "pmpt_689900255180819686efd4ca8cebfc7706a0776e4dbf2240")
-DEFAULT_PROMPT_VERSION = os.getenv("OPENAI_STAFF_PROMPT_VERSION", "5")  # <- v5
+DEFAULT_PROMPT_VERSION = os.getenv("OPENAI_STAFF_PROMPT_VERSION", "5")  # v5
 
 # Contexte canal
 CONTEXT_MESSAGES = int(os.getenv("IASTAFF_CHANNEL_CONTEXT", "40"))
@@ -35,6 +35,9 @@ EMBED_SAFE_CHUNK = 3800
 OPENAI_TIMEOUT = float(os.getenv("IASTAFF_TIMEOUT", "120"))
 MAX_OUTPUT_TOKENS = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
 INPUT_MAX_CHARS = int(os.getenv("IASTAFF_INPUT_MAX_CHARS", "12000"))
+
+# Autoriser l’outil Web Search (conforme à ton prompt). 0 pour désactiver si besoin.
+ENABLE_WEB_SEARCH = os.getenv("IASTAFF_ENABLE_WEB", "1") != "0"
 
 # Visuel
 LOGO_FILENAME = os.getenv("IASTAFF_LOGO", "iastaff.png")
@@ -64,15 +67,13 @@ def extract_generated_text(resp_obj) -> str:
     """
     Extraction *sûre* du texte généré :
     - .output_text (voie standard)
-    - .output items ('output_text' / 'message' -> 'content' -> 'text')
-    NE JAMAIS ramasser les champs du prompt (ex: 'instructions').
+    - .output items ('output_text') ou 'message' -> 'content' -> 'text'
+    On IGNORE les champs du prompt (ex: 'instructions').
     """
-    # 1) voie directe
     t = getattr(resp_obj, "output_text", None)
     if isinstance(t, str) and t.strip():
         return t.strip()
 
-    # 2) inspection contrôlée
     data = None
     try:
         if hasattr(resp_obj, "model_dump"):
@@ -103,8 +104,7 @@ def extract_generated_text(resp_obj) -> str:
                         for c in content:
                             if not isinstance(c, dict):
                                 continue
-                            ctyp = c.get("type")
-                            if ctyp in ("text", "output_text"):
+                            if c.get("type") in ("text", "output_text"):
                                 txt = c.get("text")
                                 if isinstance(txt, str) and txt.strip():
                                     texts.append(txt)
@@ -212,6 +212,8 @@ class IAStaff(commands.Cog):
             "input": input_text,
             "max_output_tokens": MAX_OUTPUT_TOKENS,
         }
+        if ENABLE_WEB_SEARCH:
+            base["tools"] = [{"type": "web_search"}]  # <- autorise Web Search côté OpenAI
         if self.prompt_id:
             base["prompt"] = {"id": self.prompt_id, "version": self.prompt_version}
         else:
@@ -282,7 +284,8 @@ class IAStaff(commands.Cog):
                 f"Model fallback: `{self.model}`\n"
                 f"Timeout: {OPENAI_TIMEOUT}s | Max output tokens: {MAX_OUTPUT_TOKENS}\n"
                 f"Contexte canal: {CONTEXT_MESSAGES} msgs (≤{CONTEXT_MAX_CHARS} chars, {PER_MSG_TRUNC}/msg)\n"
-                f"Mémoire IA (salon): {len(self.history.get(channel_id, []))} items (max {HISTORY_TURNS*2})"
+                f"Mémoire IA (salon): {len(self.history.get(channel_id, []))} items (max {HISTORY_TURNS*2})\n"
+                f"Web Search: {'activé' if ENABLE_WEB_SEARCH else 'désactivé'}"
             )
             await ctx.reply(details, mention_author=False)
             return
@@ -299,8 +302,8 @@ class IAStaff(commands.Cog):
                 if memory_ctx:
                     sections.append(memory_ctx)
                 sections.append(f"Utilisateur: {msg}\nAssistant:")
-
                 final_input = "\n\n".join(sections)
+
                 if len(final_input) > INPUT_MAX_CHARS:
                     overflow = len(final_input) - INPUT_MAX_CHARS
                     trimmed = channel_ctx[:-min(overflow + 500, len(channel_ctx))]
