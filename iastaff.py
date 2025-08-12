@@ -8,43 +8,40 @@ import discord
 from discord.ext import commands
 
 try:
-    # Client async pour la nouvelle API OpenAI
     from openai import AsyncOpenAI
 except Exception:  # pragma: no cover
-    AsyncOpenAI = None  # vérifié au runtime
+    AsyncOpenAI = None
 
 log = logging.getLogger("iastaff")
 
-# ==== Configuration ====
+# ==== Config ====
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
 
-# Prompt Playground prioritaire (model fallback seulement si pas de prompt)
 DEFAULT_MODEL = os.getenv("OPENAI_STAFF_MODEL", "gpt-5-nano")
 DEFAULT_PROMPT_ID = os.getenv("OPENAI_STAFF_PROMPT_ID", "pmpt_689900255180819686efd4ca8cebfc7706a0776e4dbf2240")
-DEFAULT_PROMPT_VERSION = os.getenv("OPENAI_STAFF_PROMPT_VERSION", "5")  # <- ta mise à jour
+DEFAULT_PROMPT_VERSION = os.getenv("OPENAI_STAFF_PROMPT_VERSION", "5")  # <- v5
 
 # Contexte canal
-CONTEXT_MESSAGES = int(os.getenv("IASTAFF_CHANNEL_CONTEXT", "40"))   # nb de messages canal
-PER_MSG_TRUNC = int(os.getenv("IASTAFF_PER_MSG_CHARS", "200"))       # tronque chaque msg canal
-CONTEXT_MAX_CHARS = int(os.getenv("IASTAFF_CONTEXT_MAX_CHARS", "6000"))  # cap total bloc contexte
+CONTEXT_MESSAGES = int(os.getenv("IASTAFF_CHANNEL_CONTEXT", "40"))
+PER_MSG_TRUNC = int(os.getenv("IASTAFF_PER_MSG_CHARS", "200"))
+CONTEXT_MAX_CHARS = int(os.getenv("IASTAFF_CONTEXT_MAX_CHARS", "6000"))
 
-# Mémoire conversationnelle (échanges précédents avec l'IA, par salon)
-HISTORY_TURNS = int(os.getenv("IASTAFF_HISTORY_TURNS", "8"))  # nb d’échanges user+assistant conservés (2*turns items)
+# Mémoire conversationnelle (par salon)
+HISTORY_TURNS = int(os.getenv("IASTAFF_HISTORY_TURNS", "8"))
 
 # Limites & timeouts
 EMBED_DESC_LIMIT = 4096
 EMBED_SAFE_CHUNK = 3800
-OPENAI_TIMEOUT = float(os.getenv("IASTAFF_TIMEOUT", "120"))  # secondes
-MAX_OUTPUT_TOKENS = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))  # sorties longues
-INPUT_MAX_CHARS = int(os.getenv("IASTAFF_INPUT_MAX_CHARS", "12000"))     # cap du prompt final
+OPENAI_TIMEOUT = float(os.getenv("IASTAFF_TIMEOUT", "120"))
+MAX_OUTPUT_TOKENS = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
+INPUT_MAX_CHARS = int(os.getenv("IASTAFF_INPUT_MAX_CHARS", "12000"))
 
 # Visuel
-LOGO_FILENAME = os.getenv("IASTAFF_LOGO", "iastaff.png")  # image dans le même dossier
+LOGO_FILENAME = os.getenv("IASTAFF_LOGO", "iastaff.png")
 
 
-# ==== Utilitaires texte ====
+# ==== Utils ====
 def chunk_text(text: str, limit: int) -> list[str]:
-    """Découpe un texte en morceaux <= limit (essaie de couper aux fins de ligne)."""
     if not text:
         return [""]
     parts, buf = [], ""
@@ -52,7 +49,6 @@ def chunk_text(text: str, limit: int) -> list[str]:
         if len(buf) + len(line) + 1 > limit:
             if buf:
                 parts.append(buf)
-            # Si la ligne dépasse énormément, on coupe en dur
             while len(line) > limit:
                 parts.append(line[:limit])
                 line = line[limit:]
@@ -64,73 +60,84 @@ def chunk_text(text: str, limit: int) -> list[str]:
     return parts or [""]
 
 
-def deep_collect_text(resp_obj) -> str:
+def extract_generated_text(resp_obj) -> str:
     """
-    Fallback robuste: collecte récursivement les champs 'text'
-    si jamais output_text est vide.
+    Extraction *sûre* du texte généré :
+    - .output_text (voie standard)
+    - .output items ('output_text' / 'message' -> 'content' -> 'text')
+    NE JAMAIS ramasser les champs du prompt (ex: 'instructions').
     """
-    out = []
+    # 1) voie directe
+    t = getattr(resp_obj, "output_text", None)
+    if isinstance(t, str) and t.strip():
+        return t.strip()
 
-    def _walk(x):
-        if isinstance(x, dict):
-            if "text" in x and isinstance(x["text"], str):
-                out.append(x["text"])
-            for v in x.values():
-                _walk(v)
-        elif isinstance(x, list):
-            for v in x:
-                _walk(v)
-
+    # 2) inspection contrôlée
     data = None
     try:
         if hasattr(resp_obj, "model_dump"):
             data = resp_obj.model_dump()
     except Exception:
         data = None
-    if data is None:
+    if not isinstance(data, dict):
         try:
             data = resp_obj.__dict__
         except Exception:
             data = None
-    if data is not None:
-        _walk(data)
-    return "\n".join([t for t in out if str(t).strip()])
+
+    texts: list[str] = []
+    if isinstance(data, dict):
+        out = data.get("output") or data.get("outputs") or []
+        if isinstance(out, list):
+            for item in out:
+                if not isinstance(item, dict):
+                    continue
+                typ = item.get("type")
+                if typ == "output_text":
+                    txt = item.get("text")
+                    if isinstance(txt, str) and txt.strip():
+                        texts.append(txt)
+                elif typ == "message":
+                    content = item.get("content") or []
+                    if isinstance(content, list):
+                        for c in content:
+                            if not isinstance(c, dict):
+                                continue
+                            ctyp = c.get("type")
+                            if ctyp in ("text", "output_text"):
+                                txt = c.get("text")
+                                if isinstance(txt, str) and txt.strip():
+                                    texts.append(txt)
+
+    return "\n".join([s for s in texts if s.strip()])
 
 
-# ==== Cog IA Staff ====
+# ==== Cog ====
 class IAStaff(commands.Cog):
-    """Assistant IA réservé au staff, avec contexte canal + mémoire courte et visuel propre."""
+    """Assistant IA réservé au staff, avec contexte canal+mémoire et logo en tête."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
         if AsyncOpenAI is None:
-            raise RuntimeError("La librairie 'openai' n'est pas installée. Ajoute 'openai' dans requirements.txt.")
+            raise RuntimeError("La librairie 'openai' n'est pas installée. Ajoute 'openai' à requirements.txt.")
 
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
-            log.warning("OPENAI_API_KEY manquante: !iastaff répondra une erreur tant que la clé n'est pas définie.")
+            log.warning("OPENAI_API_KEY manquante: !iastaff renverra une erreur tant que la clé n'est pas définie.")
 
-        # Timeout augmenté pour laisser l'API réfléchir longtemps si besoin
         self.client = AsyncOpenAI(api_key=api_key, timeout=OPENAI_TIMEOUT)
 
-        # Prompt Playground (prioritaire)
         self.prompt_id = os.getenv("OPENAI_STAFF_PROMPT_ID", DEFAULT_PROMPT_ID)
         self.prompt_version = os.getenv("OPENAI_STAFF_PROMPT_VERSION", DEFAULT_PROMPT_VERSION)
-        # Fallback model si pas de prompt
         self.model = os.getenv("OPENAI_STAFF_MODEL", DEFAULT_MODEL)
 
-        # Mémoire IA par salon: [{"role": "user"/"assistant", "text": "..."}]
         self.history: dict[int, list[dict[str, str]]] = {}
-
-        # Petits verrous par salon
         self.locks: dict[int, asyncio.Lock] = {}
 
-        # Cache très léger du contexte canal (évite de rebalayer si rien n’a changé)
-        # {channel_id: (last_msg_id, context_str)}
+        # cache contexte canal: {channel_id: (last_msg_id, context_str)}
         self.channel_ctx_cache: dict[int, tuple[int | None, str]] = {}
 
-        # Chemin logo
         self.logo_path = os.path.join(os.path.dirname(__file__), LOGO_FILENAME)
         self.has_logo = os.path.exists(self.logo_path)
 
@@ -140,7 +147,7 @@ class IAStaff(commands.Cog):
             self.prompt_id, self.prompt_version, self.model, HISTORY_TURNS
         )
 
-    # ---------- helpers mémoire ----------
+    # ---- mémoire ----
     def _get_lock(self, channel_id: int) -> asyncio.Lock:
         lock = self.locks.get(channel_id)
         if not lock:
@@ -156,7 +163,6 @@ class IAStaff(commands.Cog):
             self.history[channel_id] = buf[-max_items:]
 
     def _render_history_block(self, channel_id: int) -> str:
-        """Rend la petite mémoire IA (les derniers échanges avec l'assistant)."""
         buf = self.history.get(channel_id, [])
         if not buf:
             return ""
@@ -166,13 +172,8 @@ class IAStaff(commands.Cog):
             lines.append(f"{who}: {item['text']}")
         return "\n".join(lines)
 
-    # ---------- helpers contexte canal ----------
+    # ---- contexte canal ----
     async def _build_channel_context(self, ctx: commands.Context) -> str:
-        """
-        Construit un bloc texte avec les 40 derniers messages du salon (avant la commande),
-        tronqués proprement, et capé en longueur totale.
-        Cache court si le dernier message n’a pas changé.
-        """
         ch: discord.TextChannel = ctx.channel  # type: ignore
         last_id = ch.last_message_id
         cached = self.channel_ctx_cache.get(ch.id)
@@ -182,18 +183,14 @@ class IAStaff(commands.Cog):
         lines = ["Contexte du canal (jusqu’aux 40 derniers messages) :"]
         gathered_chars = 0
 
-        # On prend les messages avant la commande (sinon on inclut la commande elle-même)
         msgs = []
         async for m in ch.history(limit=CONTEXT_MESSAGES, before=ctx.message, oldest_first=True):
             msgs.append(m)
 
         for m in msgs:
-            # Prend le texte "nettoyé" (mentions résolues)
             txt = (m.clean_content or "").strip()
             if not txt:
-                continue  # ignore les messages sans texte
-
-            # Tronque chaque message pour éviter l’explosion
+                continue
             if len(txt) > PER_MSG_TRUNC:
                 txt = txt[:PER_MSG_TRUNC] + "…"
 
@@ -209,12 +206,8 @@ class IAStaff(commands.Cog):
         self.channel_ctx_cache[ch.id] = (last_id, block)
         return block
 
-    # ---------- OpenAI ----------
+    # ---- OpenAI ----
     def _build_request(self, input_text: str) -> dict:
-        """
-        Construit la requête pour Responses API.
-        On n’interdit aucun outil ici (tu as déjà retiré ceux d’image côté Playground).
-        """
         base = {
             "input": input_text,
             "max_output_tokens": MAX_OUTPUT_TOKENS,
@@ -229,31 +222,21 @@ class IAStaff(commands.Cog):
         try:
             req = self._build_request(final_input)
             resp = await self.client.responses.create(**req)
-
-            text = (getattr(resp, "output_text", None) or "").strip()
-            if text:
-                return text
-
-            # Fallback si output_text vide
-            text = deep_collect_text(resp).strip()
+            text = extract_generated_text(resp)
             return text
         except Exception as e:
             raise RuntimeError(f"Erreur API OpenAI: {e}") from e
 
-    # ---------- Envoi Discord ----------
+    # ---- Discord envoi ----
     def _make_embed(self, page_text: str, idx: int, total: int) -> tuple[discord.Embed, list[discord.File]]:
-        """Construit un embed avec logo discret en haut (author icon) + pagination."""
         emb = discord.Embed(description=page_text, color=discord.Color.teal())
-
-        # Author comme bandeau discret avec l’icône (plutôt qu’une grosse image)
-        name = "IA Staff" + (f" • {idx}/{total}" if total > 1 else "")
+        title = "IA Staff" + (f" • {idx}/{total}" if total > 1 else "")
         files: list[discord.File] = []
         if self.has_logo:
             files.append(discord.File(self.logo_path, filename="iastaff.png"))
-            emb.set_author(name=name, icon_url="attachment://iastaff.png")
+            emb.set_author(name=title, icon_url="attachment://iastaff.png")
         else:
-            emb.set_author(name=name)
-
+            emb.set_author(name=title)
         emb.set_footer(text=("Prompt Playground" if self.prompt_id else f"Modèle: {self.model}"))
         return emb, files
 
@@ -261,29 +244,19 @@ class IAStaff(commands.Cog):
         if not text:
             await ctx.reply("Je n’ai rien reçu de l’API.", mention_author=False)
             return
-
         parts = chunk_text(text, EMBED_SAFE_CHUNK)
         total = len(parts)
         for i, part in enumerate(parts, start=1):
             emb, files = self._make_embed(part, i, total)
-            # un fichier par message; Discord exige un objet File "neuf" à chaque envoi
             await ctx.send(embed=emb, files=files or None)
 
-    # ---------- Commandes ----------
+    # ---- Commande principale ----
     @commands.command(name="iastaff", aliases=["staffia"])
     @commands.has_role(STAFF_ROLE_NAME)
     async def iastaff_cmd(self, ctx: commands.Context, *, message: str):
-        """
-        Assistant réservé au staff, avec contexte canal + mémoire.
-        Exemples:
-          !iastaff Donne la strat du donjon X
-          !iastaff reset   -> vide la mémoire du salon
-          !iastaff info    -> affiche la config
-        """
         if not os.environ.get("OPENAI_API_KEY"):
             await ctx.reply(
-                "❌ `OPENAI_API_KEY` n'est pas configurée sur l'hébergement. "
-                "Ajoute la variable puis redeploie.",
+                "❌ `OPENAI_API_KEY` n'est pas configurée sur l'hébergement. Ajoute la variable puis redeploie.",
                 mention_author=False
             )
             return
@@ -317,13 +290,9 @@ class IAStaff(commands.Cog):
         lock = self._get_lock(channel_id)
         async with lock:
             async with ctx.typing():
-                # 1) Bloc contexte du canal (40 derniers messages)
                 channel_ctx = await self._build_channel_context(ctx)
-
-                # 2) Bloc mémoire IA du salon
                 memory_ctx = self._render_history_block(channel_id)
 
-                # 3) Assemble l’input final en respectant un plafond de taille
                 sections = []
                 if channel_ctx:
                     sections.append(channel_ctx)
@@ -333,7 +302,6 @@ class IAStaff(commands.Cog):
 
                 final_input = "\n\n".join(sections)
                 if len(final_input) > INPUT_MAX_CHARS:
-                    # Priorité: on réduit d'abord le bloc canal (le plus verbeux)
                     overflow = len(final_input) - INPUT_MAX_CHARS
                     trimmed = channel_ctx[:-min(overflow + 500, len(channel_ctx))]
                     channel_ctx = trimmed + "\n…"
@@ -345,7 +313,6 @@ class IAStaff(commands.Cog):
                     sections.append(f"Utilisateur: {msg}\nAssistant:")
                     final_input = "\n\n".join(sections)
 
-                # 4) Appel OpenAI (timeout augmenté)
                 try:
                     text = await self._ask_openai(final_input)
                 except Exception as e:
@@ -359,11 +326,9 @@ class IAStaff(commands.Cog):
                 )
                 return
 
-            # 5) Mise à jour de la mémoire IA
             self._push_history(channel_id, "user", msg)
             self._push_history(channel_id, "assistant", text)
 
-        # 6) Envoi stylé + chunking
         await self._send_long_reply(ctx, text)
 
 
