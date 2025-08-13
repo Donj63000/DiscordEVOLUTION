@@ -9,41 +9,35 @@ from discord.ext import commands
 
 try:
     from openai import AsyncOpenAI
-except Exception:  # pragma: no cover
+except Exception:
     AsyncOpenAI = None
 
 log = logging.getLogger("iastaff")
 
-# ==== Config ====
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
 
 DEFAULT_MODEL = os.getenv("OPENAI_STAFF_MODEL", "gpt-5-nano")
 DEFAULT_PROMPT_ID = os.getenv("OPENAI_STAFF_PROMPT_ID", "pmpt_689900255180819686efd4ca8cebfc7706a0776e4dbf2240")
-DEFAULT_PROMPT_VERSION = os.getenv("OPENAI_STAFF_PROMPT_VERSION", "5")  # v5
+DEFAULT_PROMPT_VERSION = os.getenv("OPENAI_STAFF_PROMPT_VERSION", "5")
 
-# Contexte canal
 CONTEXT_MESSAGES = int(os.getenv("IASTAFF_CHANNEL_CONTEXT", "40"))
 PER_MSG_TRUNC = int(os.getenv("IASTAFF_PER_MSG_CHARS", "200"))
 CONTEXT_MAX_CHARS = int(os.getenv("IASTAFF_CONTEXT_MAX_CHARS", "6000"))
 
-# Mémoire conversationnelle (par salon)
 HISTORY_TURNS = int(os.getenv("IASTAFF_HISTORY_TURNS", "8"))
 
-# Limites & timeouts
 EMBED_DESC_LIMIT = 4096
 EMBED_SAFE_CHUNK = 3800
 OPENAI_TIMEOUT = float(os.getenv("IASTAFF_TIMEOUT", "120"))
 MAX_OUTPUT_TOKENS = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
 INPUT_MAX_CHARS = int(os.getenv("IASTAFF_INPUT_MAX_CHARS", "12000"))
 
-# Autoriser l’outil Web Search (conforme à ton prompt). 0 pour désactiver si besoin.
 ENABLE_WEB_SEARCH = os.getenv("IASTAFF_ENABLE_WEB", "1") != "0"
+VECTOR_STORE_ID = os.getenv("IASTAFF_VECTOR_STORE_ID", "").strip()
 
-# Visuel
 LOGO_FILENAME = os.getenv("IASTAFF_LOGO", "iastaff.png")
 
 
-# ==== Utils ====
 def chunk_text(text: str, limit: int) -> list[str]:
     if not text:
         return [""]
@@ -63,59 +57,70 @@ def chunk_text(text: str, limit: int) -> list[str]:
     return parts or [""]
 
 
-def extract_generated_text(resp_obj) -> str:
-    """
-    Extraction *sûre* du texte généré :
-    - .output_text (voie standard)
-    - .output items ('output_text') ou 'message' -> 'content' -> 'text'
-    On IGNORE les champs du prompt (ex: 'instructions').
-    """
-    t = getattr(resp_obj, "output_text", None)
-    if isinstance(t, str) and t.strip():
-        return t.strip()
-
-    data = None
-    try:
-        if hasattr(resp_obj, "model_dump"):
-            data = resp_obj.model_dump()
-    except Exception:
-        data = None
-    if not isinstance(data, dict):
+def _get_dict(resp_obj) -> dict:
+    for attr in ("model_dump", "to_dict"):
         try:
-            data = resp_obj.__dict__
+            fn = getattr(resp_obj, attr, None)
+            if callable(fn):
+                d = fn()
+                if isinstance(d, dict):
+                    return d
         except Exception:
-            data = None
-
-    texts: list[str] = []
-    if isinstance(data, dict):
-        out = data.get("output") or data.get("outputs") or []
-        if isinstance(out, list):
-            for item in out:
-                if not isinstance(item, dict):
-                    continue
-                typ = item.get("type")
-                if typ == "output_text":
-                    txt = item.get("text")
-                    if isinstance(txt, str) and txt.strip():
-                        texts.append(txt)
-                elif typ == "message":
-                    content = item.get("content") or []
-                    if isinstance(content, list):
-                        for c in content:
-                            if not isinstance(c, dict):
-                                continue
-                            if c.get("type") in ("text", "output_text"):
-                                txt = c.get("text")
-                                if isinstance(txt, str) and txt.strip():
-                                    texts.append(txt)
-
-    return "\n".join([s for s in texts if s.strip()])
+            pass
+    try:
+        d = resp_obj.__dict__
+        if isinstance(d, dict):
+            return d
+    except Exception:
+        pass
+    return {}
 
 
-# ==== Cog ====
+def extract_generated_text(resp_obj) -> str:
+    try:
+        t = getattr(resp_obj, "output_text", None)
+        if isinstance(t, str) and t.strip():
+            return t.strip()
+    except Exception:
+        pass
+    data = _get_dict(resp_obj)
+
+    def pick_text(node):
+        if isinstance(node, str):
+            s = node.strip()
+            return s if s else ""
+        if isinstance(node, dict):
+            t = node.get("text")
+            if isinstance(t, dict):
+                v = t.get("value")
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            if isinstance(t, str) and t.strip():
+                typ = node.get("type")
+                if typ in ("output_text", "text", "message_text", "final_text"):
+                    return t.strip()
+            for k in ("output", "outputs", "message", "content", "delta", "arguments", "value", "choices", "response"):
+                if k in node:
+                    r = pick_text(node[k])
+                    if r:
+                        return r
+            for v in node.values():
+                r = pick_text(v)
+                if r:
+                    return r
+            return ""
+        if isinstance(node, list):
+            for v in node:
+                r = pick_text(v)
+                if r:
+                    return r
+            return ""
+        return ""
+
+    return pick_text(data).strip()
+
+
 class IAStaff(commands.Cog):
-    """Assistant IA réservé au staff, avec contexte canal+mémoire et logo en tête."""
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
@@ -134,20 +139,14 @@ class IAStaff(commands.Cog):
 
         self.history: dict[int, list[dict[str, str]]] = {}
         self.locks: dict[int, asyncio.Lock] = {}
-
-        # cache contexte canal: {channel_id: (last_msg_id, context_str)}
         self.channel_ctx_cache: dict[int, tuple[int | None, str]] = {}
 
         self.logo_path = os.path.join(os.path.dirname(__file__), LOGO_FILENAME)
         self.has_logo = os.path.exists(self.logo_path)
 
     async def cog_load(self):
-        log.info(
-            "IAStaff prêt (prompt_id=%s, version=%s | fallback model=%s | history=%d tours)",
-            self.prompt_id, self.prompt_version, self.model, HISTORY_TURNS
-        )
+        log.info("IAStaff prêt (prompt_id=%s, version=%s | model=%s | history=%d tours)", self.prompt_id, self.prompt_version, self.model, HISTORY_TURNS)
 
-    # ---- mémoire ----
     def _get_lock(self, channel_id: int) -> asyncio.Lock:
         lock = self.locks.get(channel_id)
         if not lock:
@@ -172,7 +171,6 @@ class IAStaff(commands.Cog):
             lines.append(f"{who}: {item['text']}")
         return "\n".join(lines)
 
-    # ---- contexte canal ----
     async def _build_channel_context(self, ctx: commands.Context) -> str:
         ch: discord.TextChannel = ctx.channel  # type: ignore
         last_id = ch.last_message_id
@@ -206,18 +204,22 @@ class IAStaff(commands.Cog):
         self.channel_ctx_cache[ch.id] = (last_id, block)
         return block
 
-    # ---- OpenAI ----
     def _build_request(self, input_text: str) -> dict:
         base = {
             "input": input_text,
             "max_output_tokens": MAX_OUTPUT_TOKENS,
+            "model": self.model,
+            "response_format": {"type": "text"},
         }
-        if ENABLE_WEB_SEARCH:
-            base["tools"] = [{"type": "web_search"}]  # <- autorise Web Search côté OpenAI
         if self.prompt_id:
             base["prompt"] = {"id": self.prompt_id, "version": self.prompt_version}
-        else:
-            base["model"] = self.model
+        tools = []
+        if ENABLE_WEB_SEARCH:
+            tools.append({"type": "web_search"})
+        if VECTOR_STORE_ID:
+            tools.append({"type": "file_search", "vector_store_ids": [VECTOR_STORE_ID]})
+        if tools:
+            base["tools"] = tools
         return base
 
     async def _ask_openai(self, final_input: str) -> str:
@@ -229,7 +231,6 @@ class IAStaff(commands.Cog):
         except Exception as e:
             raise RuntimeError(f"Erreur API OpenAI: {e}") from e
 
-    # ---- Discord envoi ----
     def _make_embed(self, page_text: str, idx: int, total: int) -> tuple[discord.Embed, list[discord.File]]:
         emb = discord.Embed(description=page_text, color=discord.Color.teal())
         title = "IA Staff" + (f" • {idx}/{total}" if total > 1 else "")
@@ -252,21 +253,16 @@ class IAStaff(commands.Cog):
             emb, files = self._make_embed(part, i, total)
             await ctx.send(embed=emb, files=files or None)
 
-    # ---- Commande principale ----
     @commands.command(name="iastaff", aliases=["staffia"])
     @commands.has_role(STAFF_ROLE_NAME)
     async def iastaff_cmd(self, ctx: commands.Context, *, message: str):
         if not os.environ.get("OPENAI_API_KEY"):
-            await ctx.reply(
-                "❌ `OPENAI_API_KEY` n'est pas configurée sur l'hébergement. Ajoute la variable puis redeploie.",
-                mention_author=False
-            )
+            await ctx.reply("❌ `OPENAI_API_KEY` n'est pas configurée sur l'hébergement. Ajoute la variable puis redeploie.", mention_author=False)
             return
 
         msg = (message or "").strip()
         if not msg:
-            await ctx.reply("Donne un message après la commande, ex: `!iastaff Quel est le plan ?`",
-                            mention_author=False)
+            await ctx.reply("Donne un message après la commande, ex: `!iastaff Quel est le plan ?`", mention_author=False)
             return
 
         low = msg.lower()
@@ -285,7 +281,7 @@ class IAStaff(commands.Cog):
                 f"Timeout: {OPENAI_TIMEOUT}s | Max output tokens: {MAX_OUTPUT_TOKENS}\n"
                 f"Contexte canal: {CONTEXT_MESSAGES} msgs (≤{CONTEXT_MAX_CHARS} chars, {PER_MSG_TRUNC}/msg)\n"
                 f"Mémoire IA (salon): {len(self.history.get(channel_id, []))} items (max {HISTORY_TURNS*2})\n"
-                f"Web Search: {'activé' if ENABLE_WEB_SEARCH else 'désactivé'}"
+                f"Web Search: {'activé' if ENABLE_WEB_SEARCH else 'désactivé'} | File Search: {'activé' if VECTOR_STORE_ID else 'désactivé'}"
             )
             await ctx.reply(details, mention_author=False)
             return
@@ -323,10 +319,7 @@ class IAStaff(commands.Cog):
                     return
 
             if not text.strip():
-                await ctx.reply(
-                    "La réponse de l'IA est vide. Réessaie en reformulant (ou `!iastaff reset`).",
-                    mention_author=False
-                )
+                await ctx.reply("La réponse de l'IA est vide. Réessaie en reformulant (ou `!iastaff reset`).", mention_author=False)
                 return
 
             self._push_history(channel_id, "user", msg)
