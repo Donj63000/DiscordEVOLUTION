@@ -15,15 +15,13 @@ except Exception:
 log = logging.getLogger("iastaff")
 
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-
 DEFAULT_MODEL = os.getenv("OPENAI_STAFF_MODEL", "gpt-5-nano")
 DEFAULT_PROMPT_ID = os.getenv("OPENAI_STAFF_PROMPT_ID", "pmpt_689900255180819686efd4ca8cebfc7706a0776e4dbf2240")
-DEFAULT_PROMPT_VERSION = os.getenv("OPENAI_STAFF_PROMPT_VERSION", "5")
+DEFAULT_PROMPT_VERSION = os.getenv("OPENAI_STAFF_PROMPT_VERSION", "6")
 
 CONTEXT_MESSAGES = int(os.getenv("IASTAFF_CHANNEL_CONTEXT", "40"))
 PER_MSG_TRUNC = int(os.getenv("IASTAFF_PER_MSG_CHARS", "200"))
 CONTEXT_MAX_CHARS = int(os.getenv("IASTAFF_CONTEXT_MAX_CHARS", "6000"))
-
 HISTORY_TURNS = int(os.getenv("IASTAFF_HISTORY_TURNS", "8"))
 
 EMBED_SAFE_CHUNK = 3800
@@ -75,6 +73,25 @@ def _to_dict(obj) -> dict:
     return {}
 
 
+def _extract_from_message(msg: dict) -> list[str]:
+    texts = []
+    content = msg.get("content") or []
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            t = part.get("type")
+            if t in ("output_text", "text"):
+                val = part.get("text")
+                if isinstance(val, str) and val.strip():
+                    texts.append(val.strip())
+                elif isinstance(val, dict):
+                    v = val.get("value")
+                    if isinstance(v, str) and v.strip():
+                        texts.append(v.strip())
+    return texts
+
+
 def extract_generated_text(resp_obj) -> str:
     try:
         t = getattr(resp_obj, "output_text", None)
@@ -83,40 +100,36 @@ def extract_generated_text(resp_obj) -> str:
     except Exception:
         pass
     data = _to_dict(resp_obj)
-
-    def pick(node):
-        if isinstance(node, str):
-            s = node.strip()
-            return s if s else ""
-        if isinstance(node, dict):
-            text_field = node.get("text")
-            if isinstance(text_field, dict):
-                v = text_field.get("value")
-                if isinstance(v, str) and v.strip():
-                    return v.strip()
-            if isinstance(text_field, str) and text_field.strip():
-                typ = node.get("type")
-                if typ in ("output_text", "text", "message_text"):
-                    return text_field.strip()
-            for k in ("output", "outputs", "message", "content", "delta", "value", "choices", "response"):
-                if k in node:
-                    r = pick(node[k])
-                    if r:
-                        return r
-            for v in node.values():
-                r = pick(v)
-                if r:
-                    return r
-            return ""
-        if isinstance(node, list):
-            for v in node:
-                r = pick(v)
-                if r:
-                    return r
-            return ""
-        return ""
-
-    return pick(data).strip()
+    texts: list[str] = []
+    out = data.get("output") or data.get("outputs")
+    if isinstance(out, list):
+        for item in out:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "message":
+                texts += _extract_from_message(item)
+            elif item.get("message"):
+                m = item.get("message")
+                if isinstance(m, dict):
+                    texts += _extract_from_message(m)
+    if not texts:
+        resp = data.get("response")
+        if isinstance(resp, dict):
+            out2 = resp.get("output") or resp.get("outputs")
+            if isinstance(out2, list):
+                for item in out2:
+                    if isinstance(item, dict) and item.get("type") == "message":
+                        texts += _extract_from_message(item)
+    if not texts and isinstance(data.get("choices"), list):
+        for ch in data["choices"]:
+            if not isinstance(ch, dict):
+                continue
+            m = ch.get("message")
+            if isinstance(m, dict):
+                c = m.get("content")
+                if isinstance(c, str) and c.strip():
+                    texts.append(c.strip())
+    return "\n".join([s for s in texts if s.strip()])
 
 
 class IAStaff(commands.Cog):
@@ -165,7 +178,7 @@ class IAStaff(commands.Cog):
         return "\n".join(lines)
 
     async def _build_channel_context(self, ctx: commands.Context) -> str:
-        ch: discord.TextChannel = ctx.channel  # type: ignore
+        ch: discord.TextChannel = ctx.channel
         last_id = ch.last_message_id
         cached = self.channel_ctx_cache.get(ch.id)
         if cached and cached[0] == last_id:
@@ -210,6 +223,12 @@ class IAStaff(commands.Cog):
         try:
             resp = await self.client.responses.create(**req)
             txt = extract_generated_text(resp)
+            if not txt.strip() and req.get("tools"):
+                safe_req = dict(req)
+                safe_req.pop("tools", None)
+                safe_req.pop("tool_resources", None)
+                resp2 = await self.client.responses.create(**safe_req)
+                txt = extract_generated_text(resp2)
             if txt.strip():
                 return txt
         except Exception as e:
