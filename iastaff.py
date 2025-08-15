@@ -80,8 +80,8 @@ def _extract_from_message(msg: dict) -> list[str]:
         for part in content:
             if not isinstance(part, dict):
                 continue
-            t = part.get("type")
-            if t in ("output_text", "text"):
+            typ = part.get("type")
+            if typ in ("output_text", "text"):
                 val = part.get("text")
                 if isinstance(val, str) and val.strip():
                     texts.append(val.strip())
@@ -89,6 +89,28 @@ def _extract_from_message(msg: dict) -> list[str]:
                     v = val.get("value")
                     if isinstance(v, str) and v.strip():
                         texts.append(v.strip())
+    return texts
+
+
+def _extract_from_outputs(outputs) -> list[str]:
+    texts = []
+    if isinstance(outputs, list):
+        for item in outputs:
+            if not isinstance(item, dict):
+                continue
+            typ = item.get("type")
+            if typ == "output_text":
+                val = item.get("text")
+                if isinstance(val, str) and val.strip():
+                    texts.append(val.strip())
+                elif isinstance(val, dict):
+                    v = val.get("value")
+                    if isinstance(v, str) and v.strip():
+                        texts.append(v.strip())
+            elif typ == "message":
+                texts += _extract_from_message(item)
+            elif "message" in item and isinstance(item["message"], dict):
+                texts += _extract_from_message(item["message"])
     return texts
 
 
@@ -101,25 +123,11 @@ def extract_generated_text(resp_obj) -> str:
         pass
     data = _to_dict(resp_obj)
     texts: list[str] = []
-    out = data.get("output") or data.get("outputs")
-    if isinstance(out, list):
-        for item in out:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "message":
-                texts += _extract_from_message(item)
-            elif item.get("message"):
-                m = item.get("message")
-                if isinstance(m, dict):
-                    texts += _extract_from_message(m)
+    texts += _extract_from_outputs(data.get("output") or data.get("outputs"))
     if not texts:
         resp = data.get("response")
         if isinstance(resp, dict):
-            out2 = resp.get("output") or resp.get("outputs")
-            if isinstance(out2, list):
-                for item in out2:
-                    if isinstance(item, dict) and item.get("type") == "message":
-                        texts += _extract_from_message(item)
+            texts += _extract_from_outputs(resp.get("output") or resp.get("outputs"))
     if not texts and isinstance(data.get("choices"), list):
         for ch in data["choices"]:
             if not isinstance(ch, dict):
