@@ -15,9 +15,7 @@ except Exception:
 log = logging.getLogger("iastaff")
 
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-DEFAULT_MODEL = os.getenv("OPENAI_STAFF_MODEL", "gpt-5-nano")
-DEFAULT_PROMPT_ID = os.getenv("OPENAI_STAFF_PROMPT_ID", "pmpt_689900255180819686efd4ca8cebfc7706a0776e4dbf2240")
-DEFAULT_PROMPT_VERSION = os.getenv("OPENAI_STAFF_PROMPT_VERSION", "6")
+DEFAULT_MODEL = os.getenv("OPENAI_STAFF_MODEL", "gpt-5")
 
 CONTEXT_MESSAGES = int(os.getenv("IASTAFF_CHANNEL_CONTEXT", "40"))
 PER_MSG_TRUNC = int(os.getenv("IASTAFF_PER_MSG_CHARS", "200"))
@@ -28,12 +26,21 @@ EMBED_SAFE_CHUNK = 3800
 OPENAI_TIMEOUT = float(os.getenv("IASTAFF_TIMEOUT", "120"))
 MAX_OUTPUT_TOKENS = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
 INPUT_MAX_CHARS = int(os.getenv("IASTAFF_INPUT_MAX_CHARS", "12000"))
+TEMPERATURE = float(os.getenv("IASTAFF_TEMPERATURE", "0.3"))
 
 ENABLE_WEB_SEARCH = os.getenv("IASTAFF_ENABLE_WEB", "1") != "0"
 VECTOR_STORE_ID = os.getenv("IASTAFF_VECTOR_STORE_ID", "").strip()
 
 LOGO_FILENAME = os.getenv("IASTAFF_LOGO", "iastaff.png")
 
+SYSTEM_PROMPT_DEFAULT = (
+    "Tu es EvolutionPRO, IA du staff de la guilde Évolution (Dofus Retro).\n"
+    "Par défaut tu réponds en français, de façon claire, concise et utile, avec un ton amical et vif.\n"
+    "Quand l'utilisateur demande du code, fournis un code complet, prêt à l'emploi, sans commentaires, robuste et optimisé. Ne renvoie pas de parties manquantes.\n"
+    "Adapte tes réponses au contexte du salon et à la mémoire récente fournie. Évite le blabla inutile. Structure quand pertinent avec des listes courtes.\n"
+    "Pour les réponses longues, priorise la clarté et la justesse. Si une fonction comporte des paramètres, choisis des valeurs par défaut sensées.\n"
+    "Ne mentionne pas de playground ni de prompt externe. Tu fonctionnes uniquement via l’API.\n"
+)
 
 def chunk_text(text: str, limit: int) -> list[str]:
     if not text:
@@ -53,7 +60,6 @@ def chunk_text(text: str, limit: int) -> list[str]:
         parts.append(buf)
     return parts or [""]
 
-
 def _to_dict(obj) -> dict:
     for attr in ("model_dump", "to_dict"):
         try:
@@ -72,7 +78,6 @@ def _to_dict(obj) -> dict:
         pass
     return {}
 
-
 def _extract_from_message(msg: dict) -> list[str]:
     texts = []
     content = msg.get("content") or []
@@ -90,7 +95,6 @@ def _extract_from_message(msg: dict) -> list[str]:
                     if isinstance(v, str) and v.strip():
                         texts.append(v.strip())
     return texts
-
 
 def _extract_from_outputs(outputs) -> list[str]:
     texts = []
@@ -112,7 +116,6 @@ def _extract_from_outputs(outputs) -> list[str]:
             elif "message" in item and isinstance(item["message"], dict):
                 texts += _extract_from_message(item["message"])
     return texts
-
 
 def extract_generated_text(resp_obj) -> str:
     try:
@@ -139,7 +142,6 @@ def extract_generated_text(resp_obj) -> str:
                     texts.append(c.strip())
     return "\n".join([s for s in texts if s.strip()])
 
-
 class IAStaff(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -149,9 +151,8 @@ class IAStaff(commands.Cog):
         if not api_key:
             log.warning("OPENAI_API_KEY manquante: !iastaff renverra une erreur tant que la clé n'est pas définie.")
         self.client = AsyncOpenAI(api_key=api_key, timeout=OPENAI_TIMEOUT)
-        self.prompt_id = os.getenv("OPENAI_STAFF_PROMPT_ID", DEFAULT_PROMPT_ID)
-        self.prompt_version = os.getenv("OPENAI_STAFF_PROMPT_VERSION", DEFAULT_PROMPT_VERSION)
         self.model = os.getenv("OPENAI_STAFF_MODEL", DEFAULT_MODEL)
+        self.system_prompt = os.getenv("IASTAFF_SYSTEM_PROMPT", SYSTEM_PROMPT_DEFAULT)
         self.history: dict[int, list[dict[str, str]]] = {}
         self.locks: dict[int, asyncio.Lock] = {}
         self.channel_ctx_cache: dict[int, tuple[int | None, str]] = {}
@@ -159,7 +160,7 @@ class IAStaff(commands.Cog):
         self.has_logo = os.path.exists(self.logo_path)
 
     async def cog_load(self):
-        log.info("IAStaff prêt (prompt_id=%s, version=%s | model=%s | history=%d tours)", self.prompt_id, self.prompt_version, self.model, HISTORY_TURNS)
+        log.info("IAStaff prêt (model=%s | history=%d tours | web=%s | files=%s)", self.model, HISTORY_TURNS, "on" if ENABLE_WEB_SEARCH else "off", "on" if VECTOR_STORE_ID else "off")
 
     def _get_lock(self, channel_id: int) -> asyncio.Lock:
         lock = self.locks.get(channel_id)
@@ -174,16 +175,6 @@ class IAStaff(commands.Cog):
         max_items = HISTORY_TURNS * 2
         if len(buf) > max_items:
             self.history[channel_id] = buf[-max_items:]
-
-    def _render_history_block(self, channel_id: int) -> str:
-        buf = self.history.get(channel_id, [])
-        if not buf:
-            return ""
-        lines = ["Mémoire récente (échanges précédents avec l’assistant) :"]
-        for item in buf:
-            who = "Utilisateur" if item["role"] == "user" else "Assistant"
-            lines.append(f"{who}: {item['text']}")
-        return "\n".join(lines)
 
     async def _build_channel_context(self, ctx: commands.Context) -> str:
         ch: discord.TextChannel = ctx.channel
@@ -212,10 +203,48 @@ class IAStaff(commands.Cog):
         self.channel_ctx_cache[ch.id] = (last_id, block)
         return block
 
-    def _build_request(self, input_text: str) -> dict:
-        base = {"input": input_text, "max_output_tokens": MAX_OUTPUT_TOKENS, "model": self.model}
-        if self.prompt_id:
-            base["prompt"] = {"id": self.prompt_id, "version": self.prompt_version}
+    def _make_messages(self, channel_ctx: str, channel_id: int, user_msg: str) -> list[dict]:
+        dev_rules = (
+            "Règles:\n"
+            "1) Réponds en français.\n"
+            "2) Quand on demande du code, rends un bloc complet sans commentaires.\n"
+            "3) Sois précis et utile pour la guilde Évolution (Dofus Retro).\n"
+            "4) Évite les réponses verbeuses; privilégie l’essentiel.\n"
+        )
+        messages: list[dict] = []
+        messages.append({"role": "system", "content": [{"type": "input_text", "text": self.system_prompt}]})
+        messages.append({"role": "developer", "content": [{"type": "input_text", "text": dev_rules}]})
+        if channel_ctx:
+            messages.append({"role": "developer", "content": [{"type": "input_text", "text": channel_ctx}]})
+        hist = self.history.get(channel_id, [])
+        for item in hist:
+            if item["role"] == "user":
+                messages.append({"role": "user", "content": [{"type": "input_text", "text": item["text"]}]})
+            else:
+                messages.append({"role": "assistant", "content": [{"type": "output_text", "text": item["text"]}]})
+        messages.append({"role": "user", "content": [{"type": "input_text", "text": user_msg}]})
+        approx_chars = 0
+        for m in messages:
+            for c in m.get("content", []):
+                t = c.get("text")
+                if isinstance(t, str):
+                    approx_chars += len(t)
+        if approx_chars > INPUT_MAX_CHARS and channel_ctx:
+            overflow = approx_chars - INPUT_MAX_CHARS
+            trimmed = channel_ctx[:-min(overflow + 500, len(channel_ctx))]
+            channel_ctx = trimmed + "\n…"
+            messages = [messages[0], messages[1]]
+            messages.append({"role": "developer", "content": [{"type": "input_text", "text": channel_ctx}]})
+            for item in hist:
+                if item["role"] == "user":
+                    messages.append({"role": "user", "content": [{"type": "input_text", "text": item["text"]}]})
+                else:
+                    messages.append({"role": "assistant", "content": [{"type": "output_text", "text": item["text"]}]})
+            messages.append({"role": "user", "content": [{"type": "input_text", "text": user_msg}]})
+        return messages
+
+    def _build_request(self, messages: list[dict]) -> dict:
+        base = {"model": self.model, "input": messages, "max_output_tokens": MAX_OUTPUT_TOKENS, "temperature": TEMPERATURE, "store": False}
         tools = []
         if ENABLE_WEB_SEARCH:
             tools.append({"type": "web_search"})
@@ -226,8 +255,8 @@ class IAStaff(commands.Cog):
             base["tools"] = tools
         return base
 
-    async def _ask_openai(self, final_input: str) -> str:
-        req = self._build_request(final_input)
+    async def _ask_openai(self, messages: list[dict]) -> str:
+        req = self._build_request(messages)
         try:
             resp = await self.client.responses.create(**req)
             txt = extract_generated_text(resp)
@@ -263,7 +292,7 @@ class IAStaff(commands.Cog):
             emb.set_author(name=title, icon_url="attachment://iastaff.png")
         else:
             emb.set_author(name=title)
-        emb.set_footer(text=("Prompt Playground" if self.prompt_id else f"Modèle: {self.model}"))
+        emb.set_footer(text=f"Modèle: {self.model}")
         return emb, files
 
     async def _send_long_reply(self, ctx: commands.Context, text: str):
@@ -294,10 +323,8 @@ class IAStaff(commands.Cog):
             return
         if low in {"info", "config"}:
             details = (
-                f"Prompt: `{self.prompt_id or '—'}`\n"
-                f"Version: `{self.prompt_version if self.prompt_id else '—'}`\n"
                 f"Model: `{self.model}`\n"
-                f"Timeout: {OPENAI_TIMEOUT}s | Max output tokens: {MAX_OUTPUT_TOKENS}\n"
+                f"Timeout: {OPENAI_TIMEOUT}s | Max output tokens: {MAX_OUTPUT_TOKENS} | Temp: {TEMPERATURE}\n"
                 f"Contexte canal: {CONTEXT_MESSAGES} msgs (≤{CONTEXT_MAX_CHARS} chars, {PER_MSG_TRUNC}/msg)\n"
                 f"Mémoire IA (salon): {len(self.history.get(channel_id, []))} items (max {HISTORY_TURNS*2})\n"
                 f"Web Search: {'activé' if ENABLE_WEB_SEARCH else 'désactivé'} | File Search: {'activé' if VECTOR_STORE_ID else 'désactivé'}"
@@ -308,27 +335,9 @@ class IAStaff(commands.Cog):
         async with lock:
             async with ctx.typing():
                 channel_ctx = await self._build_channel_context(ctx)
-                memory_ctx = self._render_history_block(channel_id)
-                sections = []
-                if channel_ctx:
-                    sections.append(channel_ctx)
-                if memory_ctx:
-                    sections.append(memory_ctx)
-                sections.append(f"Utilisateur: {msg}\nAssistant:")
-                final_input = "\n\n".join(sections)
-                if len(final_input) > INPUT_MAX_CHARS:
-                    overflow = len(final_input) - INPUT_MAX_CHARS
-                    trimmed = channel_ctx[:-min(overflow + 500, len(channel_ctx))]
-                    channel_ctx = trimmed + "\n…"
-                    sections = []
-                    if channel_ctx:
-                        sections.append(channel_ctx)
-                    if memory_ctx:
-                        sections.append(memory_ctx)
-                    sections.append(f"Utilisateur: {msg}\nAssistant:")
-                    final_input = "\n\n".join(sections)
+                messages = self._make_messages(channel_ctx, channel_id, msg)
                 try:
-                    text = await self._ask_openai(final_input)
+                    text = await self._ask_openai(messages)
                 except Exception as e:
                     await ctx.reply(f"❌ {e}", mention_author=False)
                     return
@@ -338,7 +347,6 @@ class IAStaff(commands.Cog):
             self._push_history(channel_id, "user", msg)
             self._push_history(channel_id, "assistant", text)
         await self._send_long_reply(ctx, text)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(IAStaff(bot))
