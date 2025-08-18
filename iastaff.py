@@ -32,13 +32,73 @@ VECTOR_STORE_ID = os.getenv("IASTAFF_VECTOR_STORE_ID", "").strip()
 
 LOGO_FILENAME = os.getenv("IASTAFF_LOGO", "iastaff.png")
 
+GUILD_RULES = """Règlement Officiel de la Guilde Evolution – Édition du 19/02/2025
+
+“Ensemble, nous évoluerons plus vite que seuls.”
+
+Bienvenue au sein de la guilde Evolution ! Ce règlement assure une ambiance conviviale, respectueuse et motivante.
+
+Nos Valeurs & Notre Vision
+Convivialité & Partage
+Respecte tes camarades, valorise leurs progrès et encourage-les.
+Progression Collective
+L’évolution de la guilde passe par la réussite de chaque membre.
+Transparence & Communication
+Les annonces et décisions importantes sont expliquées sur Discord (#annonces). Ouvre un ticket (!ticket) en cas de souci.
+
+Respect & Convivialité
+Aucun harcèlement, insulte, diffamation ou discrimination. Sanctions possibles. Politesse et bienveillance attendues. Gestion des conflits par dialogue privé ou médiation Staff.
+
+Discord Obligatoire & Communication
+Discord indispensable. Paramètre tes notifications. #general pour discuter, #annonces pour infos officielles, #entraide pour questions, #organisation pour planifier. !ticket ouvre un salon privé avec le Staff.
+
+Participation & Vie de Guilde
+Présence régulière appréciée. Propose/participe aux événements. Entraide encouragée.
+
+Percepteurs & Ressources
+Droit de pose après 500 000 XP guilde. Rotation en cas de demande forte, éviter monopolisation. Défense collective encouragée. Communique pour éviter de gêner d’autres percepteurs.
+
+Contribution d’XP à la Guilde
+Taux flexible 1% à 99%. 0% interdit sauf accord temporaire via !ticket. 1% minimum pour l’élan collectif.
+
+Recrutement & Nouveaux Membres
+Recrutement par Staff et vétérans. Proposition via Staff. Période d’essai possible 2–3 jours.
+
+Organisation Interne & Staff
+Anciens rôles fusionnés sous “Staff”. Meneurs: Thalata et Coca-Coca. Décisions collégiales. Identifiables sur Discord.
+
+Sanctions & Discipline
+Rappels progressifs, sanctions collégiales si nécessaire. Transparence avec la personne concernée.
+
+Multi-Guilde
+Second personnage ailleurs toléré si engagement chez Evolution intact. Staff fidèle à Evolution.
+
+Événements, Sondages & Animations
+Sondages via !sondage. Activités via !activite creer. Concours et récompenses ponctuels.
+
+Conclusion & Avenir
+Respect, soutien mutuel et plaisir de jeu au centre des interactions. Règlement en vigueur 21/02/2025.
+
+Rappels
+Droit perco: 2 percepteurs par personne et pas sur la même zone.
+"""
+
 SYSTEM_PROMPT_DEFAULT = (
-    "Tu es EvolutionPRO, IA du staff de la guilde Évolution (Dofus Retro).\n"
-    "Par défaut tu réponds en français, de façon claire, concise et utile, avec un ton amical et vif.\n"
-    "Quand l'utilisateur demande du code, fournis un code complet, prêt à l'emploi, sans commentaires, robuste et optimisé. Ne renvoie pas de parties manquantes.\n"
-    "Adapte tes réponses au contexte du salon et à la mémoire récente fournie. Évite le blabla inutile. Structure quand pertinent avec des listes courtes.\n"
-    "Pour les réponses longues, priorise la clarté et la justesse. Si une fonction comporte des paramètres, choisis des valeurs par défaut sensées.\n"
-    "Ne mentionne pas de playground ni de prompt externe. Tu fonctionnes uniquement via l’API.\n"
+    "Tu es EvolutionPRO, IA du staff de la guilde Évolution (Dofus Retro 1.29). "
+    "Tu réponds en français, clair, utile, cordial et efficace. "
+    "Tu appliques strictement le règlement interne fourni et aides le Staff à modérer, organiser, planifier et analyser. "
+    "Ne fabrique jamais de chiffres ni de faits sensibles. Si l’information est inconnue ou variable (prix HDV, recette modifiée, disponibilité), demande les données minimales ou propose un protocole pour les obtenir (capture, serveur, ressources et quantités, prix unitaire). "
+    "Quand on demande du code, rends un bloc complet, sans commentaires, prêt à l’emploi, robuste et optimisé. "
+    "Structure les réponses longues avec des listes concises et des étapes actionnables. "
+    "En cas d’agression ou d’insulte, recadre fermement mais poliment et propose de continuer de manière constructive. "
+    "N’évoque aucune configuration de playground. Tu fonctionnes uniquement via l’API. "
+    "Si une tâche dépend du web et que l’outil de recherche n’est pas disponible, propose un plan ou les champs à renseigner pour faire le calcul hors-ligne."
+)
+
+MODERATION_PROMPT = (
+    "Règles de modération : "
+    "Maintiens le respect, rappelle poliment le règlement si nécessaire, refuse les propos discriminatoires. "
+    "Si conflit : propose d’ouvrir !ticket et d’échanger calmement."
 )
 
 def chunk_text(text: str, limit: int) -> list[str]:
@@ -77,44 +137,34 @@ def _to_dict(obj) -> dict:
         pass
     return {}
 
-def _extract_from_message(msg: dict) -> list[str]:
-    texts = []
-    content = msg.get("content") or []
-    if isinstance(content, list):
-        for part in content:
-            if not isinstance(part, dict):
-                continue
-            typ = part.get("type")
-            if typ in ("output_text", "text"):
-                val = part.get("text")
-                if isinstance(val, str) and val.strip():
-                    texts.append(val.strip())
-                elif isinstance(val, dict):
-                    v = val.get("value")
-                    if isinstance(v, str) and v.strip():
-                        texts.append(v.strip())
-    return texts
-
-def _extract_from_outputs(outputs) -> list[str]:
-    texts = []
-    if isinstance(outputs, list):
-        for item in outputs:
-            if not isinstance(item, dict):
-                continue
-            typ = item.get("type")
-            if typ == "output_text":
-                val = item.get("text")
-                if isinstance(val, str) and val.strip():
-                    texts.append(val.strip())
-                elif isinstance(val, dict):
-                    v = val.get("value")
-                    if isinstance(v, str) and v.strip():
-                        texts.append(v.strip())
-            elif typ == "message":
-                texts += _extract_from_message(item)
-            elif "message" in item and isinstance(item["message"], dict):
-                texts += _extract_from_message(item["message"])
-    return texts
+def _gather_text_nodes(node) -> list[str]:
+    out = []
+    if isinstance(node, str):
+        if node.strip():
+            out.append(node.strip())
+    elif isinstance(node, dict):
+        if "output_text" in node and isinstance(node["output_text"], str) and node["output_text"].strip():
+            out.append(node["output_text"].strip())
+        if "text" in node:
+            v = node["text"]
+            if isinstance(v, str) and v.strip():
+                out.append(v.strip())
+            elif isinstance(v, dict):
+                vv = v.get("value")
+                if isinstance(vv, str) and vv.strip():
+                    out.append(vv.strip())
+        if "content" in node and isinstance(node["content"], list):
+            for c in node["content"]:
+                out += _gather_text_nodes(c)
+        if "message" in node and isinstance(node["message"], dict):
+            out += _gather_text_nodes(node["message"])
+        for k, v in node.items():
+            if k in ("response", "output", "outputs", "choices", "delta", "result", "data"):
+                out += _gather_text_nodes(v)
+    elif isinstance(node, list):
+        for it in node:
+            out += _gather_text_nodes(it)
+    return out
 
 def extract_generated_text(resp_obj) -> str:
     try:
@@ -124,22 +174,31 @@ def extract_generated_text(resp_obj) -> str:
     except Exception:
         pass
     data = _to_dict(resp_obj)
-    texts: list[str] = []
-    texts += _extract_from_outputs(data.get("output") or data.get("outputs"))
-    if not texts:
-        resp = data.get("response")
-        if isinstance(resp, dict):
-            texts += _extract_from_outputs(resp.get("output") or resp.get("outputs"))
+    texts = _gather_text_nodes(data)
     if not texts and isinstance(data.get("choices"), list):
         for ch in data["choices"]:
-            if not isinstance(ch, dict):
-                continue
-            m = ch.get("message")
+            m = ch.get("message") if isinstance(ch, dict) else None
             if isinstance(m, dict):
                 c = m.get("content")
                 if isinstance(c, str) and c.strip():
                     texts.append(c.strip())
-    return "\n".join([s for s in texts if s.strip()])
+    joined = "\n".join([s for s in texts if s.strip()])
+    return joined.strip()
+
+def _content_to_string(content_parts: list[dict]) -> str:
+    if not isinstance(content_parts, list):
+        return ""
+    buf = []
+    for p in content_parts:
+        if not isinstance(p, dict):
+            continue
+        if "text" in p and isinstance(p["text"], str):
+            buf.append(p["text"])
+        elif "text" in p and isinstance(p["text"], dict):
+            v = p["text"].get("value")
+            if isinstance(v, str):
+                buf.append(v)
+    return "\n".join(buf).strip()
 
 class IAStaff(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -203,24 +262,18 @@ class IAStaff(commands.Cog):
         return block
 
     def _make_messages(self, channel_ctx: str, channel_id: int, user_msg: str) -> list[dict]:
-        dev_rules = (
-            "Règles:\n"
-            "1) Réponds en français.\n"
-            "2) Quand on demande du code, rends un bloc complet sans commentaires.\n"
-            "3) Sois précis et utile pour la guilde Évolution (Dofus Retro).\n"
-            "4) Évite les réponses verbeuses; privilégie l’essentiel.\n"
-        )
         messages: list[dict] = []
         messages.append({"role": "system", "content": [{"type": "input_text", "text": self.system_prompt}]})
-        messages.append({"role": "developer", "content": [{"type": "input_text", "text": dev_rules}]})
+        messages.append({"role": "developer", "content": [{"type": "input_text", "text": MODERATION_PROMPT}]})
+        messages.append({"role": "developer", "content": [{"type": "input_text", "text": GUILD_RULES}]})
         if channel_ctx:
             messages.append({"role": "developer", "content": [{"type": "input_text", "text": channel_ctx}]})
         hist = self.history.get(channel_id, [])
         for item in hist:
             if item["role"] == "user":
-                messages.append({"role": "user", "content": [{"type": "input_text", "text": item["text"]}]})
+                messages.append({"role": "user", "content": [{"type": "input_text", "text": item["text"]}]} )
             else:
-                messages.append({"role": "assistant", "content": [{"type": "output_text", "text": item["text"]}]})
+                messages.append({"role": "assistant", "content": [{"type": "output_text", "text": item["text"]}]} )
         messages.append({"role": "user", "content": [{"type": "input_text", "text": user_msg}]})
         approx_chars = 0
         for m in messages:
@@ -232,13 +285,13 @@ class IAStaff(commands.Cog):
             overflow = approx_chars - INPUT_MAX_CHARS
             trimmed = channel_ctx[:-min(overflow + 500, len(channel_ctx))]
             channel_ctx = trimmed + "\n…"
-            messages = [messages[0], messages[1]]
+            messages = [messages[0], messages[1], messages[2]]
             messages.append({"role": "developer", "content": [{"type": "input_text", "text": channel_ctx}]})
             for item in hist:
                 if item["role"] == "user":
-                    messages.append({"role": "user", "content": [{"type": "input_text", "text": item["text"]}]})
+                    messages.append({"role": "user", "content": [{"type": "input_text", "text": item["text"]}]} )
                 else:
-                    messages.append({"role": "assistant", "content": [{"type": "output_text", "text": item["text"]}]})
+                    messages.append({"role": "assistant", "content": [{"type": "output_text", "text": item["text"]}]} )
             messages.append({"role": "user", "content": [{"type": "input_text", "text": user_msg}]})
         return messages
 
@@ -254,6 +307,25 @@ class IAStaff(commands.Cog):
             base["tools"] = tools
         return base
 
+    def _to_chat_messages(self, messages: list[dict]) -> list[dict]:
+        out = []
+        for m in messages:
+            role = m.get("role", "user")
+            content_parts = m.get("content") or []
+            text = _content_to_string(content_parts)
+            if not text:
+                continue
+            if role == "developer":
+                role = "system"
+            if role == "assistant":
+                role = "assistant"
+            if role == "system":
+                role = "system"
+            if role == "user":
+                role = "user"
+            out.append({"role": role, "content": text})
+        return out
+
     async def _ask_openai(self, messages: list[dict]) -> str:
         req = self._build_request(messages)
         try:
@@ -268,18 +340,33 @@ class IAStaff(commands.Cog):
             if txt.strip():
                 return txt
         except Exception as e:
-            if req.get("tools"):
+            try:
                 safe_req = dict(req)
                 safe_req.pop("tools", None)
                 safe_req.pop("tool_resources", None)
-                try:
-                    resp = await self.client.responses.create(**safe_req)
-                    txt = extract_generated_text(resp)
-                    if txt.strip():
-                        return txt
-                except Exception as ee:
-                    raise RuntimeError(f"Erreur API OpenAI: {ee}") from ee
+                resp = await self.client.responses.create(**safe_req)
+                txt = extract_generated_text(resp)
+                if txt.strip():
+                    return txt
+            except Exception as ee:
+                raise RuntimeError(f"Erreur API OpenAI: {ee}") from ee
             raise RuntimeError(f"Erreur API OpenAI: {e}") from e
+        if True:
+            try:
+                cc_messages = self._to_chat_messages(messages)
+                resp = await self.client.chat.completions.create(model=self.model, messages=cc_messages, max_tokens=MAX_OUTPUT_TOKENS)
+                data = _to_dict(resp)
+                choice = None
+                if isinstance(data.get("choices"), list) and data["choices"]:
+                    choice = data["choices"][0]
+                if isinstance(choice, dict):
+                    msg = choice.get("message")
+                    if isinstance(msg, dict):
+                        cont = msg.get("content")
+                        if isinstance(cont, str) and cont.strip():
+                            return cont.strip()
+            except Exception as e:
+                pass
         return ""
 
     def _make_embed(self, page_text: str, idx: int, total: int) -> tuple[discord.Embed, list[discord.File]]:
