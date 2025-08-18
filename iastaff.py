@@ -26,7 +26,6 @@ EMBED_SAFE_CHUNK = 3800
 OPENAI_TIMEOUT = float(os.getenv("IASTAFF_TIMEOUT", "120"))
 MAX_OUTPUT_TOKENS = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
 INPUT_MAX_CHARS = int(os.getenv("IASTAFF_INPUT_MAX_CHARS", "12000"))
-TEMPERATURE = float(os.getenv("IASTAFF_TEMPERATURE", "0.3"))
 
 ENABLE_WEB_SEARCH = os.getenv("IASTAFF_ENABLE_WEB", "1") != "0"
 VECTOR_STORE_ID = os.getenv("IASTAFF_VECTOR_STORE_ID", "").strip()
@@ -244,7 +243,7 @@ class IAStaff(commands.Cog):
         return messages
 
     def _build_request(self, messages: list[dict]) -> dict:
-        base = {"model": self.model, "input": messages, "max_output_tokens": MAX_OUTPUT_TOKENS, "temperature": TEMPERATURE, "store": False}
+        base = {"model": self.model, "input": messages, "max_output_tokens": MAX_OUTPUT_TOKENS, "store": False}
         tools = []
         if ENABLE_WEB_SEARCH:
             tools.append({"type": "web_search"})
@@ -324,7 +323,7 @@ class IAStaff(commands.Cog):
         if low in {"info", "config"}:
             details = (
                 f"Model: `{self.model}`\n"
-                f"Timeout: {OPENAI_TIMEOUT}s | Max output tokens: {MAX_OUTPUT_TOKENS} | Temp: {TEMPERATURE}\n"
+                f"Timeout: {OPENAI_TIMEOUT}s | Max output tokens: {MAX_OUTPUT_TOKENS}\n"
                 f"Contexte canal: {CONTEXT_MESSAGES} msgs (≤{CONTEXT_MAX_CHARS} chars, {PER_MSG_TRUNC}/msg)\n"
                 f"Mémoire IA (salon): {len(self.history.get(channel_id, []))} items (max {HISTORY_TURNS*2})\n"
                 f"Web Search: {'activé' if ENABLE_WEB_SEARCH else 'désactivé'} | File Search: {'activé' if VECTOR_STORE_ID else 'désactivé'}"
