@@ -10,7 +10,7 @@ from collections import defaultdict
 from urllib.parse import urlparse
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "players_data.json")
-CONSOLE_CHANNEL_NAME = "🎮 console 🎮"
+CONSOLE_CHANNEL_NAME = "console"
 PLAYERS_MARKER = "===PLAYERSDATA==="
 
 def charger_donnees() -> Dict[str, dict]:

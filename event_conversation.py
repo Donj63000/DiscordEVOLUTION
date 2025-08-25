@@ -255,7 +255,7 @@ class EventConversationCog(commands.Cog):
 
     # ---------- lifecycle ------------------------------------------------- #
     async def cog_load(self) -> None:
-        self.console = ConsoleStore(self.bot, channel_name="🎮 console 🎮")
+        self.console = ConsoleStore(self.bot, channel_name="console")
         chan = await self.console._channel()
         if chan is None:
             return
