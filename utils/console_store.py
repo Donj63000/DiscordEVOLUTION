@@ -9,9 +9,9 @@ CODEBLOCK = "```event"
 
 
 class ConsoleStore:
-    """Petite « base » : chaque événement est sauvegardé dans #🎮 console 🎮."""
+    """Petite « base » : chaque événement est sauvegardé dans #console."""
 
-    def __init__(self, bot: discord.Client, channel_name: str = "🎮 console 🎮"):
+    def __init__(self, bot: discord.Client, channel_name: str = "console"):
         self.bot = bot
         self.channel_name = channel_name
         self._cache: dict[int, dict] = {}          # event_id -> dict enrichi + _msg
