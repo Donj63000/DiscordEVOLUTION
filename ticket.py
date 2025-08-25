@@ -122,11 +122,11 @@ class TicketCog(commands.Cog):
         embed.add_field(name="Demandeur", value=user.display_name, inline=True)
         embed.add_field(name="Statut", value="En attente ⌛", inline=True)
         embed.add_field(name="Contenu du ticket", value=ticket_content, inline=False)
-        ticket_channel = discord.utils.get(ctx.guild.text_channels, name="ticket")
+        ticket_channel = discord.utils.get(ctx.guild.text_channels, name="🎟️ ticket 🎟️")
         if ticket_channel is None:
             open_tickets.discard(user.id)
             try:
-                await user.send("❌ Le ticket n'a pu être créé car le salon `#ticket` est introuvable.")
+                await user.send("❌ Le ticket n'a pu être créé car le salon `#🎟️ ticket 🎟️` est introuvable.")
             except discord.Forbidden:
                 pass
             return

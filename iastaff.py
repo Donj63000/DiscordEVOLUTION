@@ -44,13 +44,13 @@ Respecte tes camarades, valorise leurs progrès et encourage-les.
 Progression Collective
 L’évolution de la guilde passe par la réussite de chaque membre.
 Transparence & Communication
-Les annonces et décisions importantes sont expliquées sur Discord (#annonces). Ouvre un ticket (!ticket) en cas de souci.
+Les annonces et décisions importantes sont expliquées sur Discord (#📣 annonces 📣). Ouvre un ticket (!ticket) en cas de souci.
 
 Respect & Convivialité
 Aucun harcèlement, insulte, diffamation ou discrimination. Sanctions possibles. Politesse et bienveillance attendues. Gestion des conflits par dialogue privé ou médiation Staff.
 
 Discord Obligatoire & Communication
-Discord indispensable. Paramètre tes notifications. #general pour discuter, #annonces pour infos officielles, #entraide pour questions, #organisation pour planifier. !ticket ouvre un salon privé avec le Staff.
+Discord indispensable. Paramètre tes notifications. #📄 Général 📄 pour discuter, #📣 annonces 📣 pour infos officielles, #👌 astuce 👌 pour questions, #🌈 organisation 🌈 pour planifier. !ticket ouvre un salon privé avec le Staff.
 
 Participation & Vie de Guilde
 Présence régulière appréciée. Propose/participe aux événements. Entraide encouragée.
