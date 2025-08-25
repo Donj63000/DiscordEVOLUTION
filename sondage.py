@@ -89,9 +89,9 @@ class SondageCog(commands.Cog):
             end_time_msg = f"Fin prévue : {end_time_val.strftime('%d/%m/%Y %H:%M')}"
         embed.add_field(name="⏳ Fin du sondage", value=end_time_msg, inline=False)
         embed.set_footer(text=f"ID du message (pour !close_sondage) : {ctx.message.id}")
-        annonce_channel = discord.utils.get(ctx.guild.text_channels, name="annonces")
+        annonce_channel = discord.utils.get(ctx.guild.text_channels, name="📣 annonces 📣")
         if not annonce_channel:
-            await ctx.send("Le canal #annonces est introuvable.")
+            await ctx.send("Le canal #📣 annonces 📣 est introuvable.")
             return
         sondage_message = await annonce_channel.send("@everyone Nouveau sondage :", embed=embed)
         for i in range(len(choices)):

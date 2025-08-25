@@ -16,7 +16,7 @@ class EventStore:
 
     MARKER = "===EVENTSTORE==="
 
-    def __init__(self, bot: commands.Bot, console_channel: str = "console"):
+    def __init__(self, bot: commands.Bot, console_channel: str = "🎮 console 🎮"):
         self.bot = bot
         self.console_channel_name = console_channel
         self.console_channel: Optional[discord.TextChannel] = None

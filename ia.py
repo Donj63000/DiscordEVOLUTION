@@ -52,7 +52,7 @@ class IASession:
     def expired(self) -> bool:
         return datetime.utcnow() - self.start_ts > timedelta(minutes=60)
 
-CONSOLE_CHANNEL_NAME = "console"
+CONSOLE_CHANNEL_NAME = "🎮 console 🎮"
 QUEUE_PROCESS_INTERVAL = 5
 
 def chunk_list(txt, size=2000):
@@ -116,9 +116,9 @@ class IACog(commands.Cog):
         self.quota_block_duration = 3600
         self.quota_exceeded_until = 0
         self.debug_mode = True
-        self.annonce_channel_name = "annonces"
-        self.event_channel_name = "organisation"
-        self.pl_channel_name = "xplock-rondesasa-ronde"
+        self.annonce_channel_name = "📣 annonces 📣"
+        self.event_channel_name = "🌈 organisation 🌈"
+        self.pl_channel_name = "📍 xplock-rondesasa-ronde 📍"
         self.last_reglement_reminder = 0
         self.reglement_cooldown = 600
         self.user_contexts = {}
@@ -490,7 +490,7 @@ class IACog(commands.Cog):
             return
         chan = discord.utils.get(ctx.guild.text_channels, name=self.annonce_channel_name)
         if not chan:
-            await ctx.send("Canal 'annonces' introuvable.")
+            await ctx.send(f"Canal '{self.annonce_channel_name}' introuvable.")
             return
         if time.time() < self.quota_exceeded_until:
             qlen = len(self.request_queue)

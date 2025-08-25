@@ -11,9 +11,9 @@ from datetime import datetime
 # Constantes de configuration (noms des rôles / salons et délais)
 INVITES_ROLE_NAME = "Invités"
 VALIDATED_ROLE_NAME = "Membre validé d'Evolution"
-GENERAL_CHANNEL_NAME = "𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥"
-RECRUITMENT_CHANNEL_NAME = "𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭"
-WELCOME_CHANNEL_NAME = "𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞"
+GENERAL_CHANNEL_NAME = "📄 Général 📄"
+RECRUITMENT_CHANNEL_NAME = "📥 Recrutement 📥"
+WELCOME_CHANNEL_NAME = "🛫 Bienvenue 🛫"
 TIMEOUT_RESPONSE = 300.0
 DATA_FILE = os.path.join(os.path.dirname(__file__), "welcome_data.json")
 
@@ -226,9 +226,9 @@ class WelcomeCog(commands.Cog):
                 "Un grand bienvenue de la part de toute la guilde ! 😃"
             )
             await general_channel.send(annonce_msg_general)
-            print("[DEBUG] Annonce envoyée dans #𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥.")
+            print(f"[DEBUG] Annonce envoyée dans #{GENERAL_CHANNEL_NAME}.")
         else:
-            print("[DEBUG] Canal '𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥' introuvable.")
+            print(f"[DEBUG] Canal '{GENERAL_CHANNEL_NAME}' introuvable.")
 
         recruitment_channel = discord.utils.get(member.guild.text_channels, name=RECRUITMENT_CHANNEL_NAME)
         if recruitment_channel:
@@ -240,9 +240,9 @@ class WelcomeCog(commands.Cog):
                 f"Le joueur **{dofus_pseudo}** a rejoint la guilde le **{recruitment_date}** "
                 f"et {recruiter_info}."
             )
-            print("[DEBUG] Annonce envoyée dans #𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭.")
+            print(f"[DEBUG] Annonce envoyée dans #{RECRUITMENT_CHANNEL_NAME}.")
         else:
-            print("[DEBUG] Canal '𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭' introuvable.")
+            print(f"[DEBUG] Canal '{RECRUITMENT_CHANNEL_NAME}' introuvable.")
 
     async def fallback_public_greeting(self, member: discord.Member):
         general_channel = discord.utils.get(member.guild.text_channels, name=GENERAL_CHANNEL_NAME)
@@ -255,7 +255,7 @@ class WelcomeCog(commands.Cog):
                 "En attendant, sois le/la bienvenu·e parmi nous ! 🎉" + extra
             )
         else:
-            print("[DEBUG] Fallback impossible : canal #𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥 introuvable.")
+            print(f"[DEBUG] Fallback impossible : canal #{GENERAL_CHANNEL_NAME} introuvable.")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(WelcomeCog(bot))
