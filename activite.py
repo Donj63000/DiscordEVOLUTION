@@ -24,8 +24,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Noms de canaux / rôles
-ORGA_CHANNEL_NAME = "organisation"
-CONSOLE_CHANNEL_NAME = "console"
+ORGA_CHANNEL_NAME = "🌈 organisation 🌈"
+CONSOLE_CHANNEL_NAME = "🎮 console 🎮"
 VALIDATED_ROLE_NAME = "Membre validé d'Evolution"
 
 # Fichier de persistance
@@ -187,7 +187,7 @@ class ActiviteCog(commands.Cog):
                                     file_bytes = await att.read()
                                     data_loaded = json.loads(file_bytes.decode("utf-8"))
                                     self.activities_data = data_loaded
-                                    logger.info("Données surchargées depuis un fichier joint JSON dans console.")
+                                    logger.info(f"Données surchargées depuis un fichier joint JSON dans {CONSOLE_CHANNEL_NAME}.")
                                     raise StopAsyncIteration  # On force la sortie
                                 except Exception as ex:
                                     logger.warning(f"Impossible de parser le fichier JSON joint : {ex}")
@@ -200,12 +200,12 @@ class ActiviteCog(commands.Cog):
                             raw_json = msg.content[start_idx:end_idx]
                             data_loaded = json.loads(raw_json)
                             self.activities_data = data_loaded
-                            logger.info("Données surchargées depuis le console (bloc texte JSON).")
+                            logger.info(f"Données surchargées depuis {CONSOLE_CHANNEL_NAME} (bloc texte JSON).")
                             raise StopAsyncIteration
                         except Exception as e:
-                            logger.warning(f"Impossible de parser le JSON console inline: {e}")
+                            logger.warning(f"Impossible de parser le JSON {CONSOLE_CHANNEL_NAME} inline: {e}")
         else:
-            logger.info("Channel console introuvable, on reste sur le fichier local.")
+            logger.info(f"Channel {CONSOLE_CHANNEL_NAME} introuvable, on reste sur le fichier local.")
 
         # Si on arrive ici sans StopAsyncIteration, c'est qu’on n’a pas trouvé de JSON plus récent
         self.initialized = True
@@ -262,7 +262,7 @@ class ActiviteCog(commands.Cog):
                 with open(temp_file_path, "w", encoding="utf-8") as tmp:
                     tmp.write(data_str)
             except Exception as ex:
-                logger.warning(f"Erreur création du fichier temp console: {ex}")
+                logger.warning(f"Erreur création du fichier temp {CONSOLE_CHANNEL_NAME}: {ex}")
                 return
 
             await console_channel.send(

@@ -12,8 +12,8 @@ STAFF_ROLE_NAME = "Staff"
 VALID_MEMBER_ROLE_NAME = "Membre validé d'Evolution"
 INVITE_ROLE_NAME = "Invité"
 VETERAN_ROLE_NAME = "Vétéran"
-STAFF_CHANNEL_NAME = "𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥-staff"
-CONSOLE_CHANNEL_NAME = "console"  # <-- canal console, identique à job.py
+STAFF_CHANNEL_NAME = "📊 Général-staff 📊"
+CONSOLE_CHANNEL_NAME = "🎮 console 🎮"  # <-- canal console, identique à job.py
 BOTUP_TAG = "===BOTUP==="         # <-- marqueur spécial pour retrouver le JSON
 MESSAGE_THRESHOLD = 20
 JOINED_THRESHOLD_DAYS = 6 * 30
@@ -67,10 +67,10 @@ class UpCog(commands.Cog):
                         raw_json = msg.content[start_idx:end_idx]
                         data_loaded = json.loads(raw_json)
                         self.promotions_data = data_loaded
-                        print("[UpCog] Data rechargée depuis le canal console !")
+                        print(f"[UpCog] Data rechargée depuis le canal {CONSOLE_CHANNEL_NAME} !")
                         break
                     except Exception as e:
-                        print("[UpCog] Erreur parsing console data:", e)
+                        print(f"[UpCog] Erreur parsing {CONSOLE_CHANNEL_NAME} data:", e)
                         pass
 
         # 2) Si on n'a rien chargé depuis le console_channel et que c'est toujours vide, fallback sur le fichier local
@@ -83,7 +83,7 @@ class UpCog(commands.Cog):
                 self.promotions_data = {}
         else:
             if not self.promotions_data:
-                print("[UpCog] Aucune data existante (console + local). promotions_data reste vide.")
+                print(f"[UpCog] Aucune data existante ({CONSOLE_CHANNEL_NAME} + local). promotions_data reste vide.")
 
     def save_promotions_data_local(self):
         """Sauvegarde locale classique."""
@@ -102,7 +102,7 @@ class UpCog(commands.Cog):
                 console_channel = c
                 break
         if not console_channel:
-            print("[UpCog] Pas de canal console, impossible d'y sauvegarder la data.")
+            print(f"[UpCog] Pas de canal {CONSOLE_CHANNEL_NAME}, impossible d'y sauvegarder la data.")
             return
 
         # On supprime éventuellement les anciens messages BOTUP pour éviter la confusion

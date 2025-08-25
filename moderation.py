@@ -12,7 +12,7 @@ from discord.ext import commands
 import ia
 
 WARNINGS_FILE = os.path.join(os.path.dirname(__file__), "warnings_data.json")
-STAFF_CHANNEL_NAME = "𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥-staff"
+STAFF_CHANNEL_NAME = "📊 Général-staff 📊"
 STAFF_ROLE_NAME = "Staff"
 TIMEOUT_THRESHOLD = 2
 TIMEOUT_DURATION = datetime.timedelta(hours=1)

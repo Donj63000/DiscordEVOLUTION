@@ -10,22 +10,18 @@ import discord
 log = logging.getLogger("utils.stats_store")
 
 class StatsStore:
-    def __init__(self, bot, channel_name="console"):
+    def __init__(self, bot, channel_name="🎮 console 🎮"):
         self.bot = bot
         self.channel_name = channel_name
         self._msg = None
 
     async def _get_channel(self):
-        for g in self.bot.guilds:
-            ch = discord.utils.get(g.text_channels, name=self.channel_name)
-            if ch:
-                return ch
-        return None
+        return discord.utils.get(self.bot.get_all_channels(), name=self.channel_name)
 
     async def save(self, data):
         chan = await self._get_channel()
         if not chan:
-            log.warning("Canal #console introuvable – persistance désactivée")
+            log.warning(f"Canal #{self.channel_name} introuvable – persistance désactivée")
             return
         payload = json.dumps(data, ensure_ascii=False, indent=2)
         content = f"```json\n{payload}\n```"
