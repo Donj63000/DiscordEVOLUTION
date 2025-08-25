@@ -47,7 +47,7 @@ class ConsoleStore:
                     payload["_msg"] = msg                       # attache le Message
                     self._cache[payload["event_id"]] = payload
                 except Exception:
-                    log.warning("Message #console mal formé (id=%s)", msg.id)
+                    log.warning("Message #%s mal formé (id=%s)", self.channel_name, msg.id)
         return self._cache
 
     # ------------------------------------------------------------------ #
@@ -82,7 +82,7 @@ class ConsoleStore:
             try:
                 await msg.pin(reason="Persistance événements")
             except discord.Forbidden:
-                log.warning("Impossible d'épingler le message #console (permissions).")
+                log.warning("Impossible d'épingler le message #%s (permissions).", self.channel_name)
             data["_msg"] = msg
             cache[eid] = data
 

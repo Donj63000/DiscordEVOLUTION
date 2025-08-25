@@ -41,7 +41,7 @@ class PlayersCog(commands.Cog):
         self.bot = bot
         self.persos_data = {}
         self.initialized = False
-        print("[DEBUG] PlayersCog initialisé (avant lecture console).")
+        print(f"[DEBUG] PlayersCog initialisé (avant lecture {CONSOLE_CHANNEL_NAME}).")
 
     async def cog_load(self):
         await self.initialize_data()
@@ -58,18 +58,18 @@ class PlayersCog(commands.Cog):
                         raw_json = msg.content[start_idx:end_idx]
                         data_temp = json.loads(raw_json)
                         self.persos_data = data_temp
-                        print("[DEBUG] Données récupérées depuis le salon #console.")
+                        print(f"[DEBUG] Données récupérées depuis le salon #{CONSOLE_CHANNEL_NAME}.")
                         found_in_console = True
                         break
                     except Exception as e:
-                        print(f"[DEBUG] Erreur lors du parsing JSON depuis console: {e}")
+                        print(f"[DEBUG] Erreur lors du parsing JSON depuis {CONSOLE_CHANNEL_NAME}: {e}")
                         pass
         if not found_in_console:
             self.persos_data = charger_donnees()
             if self.persos_data:
                 print("[DEBUG] Données chargées depuis le fichier local (fallback).")
             else:
-                print("[DEBUG] Aucune donnée trouvée ni en console ni en local.")
+                print(f"[DEBUG] Aucune donnée trouvée ni en {CONSOLE_CHANNEL_NAME} ni en local.")
         self.initialized = True
         print(f"[DEBUG] initialize_data terminé. {len(self.persos_data)} enregistrements.")
 
@@ -79,7 +79,7 @@ class PlayersCog(commands.Cog):
             return
         console_channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
         if not console_channel:
-            print("[DEBUG] Salon #console introuvable, impossible de publier le JSON.")
+            print(f"[DEBUG] Salon #{CONSOLE_CHANNEL_NAME} introuvable, impossible de publier le JSON.")
             return
         data_str = json.dumps(self.persos_data, indent=4, ensure_ascii=False)
         if len(data_str) < 1900:
@@ -105,7 +105,7 @@ class PlayersCog(commands.Cog):
             stored_name = self.persos_data[member_id].get("discord_name", member.display_name)
             del self.persos_data[member_id]
             sauvegarder_donnees(self.persos_data)
-            recruitment_channel = discord.utils.get(member.guild.text_channels, name="𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭")
+            recruitment_channel = discord.utils.get(member.guild.text_channels, name="📥 Recrutement 📥")
             if recruitment_channel:
                 await recruitment_channel.send(
                     f"Le membre **{stored_name}** a quitté le serveur. Sa fiche a été supprimée."

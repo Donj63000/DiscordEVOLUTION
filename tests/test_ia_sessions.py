@@ -60,7 +60,7 @@ async def test_dm_session_uses_pro_model(monkeypatch):
     cog = IACog(bot=object())
     monkeypatch.setattr(cog, "_new_chat", lambda *a, **k: DummyChat())
     ctx = DummyCtx(guild=None)
-    await cog.ia_start_command(ctx)
+    await cog.ia_start_command.callback(cog, ctx)
     assert ctx.author.id in cog.sessions
     assert cog.sessions[ctx.author.id].model_name == "gemini-2.5-pro"
 

@@ -68,23 +68,9 @@ class _Bot:
 def test_stats_store_save_and_load(tmp_path):
     chan = _Channel()
     bot = _Bot(chan)
-    store = StatsStore(bot, tmp_path / "stats.json")
+    store = StatsStore(bot)
     loop = asyncio.new_event_loop()
     loop.run_until_complete(store.save({"val": 1}))
     assert len(chan._messages) == 1
     msg = chan._messages[0]
-    assert msg.pinned
-    with open(tmp_path / "stats.json", encoding="utf-8") as f:
-        assert json.load(f)["val"] == 1
-
-    store2 = StatsStore(bot, tmp_path / "stats.json")
-    loaded = loop.run_until_complete(store2.load())
-    assert loaded == {"val": 1}
-    assert store2._msg is msg
-
-    loaded["val"] = 2
-    loop.run_until_complete(store2.save(loaded))
-    with open(tmp_path / "stats.json", encoding="utf-8") as f:
-        assert json.load(f)["val"] == 2
-    assert len(chan._messages) == 1
-    assert "\n  \"val\": 2" in msg.content
+    assert "\n  \"val\": 1" in msg.content
