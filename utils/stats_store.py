@@ -10,7 +10,7 @@ import discord
 log = logging.getLogger("utils.stats_store")
 
 class StatsStore:
-    def __init__(self, bot, channel_name="🎮 console 🎮"):
+    def __init__(self, bot, channel_name="console"):
         self.bot = bot
         self.channel_name = channel_name
         self._msg = None

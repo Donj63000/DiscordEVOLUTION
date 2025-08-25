@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Noms de canaux / rôles
 ORGA_CHANNEL_NAME = "🌈 organisation 🌈"
-CONSOLE_CHANNEL_NAME = "🎮 console 🎮"
+CONSOLE_CHANNEL_NAME = "console"
 VALIDATED_ROLE_NAME = "Membre validé d'Evolution"
 
 # Fichier de persistance

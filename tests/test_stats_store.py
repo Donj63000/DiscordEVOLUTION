@@ -23,7 +23,7 @@ class _Message:
         self.pinned = True
 
 class _Channel:
-    def __init__(self, name="🎮 console 🎮", messages=None, bot_user=None):
+    def __init__(self, name="console", messages=None, bot_user=None):
         self.name = name
         self._messages = list(messages or [])
         self.bot_user = bot_user

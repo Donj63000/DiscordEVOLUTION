@@ -52,7 +52,7 @@ class IASession:
     def expired(self) -> bool:
         return datetime.utcnow() - self.start_ts > timedelta(minutes=60)
 
-CONSOLE_CHANNEL_NAME = "🎮 console 🎮"
+CONSOLE_CHANNEL_NAME = "console"
 QUEUE_PROCESS_INTERVAL = 5
 
 def chunk_list(txt, size=2000):

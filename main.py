@@ -145,7 +145,7 @@ class EvoBot(commands.Bot):
         start = time.time()
         while time.time() - start < timeout:
             for g in self.guilds:
-                ch = discord.utils.get(g.text_channels, name="🎮 console 🎮")
+                ch = discord.utils.get(g.text_channels, name="console")
                 if ch:
                     return ch
             await asyncio.sleep(1)
@@ -167,7 +167,7 @@ class EvoBot(commands.Bot):
     async def acquire_leadership(self):
         ch = await self.wait_console_channel(timeout=30)
         if not ch:
-            logging.warning("Salon #🎮 console 🎮 introuvable: pas de lock distribué, on continue.")
+            logging.warning("Salon #console introuvable: pas de lock distribué, on continue.")
             return True
         my = await ch.send(f"{LOCK_TAG} {self.INSTANCE_ID} {int(time.time())}")
         self._lock_channel_id = ch.id
