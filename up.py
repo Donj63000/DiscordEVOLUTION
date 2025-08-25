@@ -13,7 +13,7 @@ VALID_MEMBER_ROLE_NAME = "Membre validé d'Evolution"
 INVITE_ROLE_NAME = "Invité"
 VETERAN_ROLE_NAME = "Vétéran"
 STAFF_CHANNEL_NAME = "📊 Général-staff 📊"
-CONSOLE_CHANNEL_NAME = "🎮 console 🎮"  # <-- canal console, identique à job.py
+CONSOLE_CHANNEL_NAME = "console"  # <-- canal console, identique à job.py
 BOTUP_TAG = "===BOTUP==="         # <-- marqueur spécial pour retrouver le JSON
 MESSAGE_THRESHOLD = 20
 JOINED_THRESHOLD_DAYS = 6 * 30
