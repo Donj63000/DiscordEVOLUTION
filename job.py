@@ -10,7 +10,7 @@ import discord
 from discord.ext import commands, tasks
 from collections import defaultdict
 
-CONSOLE_CHANNEL_NAME = "console"
+CONSOLE_CHANNEL_NAME = "🎮 console 🎮"
 DATA_FILE = os.path.join(os.path.dirname(__file__), "jobs_data.json")
 STAFF_ROLE_NAME = "Staff"
 JOB_MIN_LEVEL = 1

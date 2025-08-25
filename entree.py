@@ -14,9 +14,9 @@ class EntreeCog(commands.Cog):
         if member.bot:
             return
 
-        bienvenue_channel = discord.utils.get(member.guild.text_channels, name="𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞")
+        bienvenue_channel = discord.utils.get(member.guild.text_channels, name="🛫 Bienvenue 🛫")
         if not bienvenue_channel:
-            print("[DEBUG] Le canal '𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞' est introuvable.")
+            print("[DEBUG] Le canal '🛫 Bienvenue 🛫' est introuvable.")
             return
 
         message_texte = (
@@ -38,9 +38,9 @@ class EntreeCog(commands.Cog):
         if member.bot:
             return
 
-        bienvenue_channel = discord.utils.get(member.guild.text_channels, name="𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞")
+        bienvenue_channel = discord.utils.get(member.guild.text_channels, name="🛫 Bienvenue 🛫")
         if not bienvenue_channel:
-            print("[DEBUG] Le canal '𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞' est introuvable.")
+            print("[DEBUG] Le canal '🛫 Bienvenue 🛫' est introuvable.")
             return
 
         if member.joined_at is None:
