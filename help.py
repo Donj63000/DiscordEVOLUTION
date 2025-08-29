@@ -160,6 +160,8 @@ class HelpCog(commands.Cog):
                 "> Liste des membres Staff enregistrés/mentionnés.\n\n"
                 "__**!annonce <texte>**__\n"
                 "> Publie une annonce stylée dans #📣 annonces 📣 (mention @everyone).\n\n"
+                "__**!*annonce**__\n"
+                "> L'IA pose 7 questions puis publie une annonce dans #📣 annonces 📣.\n\n"
                 "__**!event**__\n"
                 "> Lance une discussion privée pour planifier un événement.\n"
                 "> Après validation, un événement Discord programmé est créé et annoncé dans #🌈 organisation 🌈 (mention Membre validé).\n\n"
