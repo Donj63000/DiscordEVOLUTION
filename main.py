@@ -123,6 +123,7 @@ class EvoBot(commands.Bot):
             "calcul",
             "defender",
             "moderation",
+            "annonce",
         ]
 
         for ext in base_exts:
