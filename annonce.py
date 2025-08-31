@@ -54,7 +54,7 @@ class AnnonceCog(commands.Cog):
         self.model = DEFAULT_MODEL
         self.client = AsyncOpenAI(timeout=OPENAI_TIMEOUT) if AsyncOpenAI else None
 
-    @commands.command(name="*annonce")
+    @commands.command(name="annoncestaff", aliases=["*annonce"])
     @commands.has_role(STAFF_ROLE_NAME)
     async def annonce_cmd(self, ctx: commands.Context):
         if not self.client or not os.environ.get("OPENAI_API_KEY"):
