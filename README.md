@@ -16,7 +16,7 @@ Pour que toutes les fonctionnalités fonctionnent correctement, le serveur doit 
 ### Salons textuels attendus
 - `console` : salon privé où le bot sauvegarde/charge ses fichiers JSON.
 - `ticket` : réception des tickets créés avec la commande `!ticket`.
-- `annonces` : utilisé par `!annonce`, `!*annonce` et pour les sondages.
+- `annonces` : utilisé par `!annonce`, `!annoncestaff` et pour les sondages.
 - `organisation` : pour la planification d'activités via `!activite`.
 - `𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥` : canal public où le bot poste un message si les DM sont bloqués.
 - `𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭` : annonces d'entrées ou de départs de la guilde.
