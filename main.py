@@ -129,6 +129,8 @@ class EvoBot(commands.Bot):
         for ext in base_exts:
             await self._safe_load(ext)
 
+        await self.load_extension("cogs.profil")
+
         await self._load_iastaff_anywhere()
 
         try:
