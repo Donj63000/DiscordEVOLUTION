@@ -410,6 +410,67 @@ def make_profile_embed(member: discord.Member, p: Profile) -> discord.Embed:
     return emb
 
 # ==================
+# Exceptions et boucle de questions
+# ==================
+
+class WizardCancelled(Exception):
+    """Le joueur a tapé 'annuler' ou a dépassé le nombre d'essais/timeout."""
+    pass
+
+
+async def wait_user_message(bot: commands.Bot, chan: discord.abc.Messageable, author_id: int, timeout: int = 180) -> discord.Message:
+    """Attend un message de l'utilisateur dans le même channel (DM ou non)."""
+
+    def _check(m: discord.Message) -> bool:
+        return (m.author.id == author_id) and (m.channel.id == getattr(chan, "id", None))
+
+    return await bot.wait_for("message", check=_check, timeout=timeout)
+
+
+async def ask_loop(
+    bot: commands.Bot,
+    chan: discord.abc.Messageable,
+    author_id: int,
+    prompt: str,
+    validator,
+    help_text: str = "",
+    example: str = "",
+    retries: int = 5,
+    timeout: int = 180,
+):
+    """
+    Envoie prompt, boucle jusqu'à réponse valide ou annulation/timeout.
+    - validator(text) -> (ok, value, err_msg)
+    - help_text/exemple affichés seulement en cas d'erreur.
+    - 'annuler' à tout moment stoppe proprement.
+    """
+
+    await chan.send(prompt)
+    tries = 0
+    while True:
+        try:
+            msg = await wait_user_message(bot, chan, author_id, timeout=timeout)
+        except asyncio.TimeoutError:
+            await chan.send("⏰ Temps écoulé. Reprends quand tu veux avec `!profil set`.")
+            raise WizardCancelled()
+
+        content = msg.content.strip()
+        if content.lower() == "annuler":
+            await chan.send("❎ D’accord, j’annule. Tu pourras reprendre avec `!profil set`.")
+            raise WizardCancelled()
+
+        ok, value, err = validator(content)
+        if ok:
+            return value
+
+        tries += 1
+        hint = (("\nℹ️ " + help_text) if help_text else "") + (("\nExemple : `" + example + "`") if example else "")
+        await chan.send(f"❌ {err}{hint}\nRéessaie :")
+        if retries and tries >= retries:
+            await chan.send("❎ Trop d’essais. On arrête ici — relance `!profil set` quand tu veux.")
+            raise WizardCancelled()
+
+# ==================
 # Cog
 # ==================
 class ProfilCog(commands.Cog):
@@ -498,77 +559,88 @@ class ProfilCog(commands.Cog):
         try:
             existing = await self.store.get_by_owner(guild_id, owner_id)
             suggested_name = existing.player_name if existing else (ctx.author.nick or ctx.author.name)
-
-            def not_cancel(msg: discord.Message) -> bool:
-                return msg.content.strip().lower() != "annuler"
-
-            # Nom
-            name = await self._ask(
-                self.bot,
-                chan,
-                owner_id,
-                f"Nom du personnage ? (par ex. `Coca-Cola`)\n*(Entrée pour garder: `{slugify(suggested_name)}`)*",
-                not_cancel,
+            await chan.send(
+                "On va remplir : **Nom**, **Niveau**, **Classe**, **Alignement**, **%stats%** (coller le texte).\n"
+                "Tu peux annuler à tout moment avec `annuler`."
             )
-            if name == "":
-                name = suggested_name
-            if strip_accents(name).lower() == "annuler":
-                return await chan.send("Annulé.")
 
-            # Niveau
-            async def _check_level(msg: discord.Message) -> bool:
-                return msg.content.isdigit() and 1 <= int(msg.content) <= 200
+            # --- VALIDATORS ---
+            def val_name(text: str):
+                name = text.strip() or suggested_name
+                if len(name) < 2 or len(name) > 32:
+                    return False, None, "Le nom doit faire entre 2 et 32 caractères."
+                return True, name, ""
 
-            level_txt = await self._ask(self.bot, chan, owner_id, "Niveau ? (1..200)", _check_level)
-            level = int(level_txt)
+            def val_level(text: str):
+                if text.isdigit():
+                    n = int(text)
+                    if 1 <= n <= 200:
+                        return True, n, ""
+                return False, None, "Le niveau doit être un entier entre 1 et 200."
 
-            # Classe (alias acceptés)
-            async def _check_class(msg: discord.Message) -> bool:
+            def val_classe(text: str):
                 try:
-                    self.canon_classe(msg.content)
-                    return True
-                except Exception:
-                    return False
+                    return True, self.canon_classe(text), ""
+                except Exception as e:
+                    return False, None, str(e)
 
-            classe_in = await self._ask(
-                self.bot,
-                chan,
-                owner_id,
-                "Classe ? (ex: Iop, Cra, Eniripsa...)\n*Valides (alias acceptés) : Iop, Crâ/Cra, Eniripsa/Eni, Enutrof/Enu, Feca/Féca, Osamodas/Osa, Pandawa/Panda, Sacrieur/Sacri, Sadida/Sadi, Sram, Xelor/Xel, Ecaflip/Eca*",
-                _check_class,
+            def val_align(text: str):
+                try:
+                    return True, self.canon_align(text), ""
+                except Exception as e:
+                    return False, None, str(e)
+
+            def val_stats(text: str):
+                try:
+                    stats_map, initiative, pa, pm = parse_stats_block(text)
+                    return True, (stats_map, initiative, pa, pm), ""
+                except StatsParseError as e:
+                    return False, None, f"Format %stats% invalide : {e}"
+
+            # --- QUESTIONS AVEC REPROMPT ---
+            name = await ask_loop(
+                self.bot, chan, owner_id,
+                prompt=f"**Nom du personnage ?** (par ex. `Coca-Cola`)\n*(Entrée pour garder : `{suggested_name}`)*",
+                validator=val_name,
+                help_text="Le nom sera utilisé pour la recherche (`!profil <nom>`).",
+                example="Coca-Cola"
             )
-            classe = self.canon_classe(classe_in)
-
-            # Alignement
-            async def _check_align(msg: discord.Message) -> bool:
-                try:
-                    self.canon_align(msg.content)
-                    return True
-                except Exception:
-                    return False
-
-            align_in = await self._ask(self.bot, chan, owner_id, "Alignement ? (Neutre, Bonta, Brâkmar)", _check_align)
-            alignement = self.canon_align(align_in)
-
-            # %stats%
-            async def _check_stats(msg: discord.Message) -> bool:
-                try:
-                    parse_stats_block(msg.content)
-                    return True
-                except Exception:
-                    return False
-
-            stats_text = await self._ask(self.bot, chan, owner_id, "Colle le texte `%stats%` complet du jeu :", _check_stats)
-            try:
-                stats_map, initiative, pa, pm = parse_stats_block(stats_text)
-            except StatsParseError as e:
-                return await chan.send(f"Erreur de parsing: {e}")
+            level = await ask_loop(
+                self.bot, chan, owner_id,
+                prompt="**Niveau ?** (1..200)",
+                validator=val_level,
+                help_text="Le niveau doit être un nombre entier.",
+                example="200"
+            )
+            classe = await ask_loop(
+                self.bot, chan, owner_id,
+                prompt=("**Classe ?** (ex : Iop, Cra, Eniripsa...)\n"
+                        "*Alias acceptés : eni/enu/osa/panda/sadi/sacri/eca/xel/cra/féca/crâ ...*"),
+                validator=val_classe,
+                example="Enu"
+            )
+            alignement = await ask_loop(
+                self.bot, chan, owner_id,
+                prompt="**Alignement ?** (Neutre, Bonta, Brâkmar)",
+                validator=val_align,
+                example="Bonta"
+            )
+            (stats_map, initiative, pa, pm) = await ask_loop(
+                self.bot, chan, owner_id,
+                prompt="**Colle le texte `%stats%` complet du jeu :**",
+                validator=val_stats,
+                help_text=("Exemple de ligne attendue depuis Dofus Retro : "
+                           "`Coca-Cola : Vitalité 101 (+1762), Sagesse 101 (+249), Force 389 (+135), "
+                           "Intelligence 101 (+129), Chance 101 (+335), Agilité 101 (+30) - Initiative 1400, PA 8, PM 4`"),
+                example="Vitalité 101 (+1762), ... - Initiative 1400, PA 8, PM 4",
+                retries=0
+            )
 
             now = datetime.now(timezone.utc).isoformat()
             prof = Profile(
                 guild_id=guild_id,
                 owner_id=owner_id,
-                player_name=name.strip(),
+                player_name=name,
                 player_slug=slugify(name),
                 level=level,
                 classe=classe,
@@ -583,7 +655,9 @@ class ProfilCog(commands.Cog):
             await self.store.upsert(prof)
             await chan.send("✅ Profil sauvegardé.")
             member = ctx.guild.get_member(owner_id) or ctx.author
-            await ctx.reply(embed=make_profile_embed(member, prof))
+            await chan.send(embed=make_profile_embed(member, prof))
+        except WizardCancelled:
+            return
         finally:
             # libérer l'IA quoi qu'il arrive
             self.bot.dispatch(self.WIZARD_EVT_END, owner_id)
@@ -664,6 +738,27 @@ class ProfilCog(commands.Cog):
             return await ctx.reply("Aucun résultat.")
         lines = [f"• **{p.player_name}** (`!profil {p.player_slug}`)" for p in res]
         await ctx.reply("Résultats :\n" + "\n".join(lines))
+
+    @commands.Cog.listener()
+    async def on_command_error(self, ctx: commands.Context, error: Exception):
+        """Filet de sécurité : si une erreur survient sur une commande profil, on répond calmement au bon endroit."""
+        if not ctx.command:
+            return
+        if not ctx.command.qualified_name.startswith("profil"):
+            return
+
+        try:
+            dm = await ctx.author.create_dm()
+            await dm.send(
+                f"⚠️ Une erreur est survenue : {error.__class__.__name__}. "
+                f"Tu peux relancer `!profil set`. Si ça persiste, ping le Staff."
+            )
+            return
+        except discord.Forbidden:
+            pass
+        await ctx.reply(
+            f"⚠️ Une erreur est survenue. Essaie `!profil set` à nouveau ou contacte le Staff."
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ProfilCog(bot))
