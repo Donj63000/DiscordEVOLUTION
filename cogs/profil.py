@@ -5,12 +5,14 @@ import json
 import os
 import re
 import unicodedata
+import io
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Callable, Any
 
 import discord
 from discord.ext import commands
+from discord.utils import get
 
 # ============
 # Configuration
@@ -18,19 +20,31 @@ from discord.ext import commands
 STAFF_ROLE_NAME = "Staff"
 PROFILE_JSON_PATH = os.getenv("PROFILE_JSON_PATH", "data/profiles.json")
 
+# ============
+# Configuration additionnelle
+# ============
+CHANNEL_CONSOLE_NAME = os.getenv("CHANNEL_CONSOLE", "console")
+PROFILES_FILENAME = os.getenv("PROFILES_FILENAME", "profiles_data.json")
+PROFILES_MARKER = os.getenv("PROFILES_MARKER", "===BOTPROFILES===")
+HISTORY_SCAN_LIMIT = int(os.getenv("CONSOLE_HISTORY_LIMIT", "300"))
+
+# ============
+# Alias de classes ÉTENDUS (corrige l'erreur "Enu")
+# ============
 CLASSES_CANON = {
-    "feca": "Feca",
-    "osamodas": "Osamodas",
-    "enutrof": "Enutrof",
+    # canons + alias courts
+    "feca": "Feca", "féca": "Feca",
+    "osamodas": "Osamodas", "osa": "Osamodas",
+    "enutrof": "Enutrof", "enu": "Enutrof",
     "sram": "Sram",
-    "xelor": "Xelor",
-    "ecaflip": "Ecaflip",
-    "eniripsa": "Eniripsa",
+    "xelor": "Xelor", "xel": "Xelor",
+    "ecaflip": "Ecaflip", "eca": "Ecaflip",
+    "eniripsa": "Eniripsa", "eni": "Eniripsa",
     "iop": "Iop",
     "cra": "Crâ", "crâ": "Crâ",
-    "sadida": "Sadida",
-    "sacrieur": "Sacrieur",
-    "pandawa": "Pandawa",
+    "sadida": "Sadida", "sadi": "Sadida",
+    "sacrieur": "Sacrieur", "sacri": "Sacrieur",
+    "pandawa": "Pandawa", "panda": "Pandawa",
 }
 ALIGN_CANON = {
     "neutre": "Neutre",
@@ -177,6 +191,113 @@ class JsonFileProfileStore:
                     break
         return out
 
+# ============
+# Store via #console
+# ============
+class ConsoleProfileStore:
+    """
+    Persistance auditable dans le salon #console via un fichier JSON attaché.
+    Format:
+    {
+      "profiles": [
+         { ... Profile.to_json() ... },
+         ...
+      ],
+      "updated_at": "2025-09-05T00:12:34Z"
+    }
+    """
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self._lock = asyncio.Lock()
+
+    async def _get_console_channel(self, guild_id: int) -> discord.TextChannel:
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            raise RuntimeError(f"Guild {guild_id} introuvable.")
+        ch = get(guild.text_channels, name=CHANNEL_CONSOLE_NAME)
+        if not ch:
+            raise RuntimeError(f"Salon #{CHANNEL_CONSOLE_NAME} introuvable dans {guild.name}.")
+        return ch
+
+    async def _load_blob(self, guild_id: int) -> dict:
+        ch = await self._get_console_channel(guild_id)
+        async for msg in ch.history(limit=HISTORY_SCAN_LIMIT, oldest_first=False):
+            # priorité: pièce jointe du bon nom
+            for att in msg.attachments:
+                if att.filename == PROFILES_FILENAME:
+                    data = await att.read()
+                    try:
+                        return json.loads(data.decode("utf-8"))
+                    except Exception:
+                        continue
+            # fallback: message marqué + codeblock JSON
+            if PROFILES_MARKER in (msg.content or "") and msg.attachments:
+                for att in msg.attachments:
+                    if att.filename.endswith(".json"):
+                        data = await att.read()
+                        try:
+                            return json.loads(data.decode("utf-8"))
+                        except Exception:
+                            continue
+        # pas trouvé -> structure vide
+        return {"profiles": [], "updated_at": datetime.now(timezone.utc).isoformat()}
+
+    async def _save_blob(self, guild_id: int, blob: dict) -> None:
+        ch = await self._get_console_channel(guild_id)
+        blob["updated_at"] = datetime.now(timezone.utc).isoformat()
+        b = json.dumps(blob, ensure_ascii=False, indent=2).encode("utf-8")
+        file = discord.File(io.BytesIO(b), filename=PROFILES_FILENAME)
+        await ch.send(content=f"{PROFILES_MARKER} (fichier)", file=file)
+
+    async def upsert(self, profile: Profile) -> None:
+        async with self._lock:
+            blob = await self._load_blob(profile.guild_id)
+            profiles = blob.get("profiles", [])
+            key = (profile.guild_id, profile.player_slug)
+            found = False
+            for i, p in enumerate(profiles):
+                if (p["guild_id"], p["player_slug"]) == key:
+                    profiles[i] = profile.to_json()
+                    found = True
+                    break
+            if not found:
+                profiles.append(profile.to_json())
+            blob["profiles"] = profiles
+            await self._save_blob(profile.guild_id, blob)
+
+    async def delete(self, guild_id: int, player_slug: str) -> bool:
+        async with self._lock:
+            blob = await self._load_blob(guild_id)
+            before = len(blob.get("profiles", []))
+            blob["profiles"] = [p for p in blob.get("profiles", []) if not (p["guild_id"] == guild_id and p["player_slug"] == player_slug)]
+            await self._save_blob(guild_id, blob)
+            return len(blob["profiles"]) < before
+
+    async def get_by_slug(self, guild_id: int, slug: str) -> Optional[Profile]:
+        blob = await self._load_blob(guild_id)
+        for p in blob.get("profiles", []):
+            if p["guild_id"] == guild_id and p["player_slug"] == slug:
+                return Profile.from_json(p)
+        return None
+
+    async def get_by_owner(self, guild_id: int, owner_id: int) -> Optional[Profile]:
+        blob = await self._load_blob(guild_id)
+        for p in blob.get("profiles", []):
+            if p["guild_id"] == guild_id and p["owner_id"] == owner_id:
+                return Profile.from_json(p)
+        return None
+
+    async def search(self, guild_id: int, query: str, limit: int = 5) -> list[Profile]:
+        q = slugify(query)
+        blob = await self._load_blob(guild_id)
+        out = []
+        for p in blob.get("profiles", []):
+            if p["guild_id"] == guild_id and q in p["player_slug"]:
+                out.append(Profile.from_json(p))
+                if len(out) >= limit:
+                    break
+        return out
+
 # ==================
 # Parseur %stats%
 # ==================
@@ -236,6 +357,61 @@ def parse_stats_block(text: str) -> Tuple[Dict[str, StatLine], int, int, int]:
 
     return extracted, initiative, pa, pm
 
+
+class WizardCancelled(Exception):
+    """Le joueur a tapé 'annuler' ou a dépassé le nombre d'essais/timeout."""
+    pass
+
+
+async def wait_user_message(bot: commands.Bot, chan: discord.abc.Messageable, author_id: int, timeout: int = 180) -> discord.Message:
+    """Attend un message de l'utilisateur dans le même channel (DM ou non)."""
+    def _check(m: discord.Message) -> bool:
+        return (m.author.id == author_id) and (m.channel.id == getattr(chan, "id", None))
+    return await bot.wait_for("message", check=_check, timeout=timeout)
+
+
+async def ask_loop(
+    bot: commands.Bot,
+    chan: discord.abc.Messageable,
+    author_id: int,
+    prompt: str,
+    validator: Callable[[str], Tuple[bool, Any, str]],
+    help_text: str = "",
+    example: str = "",
+    retries: int = 5,
+    timeout: int = 180
+):
+    """
+    Envoie prompt, boucle jusqu'à réponse valide ou annulation/timeout.
+    - validator(text) -> (ok, value, err_msg)
+    - help_text/exemple affichés seulement en cas d'erreur.
+    - 'annuler' à tout moment stoppe proprement.
+    """
+    await chan.send(prompt)
+    tries = 0
+    while True:
+        try:
+            msg = await wait_user_message(bot, chan, author_id, timeout=timeout)
+        except asyncio.TimeoutError:
+            await chan.send("⏰ Temps écoulé. Reprends quand tu veux avec `!profil set`.")
+            raise WizardCancelled()
+
+        content = msg.content.strip()
+        if content.lower() == "annuler":
+            await chan.send("❎ D’accord, j’annule. Tu pourras reprendre avec `!profil set`.")
+            raise WizardCancelled()
+
+        ok, value, err = validator(content)
+        if ok:
+            return value
+
+        tries += 1
+        hint = (("\nℹ️ " + help_text) if help_text else "") + (("\nExemple : `" + example + "`") if example else "")
+        await chan.send(f"❌ {err}{hint}\nRéessaie :")
+        if retries and tries >= retries:
+            await chan.send("❎ Trop d’essais. On arrête ici — relance `!profil set` quand tu veux.")
+            raise WizardCancelled()
+
 # ==================
 # Embed de rendu
 # ==================
@@ -293,10 +469,13 @@ def make_profile_embed(member: discord.Member, p: Profile) -> discord.Embed:
 # ==================
 class ProfilCog(commands.Cog):
     """Gestion des profils joueurs: création, consultation, édition, suppression."""
+    WIZARD_EVT_START = "wizard_started"
+    WIZARD_EVT_END = "wizard_ended"
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.store = JsonFileProfileStore(PROFILE_JSON_PATH)
+        # store #console (au lieu du JSON local)
+        self.store = ConsoleProfileStore(bot)
 
     # ---- utilitaires de validation ----
     def canon_classe(self, s: str) -> str:
@@ -312,23 +491,14 @@ class ProfilCog(commands.Cog):
         raise ValueError(f"Alignement inconnu: '{s}'. Alignements valides: Neutre, Bonta, Brâkmar")
 
     async def _open_dm(self, ctx: commands.Context) -> Tuple[discord.abc.Messageable, bool]:
-        """Tente d'ouvrir un DM; fallback au channel courant si DM fermé."""
         try:
             dm = await ctx.author.create_dm()
-            await dm.send(f"👋 Bonjour {ctx.author.display_name} ! On va créer/mettre à jour ton profil. (Si tu préfères, ferme ici et relance `!profil set` dans un salon privé.)")
+            self.bot.dispatch(self.WIZARD_EVT_START, ctx.author.id)
             return dm, True
         except discord.Forbidden:
+            self.bot.dispatch(self.WIZARD_EVT_START, ctx.author.id)
             await ctx.reply("Je ne peux pas t'envoyer de DM. On continue ici (ton texte `%stats%` sera visible dans ce salon).")
             return ctx.channel, False
-
-    async def _ask(self, bot: commands.Bot, chan: discord.abc.Messageable, author_id: int, question: str, check=None, timeout: int = 180) -> str:
-        await chan.send(question)
-        def _check(msg: discord.Message) -> bool:
-            if msg.author.id != author_id: return False
-            if check is not None: return check(msg)
-            return True
-        msg = await bot.wait_for("message", check=_check, timeout=timeout)
-        return msg.content.strip()
 
     # ---- GROUPE !profil ----
     @commands.group(name="profil", invoke_without_command=True)
@@ -365,81 +535,148 @@ class ProfilCog(commands.Cog):
         chan, is_dm = await self._open_dm(ctx)
         guild_id = ctx.guild.id
         owner_id = ctx.author.id
-
-        # 1) Charger existant (si édition)
-        existing = await self.store.get_by_owner(guild_id, owner_id)
-        suggested_name = existing.player_name if existing else (ctx.author.nick or ctx.author.name)
-        await chan.send("On va remplir: **Nom**, **Niveau**, **Classe**, **Alignement**, **%stats%** (coller le texte). Tu peux annuler à tout moment avec `annuler`.")
-
-        def not_cancel(msg: discord.Message) -> bool:
-            return msg.content.strip().lower() != "annuler"
-
-        # 2) Nom du personnage
-        name = await self._ask(self.bot, chan, owner_id, f"Nom du personnage ? (par ex. `Coca-Cola`)  \n*(Entrée pour garder: `{suggested_name}`)*", not_cancel)
-        if name == "":
-            name = suggested_name
-        if strip_accents(name).lower() == "annuler":
-            return await chan.send("Annulé.")
-
-        # 3) Niveau
-        async def _check_level(msg: discord.Message) -> bool:
-            return msg.content.isdigit() and 1 <= int(msg.content) <= 200
-        level_txt = await self._ask(self.bot, chan, owner_id, "Niveau ? (1..200)", _check_level)
-        level = int(level_txt)
-
-        # 4) Classe
-        async def _check_class(msg: discord.Message) -> bool:
-            try:
-                self.canon_classe(msg.content)
-                return True
-            except Exception:
-                return False
-        classe_in = await self._ask(self.bot, chan, owner_id, f"Classe ? (ex: Iop, Cra, Eniripsa...)  \n*Valides: {', '.join(sorted(set(CLASSES_CANON.values())))}*", _check_class)
-        classe = self.canon_classe(classe_in)
-
-        # 5) Alignement
-        async def _check_align(msg: discord.Message) -> bool:
-            try:
-                self.canon_align(msg.content)
-                return True
-            except Exception:
-                return False
-        align_in = await self._ask(self.bot, chan, owner_id, "Alignement ? (Neutre, Bonta, Brâkmar)", _check_align)
-        alignement = self.canon_align(align_in)
-
-        # 6) Coller %stats%
-        async def _check_stats(msg: discord.Message) -> bool:
-            try:
-                parse_stats_block(msg.content)
-                return True
-            except Exception:
-                return False
-        stats_text = await self._ask(self.bot, chan, owner_id, "Colle le texte `%stats%` complet du jeu :", _check_stats)
         try:
-            stats_map, initiative, pa, pm = parse_stats_block(stats_text)
-        except StatsParseError as e:
-            return await chan.send(f"Erreur de parsing: {e}")
+            existing = await self.store.get_by_owner(guild_id, owner_id)
+            suggested_name = existing.player_name if existing else (ctx.author.nick or ctx.author.name)
+            await chan.send(
+                "On va remplir : **Nom**, **Niveau**, **Classe**, **Alignement**, **%stats%** (coller le texte).\n"
+                "Tu peux annuler à tout moment avec `annuler`."
+            )
 
+            # --- VALIDATORS ---
+            def val_name(text: str):
+                name = text.strip() or suggested_name
+                if len(name) < 2 or len(name) > 32:
+                    return False, None, "Le nom doit faire entre 2 et 32 caractères."
+                return True, name, ""
+
+            def val_level(text: str):
+                if text.isdigit():
+                    n = int(text)
+                    if 1 <= n <= 200:
+                        return True, n, ""
+                return False, None, "Le niveau doit être un entier entre 1 et 200."
+
+            def val_classe(text: str):
+                try:
+                    return True, self.canon_classe(text), ""
+                except Exception as e:
+                    return False, None, str(e)
+
+            def val_align(text: str):
+                try:
+                    return True, self.canon_align(text), ""
+                except Exception as e:
+                    return False, None, str(e)
+
+            def val_stats(text: str):
+                try:
+                    stats_map, initiative, pa, pm = parse_stats_block(text)
+                    return True, (stats_map, initiative, pa, pm), ""
+                except StatsParseError as e:
+                    return False, None, f"Format %stats% invalide : {e}"
+
+            # --- QUESTIONS AVEC REPROMPT ---
+            name = await ask_loop(
+                self.bot, chan, owner_id,
+                prompt=f"**Nom du personnage ?** (par ex. `Coca-Cola`)\n*(Entrée pour garder : `{suggested_name}`)*",
+                validator=val_name,
+                help_text="Le nom sera utilisé pour la recherche (`!profil <nom>`).",
+                example="Coca-Cola",
+            )
+            level = await ask_loop(
+                self.bot, chan, owner_id,
+                prompt="**Niveau ?** (1..200)",
+                validator=val_level,
+                help_text="Le niveau doit être un nombre entier.",
+                example="200",
+            )
+            classe = await ask_loop(
+                self.bot, chan, owner_id,
+                prompt=("**Classe ?** (ex : Iop, Cra, Eniripsa...)\n"
+                        "*Alias acceptés : eni/enu/osa/panda/sadi/sacri/eca/xel/cra/féca/crâ ...*"),
+                validator=val_classe,
+                example="Enu",
+            )
+            alignement = await ask_loop(
+                self.bot, chan, owner_id,
+                prompt="**Alignement ?** (Neutre, Bonta, Brâkmar)",
+                validator=val_align,
+                example="Bonta",
+            )
+            (stats_map, initiative, pa, pm) = await ask_loop(
+                self.bot, chan, owner_id,
+                prompt="**Colle le texte `%stats%` complet du jeu :**",
+                validator=val_stats,
+                help_text=(
+                    "Exemple de ligne attendue depuis Dofus Retro : "
+                    "`Coca-Cola : Vitalité 101 (+1762), Sagesse 101 (+249), Force 389 (+135), "
+                    "Intelligence 101 (+129), Chance 101 (+335), Agilité 101 (+30) - Initiative 1400, PA 8, PM 4`"
+                ),
+                example="Vitalité 101 (+1762), ... - Initiative 1400, PA 8, PM 4",
+                retries=0,
+            )
+
+            now = datetime.now(timezone.utc).isoformat()
+            prof = Profile(
+                guild_id=guild_id,
+                owner_id=owner_id,
+                player_name=name.strip(),
+                player_slug=slugify(name),
+                level=level,
+                classe=classe,
+                alignement=alignement,
+                stats=stats_map,
+                initiative=initiative,
+                pa=pa,
+                pm=pm,
+                created_at=existing.created_at if existing else now,
+                updated_at=now,
+            )
+            await self.store.upsert(prof)
+            member = ctx.guild.get_member(owner_id) or ctx.author
+            await chan.send("✅ Profil sauvegardé.")
+            await chan.send(embed=make_profile_embed(member, prof))
+        except WizardCancelled:
+            return
+        finally:
+            # libérer l'IA quoi qu'il arrive
+            self.bot.dispatch(self.WIZARD_EVT_END, owner_id)
+
+    @profil.command(name="import")
+    @commands.guild_only()
+    async def profil_import(self, ctx: commands.Context):
+        """Importe un %stats% depuis un message cité ou répondu."""
+        if not ctx.message.reference:
+            return await ctx.reply("Réponds à un message qui contient la ligne `%stats%` à importer.")
+        try:
+            src = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+        except Exception:
+            return await ctx.reply("Impossible de lire le message référencé.")
+        text = src.content or ""
+        try:
+            stats_map, initiative, pa, pm = parse_stats_block(text)
+        except StatsParseError as e:
+            return await ctx.reply(f"Le message cité ne contient pas un %stats% valide : {e}")
+
+        guild_id = ctx.guild.id
+        owner_id = ctx.author.id
+        existing = await self.store.get_by_owner(guild_id, owner_id)
+        if not existing:
+            # Minimal: on a besoin de nom/classe/align/level → lancer un mini-wizard (DM) pour les compléter
+            await ctx.reply("🧩 J'ai bien lu tes stats. Il me manque Nom / Niveau / Classe / Alignement. Je t'ouvre un DM pour compléter.")
+            return await self.profil_set(ctx)
+
+        # Mise à jour des seules stats
         now = datetime.now(timezone.utc).isoformat()
-        prof = Profile(
-            guild_id=guild_id,
-            owner_id=owner_id,
-            player_name=name.strip(),
-            player_slug=slugify(name),
-            level=level,
-            classe=classe,
-            alignement=alignement,
-            stats=stats_map,
-            initiative=initiative,
-            pa=pa, pm=pm,
-            created_at=existing.created_at if existing else now,
-            updated_at=now,
-        )
-        await self.store.upsert(prof)
-        await chan.send("✅ Profil sauvegardé.")
-        # Poster un embed dans le salon d'origine
+        existing.stats = stats_map
+        existing.initiative = initiative
+        existing.pa = pa
+        existing.pm = pm
+        existing.updated_at = now
+        await self.store.upsert(existing)
         member = ctx.guild.get_member(owner_id) or ctx.author
-        await ctx.reply(embed=make_profile_embed(member, prof))
+        await ctx.reply("✅ Stats importées depuis le message cité.", embed=make_profile_embed(member, existing))
 
     # ---- Suppression ----
     @profil.command(name="delete")
@@ -482,6 +719,27 @@ class ProfilCog(commands.Cog):
             return await ctx.reply("Aucun résultat.")
         lines = [f"• **{p.player_name}** (`!profil {p.player_slug}`)" for p in res]
         await ctx.reply("Résultats :\n" + "\n".join(lines))
+
+    @commands.Cog.listener()
+    async def on_command_error(self, ctx: commands.Context, error: Exception):
+        """Filet de sécurité : si une erreur survient sur une commande profil, on répond calmement au bon endroit."""
+        if not ctx.command:
+            return
+        if not ctx.command.qualified_name.startswith("profil"):
+            return
+
+        try:
+            dm = await ctx.author.create_dm()
+            await dm.send(
+                f"⚠️ Une erreur est survenue : {error.__class__.__name__}. "
+                f"Tu peux relancer `!profil set`. Si ça persiste, ping le Staff."
+            )
+            return
+        except discord.Forbidden:
+            pass
+        await ctx.reply(
+            "⚠️ Une erreur est survenue. Essaie `!profil set` à nouveau ou contacte le Staff."
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ProfilCog(bot))
