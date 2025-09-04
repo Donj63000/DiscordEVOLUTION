@@ -140,6 +140,7 @@ class IACog(commands.Cog):
         self.SESSION_TTL = 60 * 30
         self.sessions: dict[int, IASession] = {}
         self.session_lock = asyncio.Lock()
+        self._wizard_users: set[int] = set()
 
     async def cog_load(self):
         try:
@@ -571,7 +572,7 @@ class IACog(commands.Cog):
             system_prompt = "Tu es l'assistant de la guilde Evolution sur Dofus Retro."
             chat = self._new_chat(model_name, system_prompt)
             self.sessions[uid] = IASession(model_name=model_name, chat=chat, start_ts=datetime.utcnow(), last_activity=datetime.utcnow())
-            await message.channel.send("🆕 Session IA **privée** démarrée (créée automatiquement). Tu peux écrire directement ici. Pour terminer: `!iaend`.")
+            await message.channel.send("🆕 Session IA **privée** démarrée. Tu peux écrire directement ici. Pour terminer: `!iaend`.")
         except Exception as e:
             await message.channel.send(f"❗ Impossible de démarrer la session IA: {e}")
 
@@ -587,6 +588,14 @@ class IACog(commands.Cog):
             for key, sess in list(self.sessions.items()):
                 if sess.expired:
                     del self.sessions[key]
+
+    @commands.Cog.listener()
+    async def on_wizard_started(self, user_id: int):
+        self._wizard_users.add(user_id)
+
+    @commands.Cog.listener()
+    async def on_wizard_ended(self, user_id: int):
+        self._wizard_users.discard(user_id)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -618,6 +627,12 @@ class IACog(commands.Cog):
             await message.reply(response, mention_author=False)
             return
         if isinstance(message.channel, discord.DMChannel):
+            # 🔒 si un wizard est en cours pour cet utilisateur → ne RIEN faire
+            if message.author.id in self._wizard_users:
+                return
+            # 🚫 Désactiver l'auto-start en DM : ne lancer l'IA que sur commandes explicites
+            if not message.content.strip().startswith(("!bot", "!ia ", "!analyse", "!annonce")):
+                return
             await self.handle_dm(message)
             return
         if self.bot.user and self.bot.user.mention in message.content:
