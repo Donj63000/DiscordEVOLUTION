@@ -140,6 +140,56 @@ heure. Les commandes `!warnings` et `!resetwarnings` (réservées au rôle
 **Staff**) permettent de consulter ou remettre à zéro le compteur d'un membre.
 
 
+## Score de puissance et ladder
+
+Un score de puissance borné sur 1000 est calculé pour chaque profil en
+combinant la caractéristique principale, la polyvalence, la vitalité, le
+niveau, les PA/PM, la sagesse et l'initiative. La commande `!ladder` affiche le
+classement de la guilde selon ce score. Exemples :
+
+- `!ladder` : top 10 de la guilde ;
+- `!ladder 15` : top 15 (max 20) ;
+- `!ladder class iop` : filtre sur une classe ;
+- `!ladder all` : export CSV complet en plus de l'embed.
+
+### Variables d'environnement
+
+```bash
+# MODE de normalisation des stats dans le score
+PROFILE_BAR_MODE=guild       # guild | local | fixed
+PROFILE_BAR_FIXED_MAX=2000   # si fixed
+
+# Bornes PA/PM
+SCORE_PA_MIN=6
+SCORE_PA_MAX=12
+SCORE_PM_MIN=3
+SCORE_PM_MAX=6
+
+# Pondérations (JSON). Laisse vide pour les défauts.
+PROFILE_SCORE_WEIGHTS='{"ELM_MAX":0.42,"ELM_OTH":0.13,"VIT":0.15,"LVL":0.10,"PA":0.07,"PM":0.05,"WIS":0.04,"INIT":0.04}'
+
+# Taille des barres (affichage profil)
+PROFILE_BAR_WIDTH=18
+PROFILE_ANSI=0
+PROFILE_COMPACT=0
+```
+
+### Contrôles qualité rapides
+
+- `!ladder` : affiche le top 10 sans erreur même si des stats manquent ;
+- `!ladder 15` : agrandit l'embed (limité à 20) ;
+- `!ladder class iop` : filtre par classe ;
+- `!ladder all` : ajoute un fichier `ladder.csv`.
+
+### Message d'annonce
+
+```
+**Nouveau : Ladder de guilde `!ladder`** 🏆
+Un score est maintenant calculé automatiquement à partir de vos profils (stat principale, vitalité, niveau, PA/PM, sagesse, initiative).
+Tapez `!ladder` pour voir le **classement** de la guilde, `!ladder class iop` pour filtrer par classe, ou `!ladder all` pour l’export complet.
+Mettez à jour votre profil avec `!profil set` / `!profil stats` — vos points montent (ou descendent 😈) en direct !
+```
+
 ## Licence
 
 Ce projet est distribué sous la licence MIT. Consultez le fichier [LICENSE](LICENSE) pour plus de détails.

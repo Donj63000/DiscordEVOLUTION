@@ -626,6 +626,156 @@ async def ask_loop(
             await chan.send("❎ Trop d’essais. On arrête ici — relance `!profil set` quand tu veux.")
             raise WizardCancelled()
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SCORE: configuration & normalisation (0 binaire, lecture #console)
+# ─────────────────────────────────────────────────────────────────────────────
+import math, json
+
+# Mode d'échelle pour normalisation (comme tes barres)
+SCORE_SCALE_MODE = os.getenv("PROFILE_BAR_MODE", "guild").lower()  # "guild" recommandé pour ladder
+SCORE_FIXED_MAX  = int(os.getenv("PROFILE_BAR_FIXED_MAX", "2000"))
+
+# Bornes PA/PM (Dofus Rétro)
+SCORE_PA_MIN = int(os.getenv("SCORE_PA_MIN", "6"))
+SCORE_PA_MAX = int(os.getenv("SCORE_PA_MAX", "12"))
+SCORE_PM_MIN = int(os.getenv("SCORE_PM_MIN", "3"))
+SCORE_PM_MAX = int(os.getenv("SCORE_PM_MAX", "6"))
+
+# Pondérations (JSON optionnel), sinon défauts robustes
+_DEFAULT_WEIGHTS = {
+    "ELM_MAX": 0.42,   # meilleur élément (max des 4)
+    "ELM_OTH": 0.13,   # moyenne des 3 autres
+    "VIT":     0.15,
+    "LVL":     0.10,
+    "PA":      0.07,
+    "PM":      0.05,
+    "WIS":     0.04,
+    "INIT":    0.04,
+}
+try:
+    _W_ENV = os.getenv("PROFILE_SCORE_WEIGHTS")
+    if _W_ENV:
+        W = json.loads(_W_ENV)
+        _sum = sum(W.values()) or 1.0
+        SCORE_W = {k: float(v) / _sum for k, v in W.items()}  # renormalisation
+    else:
+        SCORE_W = _DEFAULT_WEIGHTS
+except Exception:
+    SCORE_W = _DEFAULT_WEIGHTS
+
+def _clamp01(x: float) -> float:
+    return 0.0 if x < 0 else (1.0 if x > 1 else x)
+
+def _norm_fixed(x: float, mx: float) -> float:
+    """x / mx avec garde (mx>=1)."""
+    return _clamp01(x / max(1.0, mx))
+
+def _norm_range(x: float, lo: float, hi: float) -> float:
+    """(x-lo)/(hi-lo), borné 0..1."""
+    if hi <= lo: return 0.0
+    return _clamp01((x - lo) / (hi - lo))
+
+def _norm_sqrt(x: float, mx: float) -> float:
+    """Racine pour initiative (diminue les écarts extrêmes)."""
+    return _clamp01(math.sqrt(max(0.0, x)) / math.sqrt(max(1.0, mx)))
+
+async def _guild_maxima_for_ladder(cog: "ProfilCog", guild_id: int) -> dict:
+    """
+    Lit #console et renvoie les maxima observés:
+      vit, sag, fo, int, cha, agi, elem_max_global, init_max
+    """
+    blob = await cog.store._load_blob(guild_id)  # ConsoleProfileStore
+    mx = {
+        "vitalite": 1, "sagesse": 1, "force": 1, "intelligence": 1,
+        "chance": 1, "agilite": 1, "elemmax": 1, "initiative": 1
+    }
+    for row in blob.get("profiles", []):
+        if row.get("guild_id") != guild_id: 
+            continue
+        stats = row.get("stats", {})
+        vals = {}
+        for k in ("vitalite","sagesse","force","intelligence","chance","agilite"):
+            s = stats.get(k, {})
+            total = int(s.get("total", int(s.get("base",0))+int(s.get("bonus",0))))
+            vals[k] = total
+            mx[k] = max(mx[k], total)
+        elem_max = max(vals.get("force",0), vals.get("intelligence",0),
+                       vals.get("chance",0), vals.get("agilite",0))
+        mx["elemmax"] = max(mx["elemmax"], elem_max)
+        init = int(row.get("initiative", 0))
+        mx["initiative"] = max(mx["initiative"], init)
+    return mx
+
+def _score_for_profile(p: Profile, mx: dict) -> tuple[int, dict]:
+    """
+    Calcule le score (int 0..1000) + détail des composantes (debug).
+    Normalisations:
+      - éléments / vit / sag : vs mx (guilde) ou fixe (si SCORE_SCALE_MODE=fixed)
+      - PA/PM : [6..12], [3..6]
+      - Initiative : racine vs mx["initiative"]
+      - Level : /200
+    """
+    # Totaux éléments
+    fo = p.stats["force"].total
+    it = p.stats["intelligence"].total
+    ch = p.stats["chance"].total
+    ag = p.stats["agilite"].total
+    vit = p.stats["vitalite"].total
+    sag = p.stats["sagesse"].total
+    ini = p.initiative
+    pa  = p.pa
+    pm  = p.pm
+    lvl = p.level
+
+    elem_max = max(fo, it, ch, ag)
+    others = [x for x in (fo, it, ch, ag) if x != elem_max]
+    if len(others) < 3:  # si égalités, on complète proprement
+        all4 = sorted([fo, it, ch, ag], reverse=True)
+        elem_max = all4[0]
+        others = all4[1:4]
+    elem_mean_others = sum(others) / 3.0
+
+    # Bornes selon mode
+    if SCORE_SCALE_MODE == "fixed":
+        m_elem = m_vit = m_sag = float(max(1, SCORE_FIXED_MAX))
+        m_init = float(mx.get("initiative", 1))
+    else:  # guild/local -> on s'appuie sur mx (déjà guilde)
+        m_elem = float(mx.get("elemmax", 1))
+        m_vit  = float(mx.get("vitalite", 1))
+        m_sag  = float(mx.get("sagesse", 1))
+        m_init = float(mx.get("initiative", 1))
+
+    # Normalisations 0..1
+    n_elem_max  = _norm_fixed(elem_max, m_elem)
+    n_elem_oths = _norm_fixed(elem_mean_others, m_elem)
+    n_vit       = _norm_fixed(vit, m_vit)
+    n_wis       = _norm_fixed(sag, m_sag)
+    n_pa        = _norm_range(pa, SCORE_PA_MIN, SCORE_PA_MAX)
+    n_pm        = _norm_range(pm, SCORE_PM_MIN, SCORE_PM_MAX)
+    n_init      = _norm_sqrt(ini, m_init)
+    n_lvl       = _clamp01(lvl / 200.0)
+
+    # Pondération
+    w = SCORE_W
+    total = (
+        w["ELM_MAX"] * n_elem_max +
+        w["ELM_OTH"] * n_elem_oths +
+        w["VIT"]     * n_vit +
+        w["LVL"]     * n_lvl +
+        w["PA"]      * n_pa +
+        w["PM"]      * n_pm +
+        w["WIS"]     * n_wis +
+        w["INIT"]    * n_init
+    )
+
+    score1000 = int(round(1000.0 * total))
+    details = {
+        "n_elem_max": n_elem_max, "n_elem_oth": n_elem_oths, "n_vit": n_vit,
+        "n_lvl": n_lvl, "n_pa": n_pa, "n_pm": n_pm, "n_wis": n_wis, "n_init": n_init,
+        "weights": w
+    }
+    return score1000, details
+
 # ==================
 # Cog
 # ==================
@@ -918,6 +1068,116 @@ class ProfilCog(commands.Cog):
             return await ctx.reply("Aucun résultat.")
         lines = [f"• **{p.player_name}** (`!profil {p.player_slug}`)" for p in res]
         await ctx.reply("Résultats :\n" + "\n".join(lines))
+
+    @commands.command(name="ladder")
+    @commands.guild_only()
+    async def ladder(self, ctx: commands.Context, *, arg: str = ""):
+        """
+        Affiche le classement des profils de la guilde par Score.
+        Options:
+          !ladder                -> top 10
+          !ladder 15             -> top 15 (max 20 pour l'embed)
+          !ladder class iop      -> filtre une classe (alias ok)
+          !ladder all            -> top complet en CSV attaché + top 10 en embed
+        """
+        guild_id = ctx.guild.id
+        page_size = 10
+        arg = (arg or "").strip().lower()
+        filt_class = None
+        show_all = False
+
+        # Parsing simple des options
+        if arg:
+            if arg.isdigit():
+                page_size = max(5, min(20, int(arg)))
+            elif arg.startswith("class "):
+                try:
+                    filt_class = self.canon_classe(arg.split(" ", 1)[1])
+                except Exception as e:
+                    return await ctx.reply(str(e))
+            elif arg == "all":
+                show_all = True
+
+        # Charger données #console
+        blob = await self.store._load_blob(guild_id)
+        rows = []
+        for row in blob.get("profiles", []):
+            if row.get("guild_id") != guild_id: 
+                continue
+            if filt_class and row.get("classe") != filt_class:
+                continue
+            try:
+                prof = Profile.from_json(row)
+            except Exception:
+                continue
+            rows.append(prof)
+
+        if not rows:
+            return await ctx.reply("Aucun profil trouvé pour ce critère.")
+
+        # Maxima guilde (pour normalisation)
+        mx = await _guild_maxima_for_ladder(self, guild_id)
+
+        # Calcul des scores
+        ladder = []
+        for p in rows:
+            score, det = _score_for_profile(p, mx)
+            ladder.append({
+                "score": score,
+                "p": p,
+                "det": det,
+            })
+
+        # Tri (score desc, niveau desc, initiative desc)
+        ladder.sort(key=lambda r: (r["score"], r["p"].level, r["p"].initiative), reverse=True)
+
+        # Construction de l'embed (top N)
+        topN = ladder[:page_size]
+        lines = []
+        header = f"{'#':<3} {'Joueur':<18} {'Classe':<9} {'Lvl':>3} {'Score':>5}  {'Elem':>5} {'Vit':>5}  {'PA/PM':<5} {'Init':>5}"
+        lines.append(header)
+        lines.append("-" * len(header))
+        for i, r in enumerate(topN, start=1):
+            p = r["p"]; s = r["score"]
+            elems = [p.stats["force"].total, p.stats["intelligence"].total, p.stats["chance"].total, p.stats["agilite"].total]
+            elem_max = max(elems) if elems else 0
+            line = f"{i:<3} {p.player_name[:18]:<18} {p.classe[:9]:<9} {p.level:>3} {s:>5}  {elem_max:>5} {p.stats['vitalite'].total:>5}  {p.pa}/{p.pm:<3} {p.initiative:>5}"
+            lines.append(line)
+
+        txt = "```text\n" + "\n".join(lines) + "\n```"
+
+        # Sous-titre du ladder (mode + pondération courte)
+        mode_label = {"guild":"max guilde", "local":"profil", "fixed":f"fixe {SCORE_FIXED_MAX}"}.get(SCORE_SCALE_MODE, SCORE_SCALE_MODE)
+        weight_hint = " + ".join([f"{k}:{v:.2f}" for k, v in SCORE_W.items() if v > 0.01])
+
+        emb = discord.Embed(
+            title="Ladder — Classement guilde",
+            description=f"Mode d'échelle: **{mode_label}** • Pondérations: `{weight_hint}`",
+            color=discord.Color.gold()
+        )
+        emb.add_field(name=f"Top {len(topN)}", value=txt, inline=False)
+        emb.set_footer(text="Score = combinaison normalisée: Élément, Vitalité, Niveau, PA/PM, Sagesse, Initiative")
+
+        # Envoi
+        await ctx.reply(embed=emb)
+
+        # Optionnel: export complet CSV si demandé
+        if show_all:
+            import io, csv
+            buf = io.StringIO()
+            writer = csv.writer(buf, delimiter=';')
+            writer.writerow(["rank","name","class","level","score","elem_max","vitalite","sagesse","force","intelligence","chance","agilite","pa","pm","initiative"])
+            for idx, r in enumerate(ladder, start=1):
+                p = r["p"]
+                writer.writerow([
+                    idx, p.player_name, p.classe, p.level, r["score"],
+                    max(p.stats["force"].total, p.stats["intelligence"].total, p.stats["chance"].total, p.stats["agilite"].total),
+                    p.stats["vitalite"].total, p.stats["sagesse"].total, p.stats["force"].total, p.stats["intelligence"].total,
+                    p.stats["chance"].total, p.stats["agilite"].total, p.pa, p.pm, p.initiative
+                ])
+            data = buf.getvalue().encode("utf-8")
+            file = discord.File(fp=io.BytesIO(data), filename="ladder.csv")
+            await ctx.reply(content="Export complet du ladder :", file=file)
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx: commands.Context, error: Exception):
