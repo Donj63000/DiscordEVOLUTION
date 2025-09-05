@@ -357,57 +357,173 @@ def parse_stats_block(text: str) -> Tuple[Dict[str, StatLine], int, int, int]:
 
     return extracted, initiative, pa, pm
 
-# ==================
-# Embed de rendu
-# ==================
-def embed_color_for_align(align: str) -> discord.Color:
-    a = ALIGN_CANON.get(strip_accents(align).lower(), align)
-    if a == "Bonta":
-        return discord.Color.blue()
-    if a == "Brâkmar":
-        return discord.Color.red()
-    return discord.Color.dark_gray()
+# ─────────────────────────────────────────────────────────────────────────────
+# Rendu texte avancé (sans aucun binaire)
+# ─────────────────────────────────────────────────────────────────────────────
+import os
 
-def class_emoji(name: str) -> str:
-    key = strip_accents(name).lower()
-    mapping = {
-        "feca": "🛡️", "osamodas": "🐾", "enutrof": "💰", "sram": "🗡️", "xelor": "⏳",
-        "ecaflip": "🎲", "eniripsa": "✨", "iop": "⚔️", "cra": "🏹", "crâ": "🏹",
-        "sadida": "🌿", "sacrieur": "🩸", "pandawa": "🍶",
-    }
-    return mapping.get(key, "🎮")
+THIN_NBSP = "\u202F"  # espace fine insécable (1 400)
+USE_ANSI = os.getenv("PROFILE_ANSI", "0") == "1"
+BAR_WIDTH = max(10, min(30, int(os.getenv("PROFILE_BAR_WIDTH", "18"))))  # borne 10..30
+COMPACT = os.getenv("PROFILE_COMPACT", "0") == "1"
 
-def format_stat(sl: StatLine) -> str:
-    sign = "+" if sl.bonus >= 0 else ""
-    return f"{sl.base} ({sign}{sl.bonus}) = {sl.total}"
+# Emojis "sémantiques"
+CLASS_EMOJI = {
+    "Iop": "⚔️", "Feca": "🛡️", "Enutrof": "🪙", "Eniripsa": "✨",
+    "Sram": "🗡️", "Xelor": "⏳", "Ecaflip": "🎲", "Osamodas": "🐾",
+    "Pandawa": "🍶", "Sacrieur": "🩸", "Sadida": "🌿", "Crâ": "🏹",
+}
+ALIGN_EMOJI = {"Neutre": "⚪", "Bonta": "🔵", "Brâkmar": "🔴"}
+
+# Palette d’embed par classe (hex)
+CLASS_COLOR = {
+    "Iop": 0xE74C3C, "Feca": 0x1ABC9C, "Enutrof": 0xF1C40F, "Eniripsa": 0xE91E63,
+    "Sram": 0x95A5A6, "Xelor": 0x9B59B6, "Ecaflip": 0xD35400, "Osamodas": 0x2ECC71,
+    "Pandawa": 0x34495E, "Sacrieur": 0xC0392B, "Sadida": 0x27AE60, "Crâ": 0x3498DB,
+}
+
+def fmt_int_fr(n: int) -> str:
+    """Format 1400 -> '1 400' (thin nbsp)."""
+    return f"{n:,}".replace(",", THIN_NBSP)
+
+def _ansi(code: int, s: str) -> str:
+    return f"\u001b[{code}m{s}\u001b[0m"
+
+def _lbl(label: str) -> str:
+    """Largeur label : 10/12 selon COMPACT."""
+    w = 10 if COMPACT else 12
+    return f"{label:<{w}}"
+
+def make_bar(base: int, bonus: int, max_total: int, width: int | None = None) -> str:
+    """Mini-barre Unicode (base = █, bonus = ▒, vide = ░)."""
+    width = width or BAR_WIDTH
+    total = max(0, base + bonus)
+    max_total = max(1, max_total)
+    base_w = int(round(width * max(0, base) / max_total))
+    tot_w  = int(round(width * total / max_total))
+    bonus_w = max(0, tot_w - base_w)
+    empty_w = max(0, width - base_w - bonus_w)
+    return "█" * base_w + "▒" * bonus_w + "░" * empty_w
+
+def fmt_stat_row_plain(label: str, base: int, bonus: int, total: int, bar: str) -> str:
+    # largeur des colonnes compacte / normale
+    bW = 3 if COMPACT else 4   # base width
+    sW = 4 if COMPACT else 5   # signed bonus width
+    tW = 4 if COMPACT else 5   # total width
+    return f"{_lbl(label)} {base:>{bW}} ({bonus:+{sW}}) = {total:>{tW}}   {bar}"
+
+def fmt_stat_row_ansi(label: str, base: int, bonus: int, total: int, bar: str) -> str:
+    # ANSI facultatif (label gris 37, base blanc 97, bonus vert/rouge 32/31, total cyan 36, barre gris 90)
+    bW = 3 if COMPACT else 4
+    sW = 4 if COMPACT else 5
+    tW = 4 if COMPACT else 5
+    bonus_str = _ansi(32 if bonus >= 0 else 31, f"{bonus:+{sW}}")
+    return (
+        _ansi(37, _lbl(label)) + " " +
+        _ansi(97, f"{base:>{bW}}") + " (" + bonus_str + ") = " +
+        _ansi(36, f"{total:>{tW}}") + "   " + _ansi(90, bar)
+    )
+
+def header_line(p) -> str:
+    """Ex: ⭐200 • 🪙 Enutrof • 🔵 Bonta"""
+    badge = "⭐200" if p.level == 200 else f"Niv. {p.level}"
+    cls   = f"{CLASS_EMOJI.get(p.classe,'🎮')} {p.classe}"
+    al    = f"{ALIGN_EMOJI.get(p.alignement,'⚪')} {p.alignement}"
+    return f"**{badge}** • {cls} • {al}"
+
+def color_for_profile(p) -> int:
+    if p.classe in CLASS_COLOR: return CLASS_COLOR[p.classe]
+    if p.alignement == "Bonta": return 0x4885ED
+    if p.alignement == "Brâkmar": return 0xEA4335
+    return 0x777777  # Neutre
+
+def _field_guard(text: str, limit: int = 1024) -> str:
+    """Garantit que la valeur de field ne dépasse pas la limite Discord (coupe proprement si besoin)."""
+    if len(text) <= limit:
+        return text
+    # On coupe par lignes pour éviter de casser la mise en forme
+    lines = text.splitlines()
+    out = []
+    curr = 0
+    for ln in lines:
+        if curr + len(ln) + 1 > limit - 1:  # garde 1 pour '\n' final optionnel
+            break
+        out.append(ln); curr += len(ln) + 1
+    # Indique la coupe
+    if out and not out[-1].endswith("…"):
+        out[-1] = out[-1].rstrip() + " …"
+    return "\n".join(out)
 
 def make_profile_embed(member: discord.Member, p: Profile) -> discord.Embed:
+    # ── Titre & sous-titre concis
     title = f"Profil — {p.player_name}"
-    desc = f"Niv. **{p.level}** • {class_emoji(p.classe)} **{p.classe}** • {p.alignement}"
-    emb = discord.Embed(
-        title=title,
-        description=desc,
-        color=embed_color_for_align(p.alignement)
-    )
+    sub   = header_line(p)
+
+    emb = discord.Embed(title=title, description=sub, color=color_for_profile(p))
+
+    # Vignette = avatar uniquement (projet 0 binaire)
     try:
         emb.set_thumbnail(url=member.display_avatar.url)
     except Exception:
         pass
 
-    emb.add_field(name="Vitalité", value=format_stat(p.stats["vitalite"]), inline=True)
-    emb.add_field(name="Sagesse", value=format_stat(p.stats["sagesse"]), inline=True)
-    emb.add_field(name="Initiative", value=f"{p.initiative}", inline=True)
+    # ── Bloc stats : deux colonnes monospace + barres
+    stats = p.stats or {}
+    max_total = max((sl.total for sl in stats.values()), default=1)
 
-    emb.add_field(name="Force", value=format_stat(p.stats["force"]), inline=True)
-    emb.add_field(name="Intelligence", value=format_stat(p.stats["intelligence"]), inline=True)
-    emb.add_field(name="PA / PM", value=f"{p.pa} PA • {p.pm} PM", inline=True)
+    row_fn = fmt_stat_row_ansi if USE_ANSI else fmt_stat_row_plain
 
-    emb.add_field(name="Chance", value=format_stat(p.stats["chance"]), inline=True)
-    emb.add_field(name="Agilité", value=format_stat(p.stats["agilite"]), inline=True)
-    emb.add_field(name="\u200b", value="\u200b", inline=True)  # équilibre la grille
+    left_rows = []
+    for key, label in [("vitalite","Vitalité"), ("sagesse","Sagesse"), ("force","Force")]:
+        sl = stats[key]; bar = make_bar(sl.base, sl.bonus, max_total)
+        left_rows.append(row_fn(label, sl.base, sl.bonus, sl.total, bar))
+    right_rows = []
+    for key, label in [("intelligence","Intelligence"), ("chance","Chance"), ("agilite","Agilité")]:
+        sl = stats[key]; bar = make_bar(sl.base, sl.bonus, max_total)
+        right_rows.append(row_fn(label, sl.base, sl.bonus, sl.total, bar))
+
+    block_tag = "ansi" if USE_ANSI else "text"
+    left_block  = f"```{block_tag}\n" + "\n".join(left_rows)  + "\n```"
+    right_block = f"```{block_tag}\n" + "\n".join(right_rows) + "\n```"
+
+    # Garde anti-dépassement (Discord 1024 car. par field)
+    left_block  = _field_guard(left_block)
+    right_block = _field_guard(right_block)
+
+    emb.add_field(name="Caractéristiques (1/2)", value=left_block, inline=True)
+    emb.add_field(name="Caractéristiques (2/2)", value=right_block, inline=True)
+
+    # ── Méta (initiative, PA/PM)
+    meta = f"**Initiative** {fmt_int_fr(p.initiative)}  •  **PA / PM** {p.pa}{THIN_NBSP}/ {p.pm}"
+    emb.add_field(name="\u200b", value=meta, inline=False)
 
     emb.set_footer(text=f"Dernière mise à jour : {p.updated_at.replace('T',' ')[:19]}")
     return emb
+
+class ProfilActionsView(discord.ui.View):
+    def __init__(self, cog: "ProfilCog", prof: Profile):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.prof = prof
+
+    @discord.ui.button(label="Mettre à jour %stats%", style=discord.ButtonStyle.primary)
+    async def btn_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "Réponds au message avec ta ligne `%stats%` puis tape `!profil stats` **en réponse**. "
+            "Ou simplement `!profil stats` et colle ton %stats%.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Lister mes persos", style=discord.ButtonStyle.secondary)
+    async def btn_list(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Utilise `!profil list` pour voir tous tes personnages.", ephemeral=True)
+
+    @discord.ui.button(label="Définir comme principal", style=discord.ButtonStyle.success)
+    async def btn_main(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            f"Utilise `!profil main {self.prof.player_slug}` pour définir **{self.prof.player_name}** comme principal.",
+            ephemeral=True
+        )
 
 # ==================
 # Exceptions et boucle de questions
@@ -539,14 +655,24 @@ class ProfilCog(commands.Cog):
                 if not prof:
                     return await ctx.reply(f"Aucun profil trouvé pour **{maybe_name}**.")
             member = ctx.guild.get_member(prof.owner_id) or ctx.author
-            return await ctx.reply(embed=make_profile_embed(member, prof))
+            emb = make_profile_embed(member, prof)
+            try:
+                view = ProfilActionsView(self, prof)
+                return await ctx.reply(embed=emb, view=view)
+            except Exception:
+                return await ctx.reply(embed=emb)
 
         # pas de nom: afficher le profil de l'appelant
         prof = await self.store.get_by_owner(guild_id, ctx.author.id)
         if not prof:
             return await ctx.reply("Tu n'as pas encore de profil. Utilise `!profil set` pour le créer.")
         member = ctx.guild.get_member(prof.owner_id) or ctx.author
-        await ctx.reply(embed=make_profile_embed(member, prof))
+        emb = make_profile_embed(member, prof)
+        try:
+            view = ProfilActionsView(self, prof)
+            await ctx.reply(embed=emb, view=view)
+        except Exception:
+            await ctx.reply(embed=emb)
 
     # ---- Création / mise à jour (dialogue guidé) ----
     @profil.command(name="set")
@@ -655,7 +781,12 @@ class ProfilCog(commands.Cog):
             await self.store.upsert(prof)
             await chan.send("✅ Profil sauvegardé.")
             member = ctx.guild.get_member(owner_id) or ctx.author
-            await chan.send(embed=make_profile_embed(member, prof))
+            emb = make_profile_embed(member, prof)
+            try:
+                view = ProfilActionsView(self, prof)
+                await chan.send(embed=emb, view=view)
+            except Exception:
+                await chan.send(embed=emb)
         except WizardCancelled:
             return
         finally:
@@ -695,7 +826,12 @@ class ProfilCog(commands.Cog):
         existing.updated_at = now
         await self.store.upsert(existing)
         member = ctx.guild.get_member(owner_id) or ctx.author
-        await ctx.reply("✅ Stats importées depuis le message cité.", embed=make_profile_embed(member, existing))
+        emb = make_profile_embed(member, existing)
+        try:
+            view = ProfilActionsView(self, existing)
+            await ctx.reply("✅ Stats importées depuis le message cité.", embed=emb, view=view)
+        except Exception:
+            await ctx.reply("✅ Stats importées depuis le message cité.", embed=emb)
 
     # ---- Suppression ----
     @profil.command(name="delete")
