@@ -454,22 +454,62 @@ def _field_guard(text: str, limit: int = 1024) -> str:
         out[-1] = out[-1].rstrip() + " …"
     return "\n".join(out)
 
-def make_profile_embed(member: discord.Member, p: Profile) -> discord.Embed:
-    # ── Titre & sous-titre concis
+BAR_MODE = os.getenv("PROFILE_BAR_MODE", "local").lower()
+BAR_FIXED_MAX = int(os.getenv("PROFILE_BAR_FIXED_MAX", "2000"))
+
+async def compute_bar_scale(cog: "ProfilCog", guild_id: int, p: Profile) -> tuple[int, str]:
+    """
+    Calcule l'échelle des barres (max_total) + une légende lisible.
+    - local : max des 6 caracs du profil courant
+    - guild : max observé sur toute la guilde (toutes fiches, toutes caracs)
+    - fixed : valeur fixe PROFILE_BAR_FIXED_MAX
+    Retour: (scale_max, caption)
+    """
+    mode = BAR_MODE
+    try:
+        if mode == "guild":
+            # On scanne la "base" #console pour récupérer le dernier snapshot
+            if hasattr(cog.store, "_load_blob"):
+                blob = await cog.store._load_blob(guild_id)  # ConsoleProfileStore
+                maxi = 1
+                for row in blob.get("profiles", []):
+                    if row.get("guild_id") != guild_id:
+                        continue
+                    stats = row.get("stats", {})
+                    for k in ("vitalite","sagesse","force","intelligence","chance","agilite"):
+                        s = stats.get(k, {})
+                        total = int(s.get("total", int(s.get("base",0))+int(s.get("bonus",0))))
+                        if total > maxi:
+                            maxi = total
+                return maxi, f"Échelle: max guilde {maxi}"
+            # si pas de _load_blob, fallback local
+            mode = "local"
+
+        if mode == "fixed":
+            m = max(1, BAR_FIXED_MAX)
+            return m, f"Échelle: fixe {m}"
+
+        # défaut: local
+        m = max((sl.total for sl in p.stats.values()), default=1)
+        return m, f"Échelle: ta carac la plus haute ({m})"
+    except Exception:
+        # En cas de souci, on ne casse pas l’affichage
+        m = max((sl.total for sl in p.stats.values()), default=1)
+        return m, f"Échelle: ta carac la plus haute ({m})"
+
+def make_profile_embed(member: discord.Member, p: Profile, *, scale_max: int, scale_caption: str) -> discord.Embed:
     title = f"Profil — {p.player_name}"
     sub   = header_line(p)
 
     emb = discord.Embed(title=title, description=sub, color=color_for_profile(p))
-
-    # Vignette = avatar uniquement (projet 0 binaire)
     try:
         emb.set_thumbnail(url=member.display_avatar.url)
     except Exception:
         pass
 
-    # ── Bloc stats : deux colonnes monospace + barres
     stats = p.stats or {}
-    max_total = max((sl.total for sl in stats.values()), default=1)
+    # ⟵ ÉCHELLE: on utilise scale_max calculé (local/guild/fixed)
+    max_total = max(1, scale_max)
 
     row_fn = fmt_stat_row_ansi if USE_ANSI else fmt_stat_row_plain
 
@@ -477,6 +517,7 @@ def make_profile_embed(member: discord.Member, p: Profile) -> discord.Embed:
     for key, label in [("vitalite","Vitalité"), ("sagesse","Sagesse"), ("force","Force")]:
         sl = stats[key]; bar = make_bar(sl.base, sl.bonus, max_total)
         left_rows.append(row_fn(label, sl.base, sl.bonus, sl.total, bar))
+
     right_rows = []
     for key, label in [("intelligence","Intelligence"), ("chance","Chance"), ("agilite","Agilité")]:
         sl = stats[key]; bar = make_bar(sl.base, sl.bonus, max_total)
@@ -486,16 +527,15 @@ def make_profile_embed(member: discord.Member, p: Profile) -> discord.Embed:
     left_block  = f"```{block_tag}\n" + "\n".join(left_rows)  + "\n```"
     right_block = f"```{block_tag}\n" + "\n".join(right_rows) + "\n```"
 
-    # Garde anti-dépassement (Discord 1024 car. par field)
-    left_block  = _field_guard(left_block)
-    right_block = _field_guard(right_block)
+    emb.add_field(name="Caractéristiques (1/2)", value=_field_guard(left_block), inline=True)
+    emb.add_field(name="Caractéristiques (2/2)", value=_field_guard(right_block), inline=True)
 
-    emb.add_field(name="Caractéristiques (1/2)", value=left_block, inline=True)
-    emb.add_field(name="Caractéristiques (2/2)", value=right_block, inline=True)
-
-    # ── Méta (initiative, PA/PM)
     meta = f"**Initiative** {fmt_int_fr(p.initiative)}  •  **PA / PM** {p.pa}{THIN_NBSP}/ {p.pm}"
     emb.add_field(name="\u200b", value=meta, inline=False)
+
+    # ⟵ LÉGENDE: on explique visuellement la signification + l’échelle
+    legend = f"Barres : **█ base** • **▒ bonus** • **░** jusqu’à l’échelle. {scale_caption}."
+    emb.add_field(name="\u200b", value=legend, inline=False)
 
     emb.set_footer(text=f"Dernière mise à jour : {p.updated_at.replace('T',' ')[:19]}")
     return emb
@@ -655,7 +695,8 @@ class ProfilCog(commands.Cog):
                 if not prof:
                     return await ctx.reply(f"Aucun profil trouvé pour **{maybe_name}**.")
             member = ctx.guild.get_member(prof.owner_id) or ctx.author
-            emb = make_profile_embed(member, prof)
+            scale_max, scale_caption = await compute_bar_scale(self, ctx.guild.id, prof)
+            emb = make_profile_embed(member, prof, scale_max=scale_max, scale_caption=scale_caption)
             try:
                 view = ProfilActionsView(self, prof)
                 return await ctx.reply(embed=emb, view=view)
@@ -667,7 +708,8 @@ class ProfilCog(commands.Cog):
         if not prof:
             return await ctx.reply("Tu n'as pas encore de profil. Utilise `!profil set` pour le créer.")
         member = ctx.guild.get_member(prof.owner_id) or ctx.author
-        emb = make_profile_embed(member, prof)
+        scale_max, scale_caption = await compute_bar_scale(self, ctx.guild.id, prof)
+        emb = make_profile_embed(member, prof, scale_max=scale_max, scale_caption=scale_caption)
         try:
             view = ProfilActionsView(self, prof)
             await ctx.reply(embed=emb, view=view)
@@ -781,7 +823,8 @@ class ProfilCog(commands.Cog):
             await self.store.upsert(prof)
             await chan.send("✅ Profil sauvegardé.")
             member = ctx.guild.get_member(owner_id) or ctx.author
-            emb = make_profile_embed(member, prof)
+            scale_max, scale_caption = await compute_bar_scale(self, ctx.guild.id, prof)
+            emb = make_profile_embed(member, prof, scale_max=scale_max, scale_caption=scale_caption)
             try:
                 view = ProfilActionsView(self, prof)
                 await chan.send(embed=emb, view=view)
@@ -826,7 +869,8 @@ class ProfilCog(commands.Cog):
         existing.updated_at = now
         await self.store.upsert(existing)
         member = ctx.guild.get_member(owner_id) or ctx.author
-        emb = make_profile_embed(member, existing)
+        scale_max, scale_caption = await compute_bar_scale(self, ctx.guild.id, existing)
+        emb = make_profile_embed(member, existing, scale_max=scale_max, scale_caption=scale_caption)
         try:
             view = ProfilActionsView(self, existing)
             await ctx.reply("✅ Stats importées depuis le message cité.", embed=emb, view=view)
