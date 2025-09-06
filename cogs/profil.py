@@ -249,6 +249,21 @@ class ConsoleProfileStore:
         file = discord.File(io.BytesIO(b), filename=PROFILES_FILENAME)
         await ch.send(content=f"{PROFILES_MARKER} (fichier)", file=file)
 
+    async def ensure_unique_slug(self, guild_id: int, base_slug: str, owner_id: int) -> str:
+        blob = await self._load_blob(guild_id)
+        used = {(p["player_slug"], p["owner_id"]) for p in blob.get("profiles", []) if p.get("guild_id") == guild_id}
+        # si déjà détenu par le même owner, ok
+        if (base_slug, owner_id) in used:
+            return base_slug
+        # sinon suffixer
+        slugs = {s for (s, _) in used}
+        slug = base_slug
+        i = 2
+        while slug in slugs:
+            slug = f"{base_slug}-{i}"
+            i += 1
+        return slug
+
     async def upsert(self, profile: Profile) -> None:
         async with self._lock:
             blob = await self._load_blob(profile.guild_id)
@@ -297,6 +312,42 @@ class ConsoleProfileStore:
                 if len(out) >= limit:
                     break
         return out
+
+# ---- Ladder snapshot ----
+class LadderSnapshotStore:
+    FILENAME = "ladder_snapshot.json"
+    MARKER = "===LADDER_SNAPSHOT==="
+
+    def __init__(self, bot: commands.Bot): self.bot = bot
+
+    async def _get_console_channel(self, guild_id: int) -> discord.TextChannel:
+        for g in self.bot.guilds:
+            if g.id == guild_id:
+                ch = get(g.text_channels, name=os.getenv("CHANNEL_CONSOLE") or "console")
+                if ch: return ch
+        raise RuntimeError("#console introuvable")
+
+    async def load(self, guild_id: int) -> dict:
+        ch = await self._get_console_channel(guild_id)
+        pins = await ch.pins()
+        for m in pins:
+            if self.MARKER in (m.content or "") and m.attachments:
+                for att in m.attachments:
+                    if att.filename == self.FILENAME:
+                        data = await att.read()
+                        return json.loads(data.decode("utf-8"))
+        return {"updated_at": "", "ranking": []}
+
+    async def save(self, guild_id: int, ranking: list[dict]):
+        ch = await self._get_console_channel(guild_id)
+        blob = {"updated_at": datetime.now(timezone.utc).isoformat(), "ranking": ranking}
+        b = json.dumps(blob, ensure_ascii=False, indent=2).encode("utf-8")
+        file = discord.File(io.BytesIO(b), filename=self.FILENAME)
+        msg = await ch.send(content=f"{self.MARKER} (fichier)", file=file)
+        try:
+            await msg.pin()
+        except Exception:
+            pass
 
 # ==================
 # Parseur %stats%
@@ -497,7 +548,7 @@ async def compute_bar_scale(cog: "ProfilCog", guild_id: int, p: Profile) -> tupl
         m = max((sl.total for sl in p.stats.values()), default=1)
         return m, f"Échelle: ta carac la plus haute ({m})"
 
-def make_profile_embed(member: discord.Member, p: Profile, *, scale_max: int, scale_caption: str) -> discord.Embed:
+async def make_profile_embed(cog: "ProfilCog", member: discord.Member, p: Profile, *, scale_max: int, scale_caption: str) -> discord.Embed:
     title = f"Profil — {p.player_name}"
     sub   = header_line(p)
 
@@ -506,6 +557,27 @@ def make_profile_embed(member: discord.Member, p: Profile, *, scale_max: int, sc
         emb.set_thumbnail(url=member.display_avatar.url)
     except Exception:
         pass
+
+    mx = None
+    if SCORE_SCALE_MODE in ("guild", "guildp"):
+        mx = await _guild_maxima_for_ladder(cog, member.guild.id)
+    elif SCORE_SCALE_MODE == "local":
+        mx = {
+            "elemmax": max(p.stats["force"].total, p.stats["intelligence"].total, p.stats["chance"].total, p.stats["agilite"].total),
+            "vitalite": p.stats["vitalite"].total,
+            "sagesse": p.stats["sagesse"].total,
+            "initiative": max(1, p.initiative),
+        }
+    else:  # fixed
+        mx = {"elemmax": SCORE_FIXED_MAX, "vitalite": SCORE_FIXED_MAX, "sagesse": SCORE_FIXED_MAX, "initiative": SCORE_FIXED_MAX}
+
+    score, det = _score_for_profile(p, mx)
+    w = det["weights"]
+    mini = (
+        f"Éléments:{w['ELM_MAX']:.2f}/{w['ELM_OTH']:.2f} • Vit:{w['VIT']:.2f} • Sag:{w['WIS']:.2f} • "
+        f"PA:{w['PA']:.2f} • PM:{w['PM']:.2f} • Init:{w['INIT']:.2f} • Lvl:{w['LVL']:.2f}"
+    )
+    emb.add_field(name=f"Score : **{score} / 1000**", value=mini, inline=False)
 
     stats = p.stats or {}
     # ⟵ ÉCHELLE: on utilise scale_max calculé (local/guild/fixed)
@@ -532,6 +604,11 @@ def make_profile_embed(member: discord.Member, p: Profile, *, scale_max: int, sc
 
     meta = f"**Initiative** {fmt_int_fr(p.initiative)}  •  **PA / PM** {p.pa}{THIN_NBSP}/ {p.pm}"
     emb.add_field(name="\u200b", value=meta, inline=False)
+    warn = []
+    if not (SCORE_PA_MIN <= p.pa <= SCORE_PA_MAX): warn.append(f"PA hors bornes Retro [{SCORE_PA_MIN}-{SCORE_PA_MAX}]")
+    if not (SCORE_PM_MIN <= p.pm <= SCORE_PM_MAX): warn.append(f"PM hors bornes Retro [{SCORE_PM_MIN}-{SCORE_PM_MAX}]")
+    if warn:
+        emb.add_field(name="⚠ Vérification", value=" • ".join(warn), inline=False)
 
     # ⟵ LÉGENDE: on explique visuellement la signification + l’échelle
     legend = f"Barres : **█ base** • **▒ bonus** • **░** jusqu’à l’échelle. {scale_caption}."
@@ -635,6 +712,24 @@ import math, json
 SCORE_SCALE_MODE = os.getenv("PROFILE_BAR_MODE", "guild").lower()  # "guild" recommandé pour ladder
 SCORE_FIXED_MAX  = int(os.getenv("PROFILE_BAR_FIXED_MAX", "2000"))
 
+# Stratégie éléments: 'max+meanOthers' (défaut) ou 'top2mean'
+SCORE_ELEM_STRATEGY = os.getenv("PROFILE_ELEM_STRATEGY", "max+meanOthers").lower()
+
+# Percentile pour mode 'guildp' (robuste aux outliers)
+PROFILE_GUILD_PERCENTILE = max(50, min(99, int(os.getenv("PROFILE_GUILD_PERCENTILE", "95"))))
+
+def _percentile(sorted_vals: list[int], p: int) -> int:
+    """Percentile discret [0..100] sur liste triée (retourne int)."""
+    if not sorted_vals:
+        return 1
+    k = (len(sorted_vals) - 1) * (p / 100)
+    f = int(math.floor(k))
+    c = int(math.ceil(k))
+    if f == c:
+        return int(sorted_vals[f])
+    a, b = sorted_vals[f], sorted_vals[c]
+    return int(round(a + (b - a) * (k - f)))
+
 # Bornes PA/PM (Dofus Rétro)
 SCORE_PA_MIN = int(os.getenv("SCORE_PA_MIN", "6"))
 SCORE_PA_MAX = int(os.getenv("SCORE_PA_MAX", "12"))
@@ -681,41 +776,60 @@ def _norm_sqrt(x: float, mx: float) -> float:
 
 async def _guild_maxima_for_ladder(cog: "ProfilCog", guild_id: int) -> dict:
     """
-    Lit #console et renvoie les maxima observés:
-      vit, sag, fo, int, cha, agi, elem_max_global, init_max
+    Renvoie les maxima/percentiles pour normalisation:
+      - mode 'guild'  : max absolu guilde
+      - mode 'guildp' : percentile guilde (PROFILE_GUILD_PERCENTILE)
+      - mode 'fixed'  : géré ailleurs
     """
     blob = await cog.store._load_blob(guild_id)  # ConsoleProfileStore
-    mx = {
-        "vitalite": 1, "sagesse": 1, "force": 1, "intelligence": 1,
-        "chance": 1, "agilite": 1, "elemmax": 1, "initiative": 1
-    }
+    vals = {k: [] for k in ("vitalite","sagesse","force","intelligence","chance","agilite","initiative")}
+    elemmax = []
+
     for row in blob.get("profiles", []):
-        if row.get("guild_id") != guild_id: 
+        if row.get("guild_id") != guild_id:
             continue
         stats = row.get("stats", {})
-        vals = {}
-        for k in ("vitalite","sagesse","force","intelligence","chance","agilite"):
+        four = []
+        for k in ("force","intelligence","chance","agilite"):
             s = stats.get(k, {})
-            total = int(s.get("total", int(s.get("base",0))+int(s.get("bonus",0))))
-            vals[k] = total
-            mx[k] = max(mx[k], total)
-        elem_max = max(vals.get("force",0), vals.get("intelligence",0),
-                       vals.get("chance",0), vals.get("agilite",0))
-        mx["elemmax"] = max(mx["elemmax"], elem_max)
+            tot = int(s.get("total", int(s.get("base",0))+int(s.get("bonus",0))))
+            vals[k].append(tot)
+            four.append(tot)
+        for k in ("vitalite","sagesse"):
+            s = stats.get(k, {})
+            tot = int(s.get("total", int(s.get("base",0))+int(s.get("bonus",0))))
+            vals[k].append(tot)
         init = int(row.get("initiative", 0))
-        mx["initiative"] = max(mx["initiative"], init)
+        vals["initiative"].append(init)
+        if four:
+            elemmax.append(max(four))
+
+    mode = SCORE_SCALE_MODE
+    mx = {}
+    if mode == "guildp":
+        # percentile robuste
+        for k, arr in vals.items():
+            arr.sort()
+            mx[k] = max(1, _percentile(arr, PROFILE_GUILD_PERCENTILE))
+        elemmax.sort()
+        mx["elemmax"] = max(1, _percentile(elemmax, PROFILE_GUILD_PERCENTILE)) if elemmax else 1
+    else:
+        # max
+        for k, arr in vals.items():
+            mx[k] = max([1] + arr)
+        mx["elemmax"] = max([1] + elemmax)
+
     return mx
 
 def _score_for_profile(p: Profile, mx: dict) -> tuple[int, dict]:
     """
-    Calcule le score (int 0..1000) + détail des composantes (debug).
+    Calcule le score (0..1000) + détails (pour debug/explications).
     Normalisations:
-      - éléments / vit / sag : vs mx (guilde) ou fixe (si SCORE_SCALE_MODE=fixed)
+      - éléments / vit / sag : vs mx (guilde / percentile / fixe / local)
       - PA/PM : [6..12], [3..6]
-      - Initiative : racine vs mx["initiative"]
-      - Level : /200
+      - Initiative : racine
+      - Niveau: /200
     """
-    # Totaux éléments
     fo = p.stats["force"].total
     it = p.stats["intelligence"].total
     ch = p.stats["chance"].total
@@ -727,27 +841,33 @@ def _score_for_profile(p: Profile, mx: dict) -> tuple[int, dict]:
     pm  = p.pm
     lvl = p.level
 
-    elem_max = max(fo, it, ch, ag)
-    others = [x for x in (fo, it, ch, ag) if x != elem_max]
-    if len(others) < 3:  # si égalités, on complète proprement
-        all4 = sorted([fo, it, ch, ag], reverse=True)
-        elem_max = all4[0]
-        others = all4[1:4]
-    elem_mean_others = sum(others) / 3.0
+    # Sélection éléments
+    elems = [fo, it, ch, ag]
+    elems_sorted = sorted(elems, reverse=True)
+    if SCORE_ELEM_STRATEGY == "top2mean":
+        elem_comp = sum(elems_sorted[:2]) / 2.0
+        elem_other = sum(elems_sorted[2:]) / 2.0 if len(elems_sorted) >= 4 else (elems_sorted[2] if len(elems_sorted) > 2 else 0)
+    else:  # max + moyenne des 3 autres (stratégie actuelle)
+        elem_comp = elems_sorted[0]
+        elem_other = (sum(elems_sorted[1:4]) / 3.0) if len(elems_sorted) >= 4 else (sum(elems_sorted[1:]) / max(1,len(elems_sorted)-1))
 
     # Bornes selon mode
     if SCORE_SCALE_MODE == "fixed":
-        m_elem = m_vit = m_sag = float(max(1, SCORE_FIXED_MAX))
-        m_init = float(mx.get("initiative", 1))
-    else:  # guild/local -> on s'appuie sur mx (déjà guilde)
+        m_elem = m_vit = m_sag = m_init = float(SCORE_FIXED_MAX)
+    elif SCORE_SCALE_MODE == "local":
+        m_elem = max(1.0, max(elems))
+        m_vit  = max(1.0, vit)
+        m_sag  = max(1.0, sag)
+        m_init = max(1.0, ini)
+    else:  # 'guild' ou 'guildp'
         m_elem = float(mx.get("elemmax", 1))
         m_vit  = float(mx.get("vitalite", 1))
         m_sag  = float(mx.get("sagesse", 1))
         m_init = float(mx.get("initiative", 1))
 
     # Normalisations 0..1
-    n_elem_max  = _norm_fixed(elem_max, m_elem)
-    n_elem_oths = _norm_fixed(elem_mean_others, m_elem)
+    n_elem_comp = _norm_fixed(elem_comp, m_elem)
+    n_elem_oth  = _norm_fixed(elem_other, m_elem)
     n_vit       = _norm_fixed(vit, m_vit)
     n_wis       = _norm_fixed(sag, m_sag)
     n_pa        = _norm_range(pa, SCORE_PA_MIN, SCORE_PA_MAX)
@@ -755,24 +875,22 @@ def _score_for_profile(p: Profile, mx: dict) -> tuple[int, dict]:
     n_init      = _norm_sqrt(ini, m_init)
     n_lvl       = _clamp01(lvl / 200.0)
 
-    # Pondération
     w = SCORE_W
     total = (
-        w["ELM_MAX"] * n_elem_max +
-        w["ELM_OTH"] * n_elem_oths +
-        w["VIT"]     * n_vit +
-        w["LVL"]     * n_lvl +
-        w["PA"]      * n_pa +
-        w["PM"]      * n_pm +
-        w["WIS"]     * n_wis +
+        w["ELM_MAX"] * n_elem_comp +
+        w["ELM_OTH"] * n_elem_oth  +
+        w["VIT"]     * n_vit       +
+        w["LVL"]     * n_lvl       +
+        w["PA"]      * n_pa        +
+        w["PM"]      * n_pm        +
+        w["WIS"]     * n_wis       +
         w["INIT"]    * n_init
     )
-
     score1000 = int(round(1000.0 * total))
     details = {
-        "n_elem_max": n_elem_max, "n_elem_oth": n_elem_oths, "n_vit": n_vit,
-        "n_lvl": n_lvl, "n_pa": n_pa, "n_pm": n_pm, "n_wis": n_wis, "n_init": n_init,
-        "weights": w
+        "n_elem_comp": n_elem_comp, "n_elem_oth": n_elem_oth,
+        "n_vit": n_vit, "n_lvl": n_lvl, "n_pa": n_pa, "n_pm": n_pm, "n_wis": n_wis, "n_init": n_init,
+        "weights": w, "strategy": SCORE_ELEM_STRATEGY, "scale": SCORE_SCALE_MODE
     }
     return score1000, details
 
@@ -846,7 +964,7 @@ class ProfilCog(commands.Cog):
                     return await ctx.reply(f"Aucun profil trouvé pour **{maybe_name}**.")
             member = ctx.guild.get_member(prof.owner_id) or ctx.author
             scale_max, scale_caption = await compute_bar_scale(self, ctx.guild.id, prof)
-            emb = make_profile_embed(member, prof, scale_max=scale_max, scale_caption=scale_caption)
+            emb = await make_profile_embed(self, member, prof, scale_max=scale_max, scale_caption=scale_caption)
             try:
                 view = ProfilActionsView(self, prof)
                 return await ctx.reply(embed=emb, view=view)
@@ -859,7 +977,7 @@ class ProfilCog(commands.Cog):
             return await ctx.reply("Tu n'as pas encore de profil. Utilise `!profil set` pour le créer.")
         member = ctx.guild.get_member(prof.owner_id) or ctx.author
         scale_max, scale_caption = await compute_bar_scale(self, ctx.guild.id, prof)
-        emb = make_profile_embed(member, prof, scale_max=scale_max, scale_caption=scale_caption)
+        emb = await make_profile_embed(self, member, prof, scale_max=scale_max, scale_caption=scale_caption)
         try:
             view = ProfilActionsView(self, prof)
             await ctx.reply(embed=emb, view=view)
@@ -955,11 +1073,12 @@ class ProfilCog(commands.Cog):
             )
 
             now = datetime.now(timezone.utc).isoformat()
+            player_slug = await self.store.ensure_unique_slug(guild_id, slugify(name), owner_id)
             prof = Profile(
                 guild_id=guild_id,
                 owner_id=owner_id,
                 player_name=name,
-                player_slug=slugify(name),
+                player_slug=player_slug,
                 level=level,
                 classe=classe,
                 alignement=alignement,
@@ -974,7 +1093,7 @@ class ProfilCog(commands.Cog):
             await chan.send("✅ Profil sauvegardé.")
             member = ctx.guild.get_member(owner_id) or ctx.author
             scale_max, scale_caption = await compute_bar_scale(self, ctx.guild.id, prof)
-            emb = make_profile_embed(member, prof, scale_max=scale_max, scale_caption=scale_caption)
+            emb = await make_profile_embed(self, member, prof, scale_max=scale_max, scale_caption=scale_caption)
             try:
                 view = ProfilActionsView(self, prof)
                 await chan.send(embed=emb, view=view)
@@ -1020,7 +1139,7 @@ class ProfilCog(commands.Cog):
         await self.store.upsert(existing)
         member = ctx.guild.get_member(owner_id) or ctx.author
         scale_max, scale_caption = await compute_bar_scale(self, ctx.guild.id, existing)
-        emb = make_profile_embed(member, existing, scale_max=scale_max, scale_caption=scale_caption)
+        emb = await make_profile_embed(self, member, existing, scale_max=scale_max, scale_caption=scale_caption)
         try:
             view = ProfilActionsView(self, existing)
             await ctx.reply("✅ Stats importées depuis le message cité.", embed=emb, view=view)
@@ -1069,6 +1188,39 @@ class ProfilCog(commands.Cog):
         lines = [f"• **{p.player_name}** (`!profil {p.player_slug}`)" for p in res]
         await ctx.reply("Résultats :\n" + "\n".join(lines))
 
+    @profil.command(name="score")
+    @commands.guild_only()
+    async def profil_score(self, ctx: commands.Context, *, maybe_name: Optional[str] = None):
+        """Explique le calcul du score pour toi ou un joueur."""
+        guild_id = ctx.guild.id
+        if maybe_name:
+            prof = await self.store.get_by_slug(guild_id, slugify(maybe_name)) or \
+                   (await self.store.get_by_owner(guild_id, getattr(ctx.message.mentions[0], "id", 0)) if ctx.message.mentions else None)
+        else:
+            prof = await self.store.get_by_owner(guild_id, ctx.author.id)
+        if not prof:
+            return await ctx.reply("Aucun profil trouvé.")
+
+        mx = await _guild_maxima_for_ladder(self, guild_id) if SCORE_SCALE_MODE in ("guild","guildp") else None
+        if not mx:
+            mx = {"elemmax": SCORE_FIXED_MAX, "vitalite": SCORE_FIXED_MAX, "sagesse": SCORE_FIXED_MAX, "initiative": SCORE_FIXED_MAX}
+        score, det = _score_for_profile(prof, mx)
+        emb = discord.Embed(
+            title=f"Score — {prof.player_name}",
+            description=f"{header_line(prof)}\nStratégie **{SCORE_ELEM_STRATEGY}**, échelle **{SCORE_SCALE_MODE}**.",
+            color=color_for_profile(prof),
+        )
+        rows = [
+            f"Élément(s): {det['n_elem_comp']:.2f}×{det['weights']['ELM_MAX']:.2f} + {det['n_elem_oth']:.2f}×{det['weights']['ELM_OTH']:.2f}",
+            f"Vitalité  : {det['n_vit']:.2f}×{det['weights']['VIT']:.2f}",
+            f"Sagesse   : {det['n_wis']:.2f}×{det['weights']['WIS']:.2f}",
+            f"PA/PM     : {det['n_pa']:.2f}×{det['weights']['PA']:.2f} + {det['n_pm']:.2f}×{det['weights']['PM']:.2f}",
+            f"Initiative: {det['n_init']:.2f}×{det['weights']['INIT']:.2f}",
+            f"Niveau    : {det['n_lvl']:.2f}×{det['weights']['LVL']:.2f}",
+        ]
+        emb.add_field(name=f"Score total : **{score} / 1000**", value="```\n" + "\n".join(rows) + "\n```", inline=False)
+        await ctx.reply(embed=emb)
+
     @commands.command(name="ladder")
     @commands.guild_only()
     async def ladder(self, ctx: commands.Context, *, arg: str = ""):
@@ -1085,6 +1237,14 @@ class ProfilCog(commands.Cog):
         arg = (arg or "").strip().lower()
         filt_class = None
         show_all = False
+        target_owner_id = None
+        page_from = None  # (start, end)
+
+        tok = arg.split()
+        if "me" in tok:
+            target_owner_id = ctx.author.id
+        elif ctx.message.mentions:
+            target_owner_id = ctx.message.mentions[0].id
 
         # Parsing simple des options
         if arg:
@@ -1097,6 +1257,16 @@ class ProfilCog(commands.Cog):
                     return await ctx.reply(str(e))
             elif arg == "all":
                 show_all = True
+
+        m = re.search(r"(\d+)\s*-\s*(\d+)", arg)
+        if m:
+            a,b = int(m.group(1)), int(m.group(2))
+            if a < b and b - a <= 20: page_from = (a,b)
+        m = re.search(r"page\s+(\d+)", arg)
+        if m and not page_from:
+            pnum = max(1, int(m.group(1)))
+            a = (pnum-1)*page_size+1; b = a+page_size-1
+            page_from = (a,b)
 
         # Charger données #console
         blob = await self.store._load_blob(guild_id)
@@ -1131,17 +1301,47 @@ class ProfilCog(commands.Cog):
         # Tri (score desc, niveau desc, initiative desc)
         ladder.sort(key=lambda r: (r["score"], r["p"].level, r["p"].initiative), reverse=True)
 
-        # Construction de l'embed (top N)
-        topN = ladder[:page_size]
+        snap = LadderSnapshotStore(self.bot)
+        prev = await snap.load(guild_id)
+        prev_pos = { row["slug"]: i+1 for i, row in enumerate(prev.get("ranking", [])) }
+
+        def _delta_arrow(slug: str, new_pos: int) -> str:
+            if slug not in prev_pos: return "★"
+            d = prev_pos[slug] - new_pos
+            if d > 0: return f"▲{d}"
+            if d < 0: return f"▼{-d}"
+            return "•"
+
+        # Construction de l'embed
+        if target_owner_id:
+            pos = next((idx for idx,r in enumerate(ladder) if r["p"].owner_id == target_owner_id), None)
+            if pos is None:
+                return await ctx.reply("Aucun profil correspondant.")
+            start = max(0, pos-4)
+            end = min(len(ladder), pos+5)
+            topN = ladder[start:end]
+            start_rank = start + 1
+        elif page_from:
+            a,b = page_from
+            start = max(0, a-1)
+            end = min(len(ladder), b)
+            topN = ladder[start:end]
+            start_rank = start + 1
+        else:
+            topN = ladder[:page_size]
+            start_rank = 1
+
         lines = []
         header = f"{'#':<3} {'Joueur':<18} {'Classe':<9} {'Lvl':>3} {'Score':>5}  {'Elem':>5} {'Vit':>5}  {'PA/PM':<5} {'Init':>5}"
         lines.append(header)
         lines.append("-" * len(header))
-        for i, r in enumerate(topN, start=1):
+        for i, r in enumerate(topN, start=start_rank):
             p = r["p"]; s = r["score"]
             elems = [p.stats["force"].total, p.stats["intelligence"].total, p.stats["chance"].total, p.stats["agilite"].total]
             elem_max = max(elems) if elems else 0
-            line = f"{i:<3} {p.player_name[:18]:<18} {p.classe[:9]:<9} {p.level:>3} {s:>5}  {elem_max:>5} {p.stats['vitalite'].total:>5}  {p.pa}/{p.pm:<3} {p.initiative:>5}"
+            slug = p.player_slug
+            arrow = _delta_arrow(slug, i)
+            line = f"{i:<3} {p.player_name[:18]:<18} {p.classe[:9]:<9} {p.level:>3} {s:>5}  {elem_max:>5} {p.stats['vitalite'].total:>5}  {p.pa}/{p.pm:<3} {p.initiative:>5}  {arrow}"
             lines.append(line)
 
         txt = "```text\n" + "\n".join(lines) + "\n```"
@@ -1178,6 +1378,11 @@ class ProfilCog(commands.Cog):
             data = buf.getvalue().encode("utf-8")
             file = discord.File(fp=io.BytesIO(data), filename="ladder.csv")
             await ctx.reply(content="Export complet du ladder :", file=file)
+
+        await snap.save(
+            guild_id,
+            ranking=[{"slug": r["p"].player_slug, "score": r["score"]} for r in ladder]
+        )
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx: commands.Context, error: Exception):
