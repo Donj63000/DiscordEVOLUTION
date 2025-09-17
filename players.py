@@ -5,12 +5,13 @@ import os
 import json
 import discord
 from discord.ext import commands
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 from urllib.parse import urlparse
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "players_data.json")
-CONSOLE_CHANNEL_NAME = "console"
+CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
+CONSOLE_CHANNEL_ID = os.getenv("CHANNEL_CONSOLE_ID")
 PLAYERS_MARKER = "===PLAYERSDATA==="
 
 def charger_donnees() -> Dict[str, dict]:
@@ -41,29 +42,21 @@ class PlayersCog(commands.Cog):
         self.bot = bot
         self.persos_data = {}
         self.initialized = False
+        self.console_channel: Optional[discord.TextChannel] = None
+        self.console_message_id: Optional[int] = None
         print(f"[DEBUG] PlayersCog initialisé (avant lecture {CONSOLE_CHANNEL_NAME}).")
 
     async def cog_load(self):
         await self.initialize_data()
 
     async def initialize_data(self):
-        console_channel = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
+        await self.bot.wait_until_ready()
+        self.console_channel = await self._resolve_console_channel()
         found_in_console = False
-        if console_channel:
-            async for msg in console_channel.history(limit=1000):
-                if msg.author == self.bot.user and PLAYERS_MARKER in msg.content:
-                    try:
-                        start_idx = msg.content.index("```json\n") + len("```json\n")
-                        end_idx = msg.content.rindex("\n```")
-                        raw_json = msg.content[start_idx:end_idx]
-                        data_temp = json.loads(raw_json)
-                        self.persos_data = data_temp
-                        print(f"[DEBUG] Données récupérées depuis le salon #{CONSOLE_CHANNEL_NAME}.")
-                        found_in_console = True
-                        break
-                    except Exception as e:
-                        print(f"[DEBUG] Erreur lors du parsing JSON depuis {CONSOLE_CHANNEL_NAME}: {e}")
-                        pass
+        if self.console_channel:
+            found_in_console = await self._load_data_from_console(self.console_channel)
+        else:
+            print(f"[DEBUG] Salon #{CONSOLE_CHANNEL_NAME} introuvable au démarrage.")
         if not found_in_console:
             self.persos_data = charger_donnees()
             if self.persos_data:
@@ -75,28 +68,124 @@ class PlayersCog(commands.Cog):
 
     async def dump_data_to_console(self, ctx: commands.Context = None):
         sauvegarder_donnees(self.persos_data)
-        if not ctx or not ctx.guild:
-            return
-        console_channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+        guild = ctx.guild if ctx and ctx.guild else None
+        console_channel = await self._resolve_console_channel(guild)
         if not console_channel:
             print(f"[DEBUG] Salon #{CONSOLE_CHANNEL_NAME} introuvable, impossible de publier le JSON.")
             return
+        self.console_channel = console_channel
         data_str = json.dumps(self.persos_data, indent=4, ensure_ascii=False)
         if len(data_str) < 1900:
             message_content = f"{PLAYERS_MARKER}\n```json\n{data_str}\n```"
-            await console_channel.send(message_content)
+            existing_message = await self._get_console_snapshot(console_channel)
+            if existing_message:
+                await existing_message.edit(content=message_content)
+                self.console_message_id = existing_message.id
+            else:
+                sent_message = await console_channel.send(message_content)
+                self.console_message_id = sent_message.id
         else:
             temp_file_path = self._as_temp_file(data_str)
-            await console_channel.send(
+            existing_message = await self._get_console_snapshot(console_channel)
+            if existing_message:
+                try:
+                    await existing_message.delete()
+                except discord.HTTPException as exc:
+                    print(f"[DEBUG] Impossible de supprimer l'ancien snapshot console : {exc}")
+            sent_message = await console_channel.send(
                 f"{PLAYERS_MARKER} (fichier)",
                 file=discord.File(fp=temp_file_path, filename="players_data.json")
             )
+            self.console_message_id = sent_message.id
 
     def _as_temp_file(self, data_str: str) -> str:
         temp_filename = "temp_players_data.json"
         with open(temp_filename, "w", encoding="utf-8") as tmp:
             tmp.write(data_str)
         return temp_filename
+
+    async def _resolve_console_channel(self, guild: Optional[discord.Guild] = None) -> Optional[discord.TextChannel]:
+        channel: Optional[discord.abc.GuildChannel] = None
+        if CONSOLE_CHANNEL_ID:
+            try:
+                channel_id = int(CONSOLE_CHANNEL_ID)
+            except ValueError:
+                print(f"[DEBUG] CHANNEL_CONSOLE_ID invalide : {CONSOLE_CHANNEL_ID}")
+            else:
+                channel = self.bot.get_channel(channel_id)
+                if channel is None:
+                    try:
+                        channel = await self.bot.fetch_channel(channel_id)
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        channel = None
+                if isinstance(channel, discord.TextChannel):
+                    return channel
+        target_guilds: List[discord.Guild] = []
+        if guild:
+            target_guilds.append(guild)
+        target_guilds.extend(g for g in self.bot.guilds if g not in target_guilds)
+        for g in target_guilds:
+            channel = discord.utils.get(g.text_channels, name=CONSOLE_CHANNEL_NAME)
+            if channel:
+                return channel
+        return None
+
+    async def _load_data_from_console(self, console_channel: discord.TextChannel) -> bool:
+        async for msg in console_channel.history(limit=1000):
+            if msg.author != self.bot.user:
+                continue
+            if PLAYERS_MARKER in msg.content:
+                data = self._extract_json_from_message(msg.content)
+                if data is not None:
+                    self.persos_data = data
+                    self.console_message_id = msg.id
+                    print(f"[DEBUG] Données récupérées depuis le salon #{CONSOLE_CHANNEL_NAME}.")
+                    return True
+            if msg.attachments:
+                for attachment in msg.attachments:
+                    if not attachment.filename.lower().endswith(".json"):
+                        continue
+                    try:
+                        raw = await attachment.read()
+                        data = json.loads(raw.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        print(f"[DEBUG] Erreur lors du parsing JSON joint depuis {CONSOLE_CHANNEL_NAME}: {exc}")
+                        continue
+                    self.persos_data = data
+                    self.console_message_id = msg.id
+                    print(f"[DEBUG] Données récupérées depuis le fichier joint dans #{CONSOLE_CHANNEL_NAME}.")
+                    return True
+        return False
+
+    def _extract_json_from_message(self, content: str) -> Optional[Dict[str, dict]]:
+        if "```json" not in content:
+            return None
+        try:
+            start = content.index("```json") + len("```json")
+            if content[start] == "\n":
+                start += 1
+            end = content.rindex("```")
+            raw_json = content[start:end].strip()
+            if not raw_json:
+                return None
+            return json.loads(raw_json)
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"[DEBUG] Erreur lors du parsing JSON depuis {CONSOLE_CHANNEL_NAME}: {exc}")
+            return None
+
+    async def _get_console_snapshot(self, console_channel: discord.TextChannel) -> Optional[discord.Message]:
+        if self.console_message_id:
+            try:
+                message = await console_channel.fetch_message(self.console_message_id)
+                if message.author == self.bot.user and PLAYERS_MARKER in message.content:
+                    return message
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                self.console_message_id = None
+        async for msg in console_channel.history(limit=50):
+            if msg.author == self.bot.user and PLAYERS_MARKER in msg.content:
+                self.console_message_id = msg.id
+                return msg
+        return None
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
@@ -138,37 +227,59 @@ class PlayersCog(commands.Cog):
     @commands.group(name="membre", invoke_without_command=True)
     async def membre_group(self, ctx: commands.Context, *, arg: str = None):
         if not arg:
-            usage_msg = (
-                "**Commandes disponibles :**\n"
-                "`!membre principal <NomPerso>` : Définit ou met à jour votre perso principal.\n"
-                "`!membre addmule <NomMule>` : Ajoute une mule.\n"
-                "`!membre delmule <NomMule>` : Supprime une mule.\n"
-                "`!membre moi` : Affiche votre perso principal + vos mules.\n"
-                "`!membre liste` : Affiche la liste de tous les joueurs et leurs persos.\n"
-                "`!membre <pseudo_ou_mention>` : Affiche la fiche d'un joueur.\n\n"
-                "**Commandes Staff :**\n"
-                "`!recrutement <Pseudo>` : Ajoute un nouveau joueur dans la base.\n"
-                "`!membre del <pseudo>` : Supprime un joueur.\n"
+            embed = discord.Embed(
+                title="Commandes membres",
+                description="Gérez les fiches de vos personnages Evolution.",
+                color=discord.Color.blurple()
             )
-            await ctx.send(usage_msg)
+            embed.add_field(
+                name="Pour tous",
+                value=(
+                    "`!membre principal <NomPerso>` : Définit ou met à jour votre perso principal.\n"
+                    "`!membre addmule <NomMule>` : Ajoute une mule.\n"
+                    "`!membre delmule <NomMule>` : Supprime une mule.\n"
+                    "`!membre moi` : Affiche votre fiche complète.\n"
+                    "`!membre liste` : Affiche tous les joueurs enregistrés.\n"
+                    "`!membre <pseudo/mention>` : Affiche la fiche d'un joueur."
+                ),
+                inline=False
+            )
+            embed.add_field(
+                name="Staff",
+                value=(
+                    "`!recrutement <Pseudo>` : Ajoute un nouveau joueur dans la base.\n"
+                    "`!membre del <pseudo>` : Supprime un joueur enregistré."
+                ),
+                inline=False
+            )
+            total = len(self.persos_data)
+            if total:
+                embed.set_footer(text=f"{total} joueur(s) enregistrés.")
+            await ctx.send(embed=embed)
             return
         if len(ctx.message.mentions) == 1:
             mention = ctx.message.mentions[0]
             user_id = str(mention.id)
             await self._afficher_membre_joueur_embed(ctx, user_id, mention.display_name)
         else:
-            found_user_id = None
-            found_user_name = None
-            for uid, data in self.persos_data.items():
-                stored_name = data.get("discord_name", "")
-                if stored_name.lower() == arg.lower():
-                    found_user_id = uid
-                    found_user_name = stored_name
-                    break
-            if found_user_id:
-                await self._afficher_membre_joueur_embed(ctx, found_user_id, found_user_name)
+            match = self._find_member_by_name(arg)
+            if match:
+                if len(match) == 1:
+                    found_user_id, found_user_name = match[0]
+                    await self._afficher_membre_joueur_embed(ctx, found_user_id, found_user_name)
+                else:
+                    suggestions = ", ".join(name for _, name in match[:5])
+                    if len(match) > 5:
+                        suggestions += ", ..."
+                    await ctx.send(
+                        f"Plusieurs joueurs correspondent à **{arg}** : {suggestions}. "
+                        "Précisez le pseudo complet ou utilisez une mention."
+                    )
             else:
-                await ctx.send(f"Aucun joueur ne correspond au pseudo **{arg}** dans la base.")
+                await ctx.send(
+                    f"Aucun joueur ne correspond au pseudo **{arg}** dans la base. "
+                    "Essayez le nom complet, une mention ou consultez `!membre liste`."
+                )
 
     @membre_group.command(name="del")
     @commands.has_role("Staff")
@@ -309,6 +420,10 @@ class PlayersCog(commands.Cog):
                 )
             await ctx.send(embed=embed)
 
+        await ctx.send(
+            f"{len(self.persos_data)} joueur(s) au total. Utilisez `!membre <pseudo>` pour une fiche détaillée."
+        )
+
     async def _afficher_membre_joueur_embed(self, ctx: commands.Context, user_id: str, user_name: str):
         if user_id not in self.persos_data:
             await ctx.send(f"{user_name} n'a pas encore enregistré de personnage.")
@@ -334,6 +449,25 @@ class PlayersCog(commands.Cog):
         else:
             embed.add_field(name="Mules", value="(Aucune)", inline=False)
         await ctx.send(embed=embed)
+
+    def _find_member_by_name(self, search: str) -> List[Tuple[str, str]]:
+        search_lower = search.lower()
+        results: List[Tuple[str, str]] = []
+        exact_match: Optional[Tuple[str, str]] = None
+        for uid, data in self.persos_data.items():
+            stored_name = data.get("discord_name", "")
+            main_name = data.get("main", "")
+            if stored_name.lower() == search_lower or main_name.lower() == search_lower:
+                exact_match = (uid, stored_name or main_name or uid)
+                break
+            if search_lower in stored_name.lower():
+                results.append((uid, stored_name))
+            elif main_name and search_lower in main_name.lower():
+                display = stored_name if stored_name else f"(principal {main_name})"
+                results.append((uid, display))
+        if exact_match:
+            return [exact_match]
+        return results
 
     def _verifier_et_fusionner_id(self, vrai_id: str, discord_name: str):
         if vrai_id in self.persos_data:
