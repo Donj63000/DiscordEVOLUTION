@@ -144,6 +144,33 @@ class PercoCog(commands.Cog):
             return any(role.name == STAFF_ROLE_NAME for role in user.roles)
         return False
 
+    async def _apply_status_update(
+        self,
+        guild: discord.Guild,
+        state: PercoState,
+        user: discord.abc.User,
+        new_status: str,
+    ) -> tuple[discord.Embed, list[str]]:
+        state.status = new_status
+        state.updated_by = getattr(user, "id", None)
+        state.updated_at = int(time.time())
+
+        announced = await self._announce_status(guild, state)
+        stored = await self._store_status(guild, state)
+        embed = self._build_status_embed(guild, state)
+
+        notes: list[str] = []
+        if announced:
+            notes.append("Annonce publiée dans #📢annonces📢.")
+        else:
+            notes.append("Impossible de publier l'annonce (voir logs).")
+        if stored:
+            notes.append("Statut sauvegardé dans #console.")
+        else:
+            notes.append("Statut non sauvegardé dans #console.")
+
+        return embed, notes
+
     def _build_status_embed(self, guild: discord.Guild, state: PercoState) -> discord.Embed:
         config = STATUS_CONFIG.get(state.status, STATUS_CONFIG["good"])
         embed = discord.Embed(
@@ -291,25 +318,39 @@ class PercoCog(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
 
-        state.status = new_status
-        state.updated_by = interaction.user.id
-        state.updated_at = int(time.time())
-
-        announced = await self._announce_status(guild, state)
-        stored = await self._store_status(guild, state)
-        embed = self._build_status_embed(guild, state)
-
-        notes = []
-        if announced:
-            notes.append("Annonce publiée dans #📢annonces📢.")
-        else:
-            notes.append("Impossible de publier l'annonce (voir logs).")
-        if stored:
-            notes.append("Statut sauvegardé dans #console.")
-        else:
-            notes.append("Statut non sauvegardé dans #console.")
+        embed, notes = await self._apply_status_update(guild, state, interaction.user, new_status)
 
         await interaction.followup.send("\n".join(notes), embed=embed, ephemeral=True)
+
+    @commands.command(name="perco")
+    async def perco_prefix_command(self, ctx: commands.Context, etat: Optional[str] = None) -> None:
+        guild = ctx.guild
+        if guild is None:
+            await ctx.reply("Cette commande doit être utilisée dans un serveur.")
+            return
+
+        state = await self._ensure_state(guild)
+
+        if etat is None:
+            embed = self._build_status_embed(guild, state)
+            await ctx.send(embed=embed)
+            return
+
+        if not self._is_staff(ctx.author):
+            await ctx.reply("Seuls les membres du staff peuvent changer le statut des percepteurs.")
+            return
+
+        new_status = etat.lower()
+        if new_status not in STATUS_CONFIG:
+            await ctx.reply("Statut inconnu. Choisissez `good` ou `full`.")
+            return
+
+        if new_status == state.status:
+            await ctx.reply(f"Le statut des percepteurs est déjà `{new_status}`.")
+            return
+
+        embed, notes = await self._apply_status_update(guild, state, ctx.author, new_status)
+        await ctx.send("\n".join(notes), embed=embed)
 
 
 async def setup(bot: commands.Bot) -> None:
