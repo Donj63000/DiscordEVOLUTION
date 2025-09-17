@@ -208,7 +208,7 @@ class WelcomeCog(commands.Cog):
 
         players_cog = self.bot.get_cog("PlayersCog")
         if players_cog:
-            players_cog.auto_register_member(
+            await players_cog.auto_register_member(
                 discord_id=member.id,
                 discord_display_name=member.display_name,
                 dofus_pseudo=dofus_pseudo
