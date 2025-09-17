@@ -335,20 +335,46 @@ class StatsCog(commands.Cog):
 
     @commands.group(name="stats", invoke_without_command=True)
     async def stats_main(self, ctx: commands.Context):
-        usage_text = (
-            "**Commandes stats :**\n"
-            "`!stats all` => Vue d'ensemble\n"
-            "`!stats messages` => Statistiques messages\n"
-            "`!stats users` => Top utilisateurs\n"
-            "`!stats edits` => Éditions\n"
-            "`!stats deletions` => Suppressions\n"
-            "`!stats reactions` => Réactions\n"
-            "`!stats voice` => Activité vocale\n"
-            "`!stats presence` => Statuts (présence)\n"
-            "`!stats reset` => (Staff) Reset complet\n"
-            "`!stats on/off` => (Staff) Activer / Désactiver la collecte\n"
+        embed = discord.Embed(
+            title="Commandes statistiques",
+            description=(
+                "Toutes les statistiques du serveur sont regroupées ici."
+                " Utilise les sous-commandes ci-dessous pour explorer les"
+                " différentes sections."
+            ),
+            color=0x00FF7F,
         )
-        await ctx.send(usage_text)
+        embed.add_field(
+            name="Aperçu",
+            value=(
+                "`!stats all` — Vue d'ensemble\n"
+                "`!stats messages` — Statistiques messages\n"
+                "`!stats users` — Top utilisateurs\n"
+                "`!stats ladder [options]` — Classement des profils\n"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Autres sections",
+            value=(
+                "`!stats edits` — Éditions\n"
+                "`!stats deletions` — Suppressions\n"
+                "`!stats reactions` — Réactions\n"
+                "`!stats voice` — Activité vocale\n"
+                "`!stats presence` — Statuts (présence)"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Staff",
+            value=(
+                "`!stats reset` — Reset complet\n"
+                "`!stats on` / `!stats off` — Activer ou désactiver la collecte"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Astuce : `!stats ladder all` génère un export complet.")
+        await ctx.send(embed=embed)
 
     @stats_main.command(name="all")
     async def stats_all(self, ctx: commands.Context):
@@ -586,6 +612,18 @@ class StatsCog(commands.Cog):
             desc += f"{transition} : {count} ({perc:.1f}%)\n"
         embed = discord.Embed(title="Statistiques de Présence (statuts)", description=desc, color=0xbdc3c7)
         await ctx.send(embed=embed)
+
+    @stats_main.command(name="ladder")
+    async def stats_ladder(self, ctx: commands.Context, *, arg: str = ""):
+        """Proxy vers la commande !ladder pour l'exposer sous !stats."""
+        ladder_command = self.bot.get_command("ladder")
+        if ladder_command is None:
+            await ctx.send(
+                "La commande `!ladder` est actuellement indisponible."
+                " Réessaie plus tard."
+            )
+            return
+        await ctx.invoke(ladder_command, arg=arg)
 
     @stats_main.command(name="reset")
     @commands.has_role("Staff")
