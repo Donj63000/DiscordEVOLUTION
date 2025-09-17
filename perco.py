@@ -35,8 +35,19 @@ STATUS_CONFIG = {
             "avec souplesse tant que cela reste raisonnable et conforme au règlement."
         ),
         "announcement": (
-            "✅ Les percepteurs repassent en situation **GOOD**. Les règles spécifiques de saturation "
-            "ne s'appliquent plus aussi strictement. Restez tout de même raisonnables."
+            "✨ **Bonne nouvelle !**\n"
+            "Les percepteurs repassent en **GOOD**.\n\n"
+            "🔹 Vous pouvez reprendre une gestion plus souple des poses.\n"
+            "🔹 Continuez à respecter le règlement de guilde.\n"
+            "🔹 Prévenez le staff en cas de doute."
+        ),
+        "content": "@everyone ✨ **Percepteurs — Situation GOOD** ✨",
+        "extra_fields": (
+            {
+                "name": "Rappel",
+                "value": "Restez vigilants et coordonnés avec vos camarades pour éviter une nouvelle saturation.",
+                "inline": False,
+            },
         ),
         "image": os.path.join(BASE_DIR, "perco1.png"),
     },
@@ -48,8 +59,20 @@ STATUS_CONFIG = {
             "aux percepteurs (poses limitées, défense organisée, etc.)."
         ),
         "announcement": (
-            "🚨 Les percepteurs passent en mode **FULL** : saturation détectée. Merci de respecter les "
-            "règles dédiées aux percepteurs jusqu'à nouvel ordre."
+            "🚨 **Alerte saturation !**\n"
+            "Les percepteurs passent en mode **FULL**.\n\n"
+            "⚠️ Merci de respecter immédiatement les consignes suivantes :\n"
+            "• Limitez les nouvelles poses.\n"
+            "• Organisez les défenses prioritairement.\n"
+            "• Tenez le staff informé de toute attaque."
+        ),
+        "content": "@everyone 🚨 **Percepteurs — MODE FULL** 🚨",
+        "extra_fields": (
+            {
+                "name": "Consignes prioritaires",
+                "value": "Communication rapide et coordination sont essentielles pour protéger nos percepteurs.",
+                "inline": False,
+            },
         ),
         "image": os.path.join(BASE_DIR, "perco2.png"),
     },
@@ -203,6 +226,8 @@ class PercoCog(commands.Cog):
             description=config["announcement"],
             colour=discord.Colour(config["colour"]),
         )
+        for field in config.get("extra_fields", ()): 
+            embed.add_field(name=field["name"], value=field["value"], inline=field.get("inline", False))
         if state.updated_by:
             member = guild.get_member(state.updated_by)
             if member:
@@ -217,11 +242,12 @@ class PercoCog(commands.Cog):
             file = discord.File(image_path, filename=filename)
             embed.set_image(url=f"attachment://{filename}")
 
+        content = config.get("content")
         try:
             if file:
-                await channel.send(embed=embed, file=file)
+                await channel.send(content=content, embed=embed, file=file)
             else:
-                await channel.send(embed=embed)
+                await channel.send(content=content, embed=embed)
             return True
         except discord.Forbidden:
             log.warning("Permissions insuffisantes pour envoyer le statut perco dans #%s.", channel.name)
