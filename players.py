@@ -3,11 +3,10 @@
 
 import os
 import json
+import asyncio
 import discord
 from discord.ext import commands
 from typing import Dict, List, Optional, Tuple
-from collections import defaultdict
-from urllib.parse import urlparse
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "players_data.json")
 CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
@@ -44,27 +43,39 @@ class PlayersCog(commands.Cog):
         self.initialized = False
         self.console_channel: Optional[discord.TextChannel] = None
         self.console_message_id: Optional[int] = None
+        self._init_task: Optional[asyncio.Task] = None
+        self._init_lock = asyncio.Lock()
         print(f"[DEBUG] PlayersCog initialisé (avant lecture {CONSOLE_CHANNEL_NAME}).")
 
     async def cog_load(self):
-        await self.initialize_data()
+        if self._init_task is None or self._init_task.done():
+            self._init_task = asyncio.create_task(self.initialize_data())
 
     async def initialize_data(self):
-        await self.bot.wait_until_ready()
-        self.console_channel = await self._resolve_console_channel()
-        found_in_console = False
-        if self.console_channel:
-            found_in_console = await self._load_data_from_console(self.console_channel)
-        else:
-            print(f"[DEBUG] Salon #{CONSOLE_CHANNEL_NAME} introuvable au démarrage.")
-        if not found_in_console:
-            self.persos_data = charger_donnees()
-            if self.persos_data:
-                print("[DEBUG] Données chargées depuis le fichier local (fallback).")
-            else:
-                print(f"[DEBUG] Aucune donnée trouvée ni en {CONSOLE_CHANNEL_NAME} ni en local.")
-        self.initialized = True
-        print(f"[DEBUG] initialize_data terminé. {len(self.persos_data)} enregistrements.")
+        if self.initialized:
+            return
+        async with self._init_lock:
+            if self.initialized:
+                return
+            try:
+                await self.bot.wait_until_ready()
+                self.console_channel = await self._resolve_console_channel()
+                found_in_console = False
+                if self.console_channel:
+                    found_in_console = await self._load_data_from_console(self.console_channel)
+                else:
+                    print(f"[DEBUG] Salon #{CONSOLE_CHANNEL_NAME} introuvable au démarrage.")
+                if not found_in_console:
+                    self.persos_data = charger_donnees()
+                    if self.persos_data:
+                        print("[DEBUG] Données chargées depuis le fichier local (fallback).")
+                    else:
+                        print(f"[DEBUG] Aucune donnée trouvée ni en {CONSOLE_CHANNEL_NAME} ni en local.")
+            except Exception as exc:
+                print(f"[DEBUG] Erreur lors de l'initialisation des données joueurs : {exc}")
+            finally:
+                self.initialized = True
+                print(f"[DEBUG] initialize_data terminé. {len(self.persos_data)} enregistrements.")
 
     async def dump_data_to_console(self, ctx: commands.Context = None):
         sauvegarder_donnees(self.persos_data)
@@ -187,8 +198,21 @@ class PlayersCog(commands.Cog):
                 return msg
         return None
 
+    async def _ensure_initialized(self):
+        if self.initialized:
+            return
+        task = self._init_task
+        if task:
+            try:
+                await task
+            except Exception as exc:
+                print(f"[DEBUG] Erreur lors de l'attente de l'initialisation : {exc}")
+        if not self.initialized:
+            await self.initialize_data()
+
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
+        await self._ensure_initialized()
         member_id = str(member.id)
         if member_id in self.persos_data:
             stored_name = self.persos_data[member_id].get("discord_name", member.display_name)
@@ -203,6 +227,7 @@ class PlayersCog(commands.Cog):
     @commands.has_role("Staff")
     @commands.command(name="recrutement")
     async def recrutement_command(self, ctx: commands.Context, *, pseudo: str = None):
+        await self._ensure_initialized()
         if not pseudo:
             await ctx.send("Usage : !recrutement <PseudoNouveau>")
             return
@@ -226,6 +251,7 @@ class PlayersCog(commands.Cog):
 
     @commands.group(name="membre", invoke_without_command=True)
     async def membre_group(self, ctx: commands.Context, *, arg: str = None):
+        await self._ensure_initialized()
         if not arg:
             embed = discord.Embed(
                 title="Commandes membres",
@@ -284,6 +310,7 @@ class PlayersCog(commands.Cog):
     @membre_group.command(name="del")
     @commands.has_role("Staff")
     async def membre_del_member(self, ctx: commands.Context, *, pseudo: str = None):
+        await self._ensure_initialized()
         if not pseudo:
             await ctx.send("Usage : !membre del <pseudo>")
             return
@@ -313,6 +340,7 @@ class PlayersCog(commands.Cog):
 
     @membre_group.command(name="principal")
     async def membre_principal(self, ctx: commands.Context, *, nom_perso: str = None):
+        await self._ensure_initialized()
         if not nom_perso:
             await ctx.send("Usage : !membre principal <NomPerso>")
             return
@@ -333,6 +361,7 @@ class PlayersCog(commands.Cog):
 
     @membre_group.command(name="addmule")
     async def membre_addmule(self, ctx: commands.Context, *, nom_mule: str = None):
+        await self._ensure_initialized()
         if not nom_mule:
             await ctx.send("Usage : !membre addmule <NomMule>")
             return
@@ -356,6 +385,7 @@ class PlayersCog(commands.Cog):
 
     @membre_group.command(name="delmule")
     async def membre_delmule(self, ctx: commands.Context, *, nom_mule: str = None):
+        await self._ensure_initialized()
         if not nom_mule:
             await ctx.send("Usage : !membre delmule <NomMule>")
             return
@@ -376,6 +406,7 @@ class PlayersCog(commands.Cog):
 
     @membre_group.command(name="moi")
     async def membre_moi(self, ctx: commands.Context):
+        await self._ensure_initialized()
         author_id = str(ctx.author.id)
         author_name = ctx.author.display_name
         self._verifier_et_fusionner_id(author_id, author_name)
@@ -387,6 +418,7 @@ class PlayersCog(commands.Cog):
 
     @membre_group.command(name="liste")
     async def membre_liste(self, ctx: commands.Context):
+        await self._ensure_initialized()
         if not self.persos_data:
             await ctx.send("Aucun joueur enregistré.")
             return
@@ -483,7 +515,8 @@ class PlayersCog(commands.Cog):
             del self.persos_data[id_fictif]
             sauvegarder_donnees(self.persos_data)
 
-    def auto_register_member(self, discord_id: int, discord_display_name: str, dofus_pseudo: str):
+    async def auto_register_member(self, discord_id: int, discord_display_name: str, dofus_pseudo: str):
+        await self._ensure_initialized()
         author_id = str(discord_id)
         self._verifier_et_fusionner_id(author_id, discord_display_name)
         if author_id not in self.persos_data:
@@ -495,7 +528,7 @@ class PlayersCog(commands.Cog):
         else:
             self.persos_data[author_id]["discord_name"] = discord_display_name
             self.persos_data[author_id]["main"] = dofus_pseudo
-        sauvegarder_donnees(self.persos_data)
+        await self.dump_data_to_console()
         print(f"[DEBUG] auto_register_member : {discord_display_name} ({author_id}) --> main={dofus_pseudo}")
 
 async def setup(bot: commands.Bot):
