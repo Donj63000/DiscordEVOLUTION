@@ -1,11 +1,84 @@
+import copy
+import json
+import os
+from datetime import datetime
+
 import discord
 from discord.ext import commands, tasks
-import json
-from datetime import datetime
 
 from utils.stats_store import StatsStore
 
-DATA_FILE = "stats_data.json"
+DATA_FILE = os.getenv("STATS_LOCAL_PATH", "stats_data.json")
+STATS_CHANNEL_NAME = os.getenv("STATS_CHANNEL", "console")
+
+DEFAULT_STATS_TEMPLATE = {
+    "messages": {
+        "channel_count": {},
+        "role_count": {},
+        "hour_count": {},
+        "user_count": {},
+        "total": 0,
+    },
+    "edits": {
+        "channel_count": {},
+        "hour_count": {},
+        "total": 0,
+    },
+    "deletions": {
+        "channel_count": {},
+        "hour_count": {},
+        "total": 0,
+    },
+    "reactions_added": {
+        "emoji_count": {},
+        "hour_count": {},
+        "total": 0,
+    },
+    "reactions_removed": {
+        "emoji_count": {},
+        "hour_count": {},
+        "total": 0,
+    },
+    "voice": {
+        "join_count": 0,
+        "leave_count": 0,
+        "channel_joins": {},
+        "channel_leaves": {},
+    },
+    "presence": {
+        "status_changes": {},
+    },
+    "logs": {
+        "messages_created": [],
+        "messages_edited": [],
+        "messages_deleted": [],
+        "reactions": [],
+        "voice": [],
+        "presence": [],
+    },
+}
+
+
+def build_stats_state(loaded: dict | None = None) -> dict:
+    base = copy.deepcopy(DEFAULT_STATS_TEMPLATE)
+    if not isinstance(loaded, dict):
+        return base
+    _merge_dicts(base, loaded)
+    return base
+
+
+def _merge_dicts(base: dict, incoming: dict) -> None:
+    for key, value in incoming.items():
+        if key not in base:
+            base[key] = copy.deepcopy(value) if isinstance(value, (dict, list)) else value
+            continue
+        current = base[key]
+        if isinstance(current, dict) and isinstance(value, dict):
+            _merge_dicts(current, value)
+        elif isinstance(current, list) and isinstance(value, list):
+            base[key] = copy.deepcopy(value)
+        else:
+            base[key] = value
 
 def now_iso() -> str:
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -18,52 +91,7 @@ class StatsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.stats_enabled = True
-        self.stats_data = {
-            "messages": {
-                "channel_count": {},
-                "role_count": {},
-                "hour_count": {},
-                "user_count": {},
-                "total": 0
-            },
-            "edits": {
-                "channel_count": {},
-                "hour_count": {},
-                "total": 0
-            },
-            "deletions": {
-                "channel_count": {},
-                "hour_count": {},
-                "total": 0
-            },
-            "reactions_added": {
-                "emoji_count": {},
-                "hour_count": {},
-                "total": 0
-            },
-            "reactions_removed": {
-                "emoji_count": {},
-                "hour_count": {},
-                "total": 0
-            },
-            "voice": {
-                "join_count": 0,
-                "leave_count": 0,
-                "channel_joins": {},
-                "channel_leaves": {}
-            },
-            "presence": {
-                "status_changes": {}
-            },
-            "logs": {
-                "messages_created": [],
-                "messages_edited": [],
-                "messages_deleted": [],
-                "reactions": [],
-                "voice": [],
-                "presence": []
-            }
-        }
+        self.stats_data = build_stats_state()
         self.store: StatsStore | None = None
         self.save_loop.start()
 
@@ -71,73 +99,43 @@ class StatsCog(commands.Cog):
         self.save_loop.cancel()
 
     async def cog_load(self) -> None:
-        self.store = StatsStore(self.bot, DATA_FILE)
-        loaded = await self.store.load()
+        self.store = StatsStore(self.bot, STATS_CHANNEL_NAME)
+        loaded = None
+        try:
+            loaded = await self.store.load()
+        except Exception as exc:
+            print(f"[Stats] Échec du chargement via #{STATS_CHANNEL_NAME} : {exc}")
+        if not loaded and os.path.exists(DATA_FILE):
+            try:
+                with open(DATA_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+            except Exception as exc:
+                print(f"[Stats] Échec du chargement local {DATA_FILE} : {exc}")
         if loaded:
-            self.stats_data = loaded
+            self.stats_data = build_stats_state(loaded)
 
 
     async def save_stats_data(self):
+        stored = False
         if self.store:
-            await self.store.save(self.stats_data)
-        else:
             try:
-                with open(DATA_FILE, "w", encoding="utf-8") as f:
-                    json.dump(self.stats_data, f, indent=2, ensure_ascii=False)
-            except Exception as e:
-                print(f"[Stats] Erreur lors de la sauvegarde : {e}")
+                stored = await self.store.save(self.stats_data)
+            except Exception as exc:
+                print(f"[Stats] Erreur persistance #{STATS_CHANNEL_NAME} : {exc}")
+        if stored:
+            return
+        try:
+            with open(DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.stats_data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[Stats] Erreur lors de la sauvegarde locale : {e}")
 
     @tasks.loop(seconds=60.0)
     async def save_loop(self):
         await self.save_stats_data()
 
     def reset_stats_data(self):
-        self.stats_data = {
-            "messages": {
-                "channel_count": {},
-                "role_count": {},
-                "hour_count": {},
-                "user_count": {},
-                "total": 0
-            },
-            "edits": {
-                "channel_count": {},
-                "hour_count": {},
-                "total": 0
-            },
-            "deletions": {
-                "channel_count": {},
-                "hour_count": {},
-                "total": 0
-            },
-            "reactions_added": {
-                "emoji_count": {},
-                "hour_count": {},
-                "total": 0
-            },
-            "reactions_removed": {
-                "emoji_count": {},
-                "hour_count": {},
-                "total": 0
-            },
-            "voice": {
-                "join_count": 0,
-                "leave_count": 0,
-                "channel_joins": {},
-                "channel_leaves": {}
-            },
-            "presence": {
-                "status_changes": {}
-            },
-            "logs": {
-                "messages_created": [],
-                "messages_edited": [],
-                "messages_deleted": [],
-                "reactions": [],
-                "voice": [],
-                "presence": []
-            }
-        }
+        self.stats_data = build_stats_state()
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
