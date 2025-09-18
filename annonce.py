@@ -12,7 +12,7 @@ except Exception:
     AsyncOpenAI = None
 
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-ANNONCE_CHANNEL = "📣 annonces 📣"
+ANNONCE_CHANNEL = os.getenv("ANNONCE_CHANNEL_NAME", "annonce")
 DEFAULT_MODEL = os.getenv("OPENAI_STAFF_MODEL", "gpt-5")
 OPENAI_TIMEOUT = float(os.getenv("IASTAFF_TIMEOUT", "120"))
 MAX_OUTPUT_TOKENS = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
@@ -48,13 +48,66 @@ def extract_generated_text(resp_obj) -> str:
     return txt.strip()
 
 
+QUESTIONS = [
+    "Quel est le sujet principal de l'annonce ?",
+    "Quels sont les détails importants à inclure (dates, heures, lieu, lien, etc.) ?",
+    "Quel est le public visé (tous les membres, un rôle précis, nouveau joueur, etc.) ?",
+    "Quel ton souhaites-tu adopter (enthousiaste, sérieux, professionnel, motivant, etc.) ?",
+    "Y a-t-il un appel à l'action ou des instructions à transmettre ?",
+    "Faut-il mentionner des récompenses, avantages ou conséquences ?",
+    "Autre chose à ajouter pour aider à rédiger l'annonce parfaite ?",
+]
+
+
 class AnnonceCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.model = DEFAULT_MODEL
         self.client = AsyncOpenAI(timeout=OPENAI_TIMEOUT) if AsyncOpenAI else None
 
-    @commands.command(name="annoncestaff", aliases=["*annonce"])
+    def _build_prompt(self, answers: list[str], author: discord.Member) -> list[dict]:
+        staff_context = [
+            f"Préparé par : {author.display_name} (ID: {author.id})",
+        ]
+        for question, answer in zip(QUESTIONS, answers):
+            staff_context.append(f"- {question}\n  Réponse : {answer.strip() or '(aucune précision)'}")
+
+        user_prompt = (
+            "Tu dois rédiger une annonce Discord claire, engageante et professionnelle pour la guilde Évolution.\n"
+            "Commence impérativement par '@everyone'.\n"
+            "Structure l'annonce avec des paragraphes courts et, si pertinent, des listes à puces.\n"
+            "Reste en français, conserve le ton souhaité et assure-toi que l'annonce est prête à être publiée sans ajout supplémentaire.\n"
+            "Voici les informations fournies par le membre du staff:\n"
+            + "\n".join(staff_context)
+        )
+
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "Tu es EvolutionBOT, l'assistant du staff Discord Évolution. "
+                    "Ton rôle est de transformer les informations en annonces impeccables et compréhensibles pour la communauté."
+                ),
+            },
+            {"role": "user", "content": user_prompt},
+        ]
+
+    def _find_announcement_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
+        target = (ANNONCE_CHANNEL or "").strip().casefold()
+        if not target:
+            return None
+
+        for channel in guild.text_channels:
+            name = channel.name.casefold()
+            if name == target:
+                return channel
+            if name.replace("-", "") == target.replace("-", ""):
+                return channel
+            if target in name:
+                return channel
+        return None
+
+    @commands.command(name="annonce", aliases=["annoncestaff", "*annonce"])
     @commands.has_role(STAFF_ROLE_NAME)
     async def annonce_cmd(self, ctx: commands.Context):
         if not self.client or not os.environ.get("OPENAI_API_KEY"):
@@ -65,62 +118,61 @@ class AnnonceCog(commands.Cog):
             return
 
         dm = await ctx.author.create_dm()
-        await ctx.reply("📨 Je t'ai envoyé un DM pour préparer l'annonce.", mention_author=False)
+        await ctx.reply("📨 Je t'ai envoyé un DM pour préparer ton annonce.", mention_author=False)
 
-        system_prompt = (
-            "Tu es EvolutionBOT, assistant du staff de la guilde Évolution. "
-            "Pose successivement 7 questions brèves pour préparer une annonce. "
-            "Après la 7e réponse, rédige l'annonce finale en français, polie, stylée, "
-            "et commence par '@everyone'."
+        await dm.send(
+            "Salut ! Réponds aux questions qui suivent. Tu peux écrire `annule` à tout moment pour arrêter."
         )
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": "Commence par la première question."},
-        ]
-        try:
-            resp = await self.client.responses.create(
-                model=self.model, messages=messages, max_output_tokens=MAX_OUTPUT_TOKENS
-            )
-            text = extract_generated_text(resp)
-        except Exception as e:
-            await dm.send(f"Erreur IA initiale : {e}")
-            return
 
-        await dm.send(text or "(aucune question)")
-
-        answers = 0
-        while answers < 7:
+        answers: list[str] = []
+        for question in QUESTIONS:
+            await dm.send(question)
             try:
-                user_msg = await self.bot.wait_for(
+                reply = await self.bot.wait_for(
                     "message",
                     check=lambda m: m.author == ctx.author and m.channel == dm,
                     timeout=DM_TIMEOUT,
                 )
             except asyncio.TimeoutError:
-                await dm.send("⏰ Temps écoulé, annulation.")
+                await dm.send("⏰ Temps écoulé, opération annulée.")
                 return
-            messages.append({"role": "user", "content": user_msg.content})
-            try:
-                resp = await self.client.responses.create(
-                    model=self.model, messages=messages, max_output_tokens=MAX_OUTPUT_TOKENS
-                )
-                text = extract_generated_text(resp)
-            except Exception as e:
-                await dm.send(f"Erreur IA : {e}")
-                return
-            answers += 1
-            if answers < 7:
-                await dm.send(text or "(aucune question)")
-            else:
-                final_announce = text.strip()
-                break
 
-        channel = discord.utils.get(ctx.guild.text_channels, name=ANNONCE_CHANNEL)
-        if not channel:
-            await dm.send(f"❌ Canal '{ANNONCE_CHANNEL}' introuvable.")
+            content = reply.content.strip()
+            if content.lower() == "annule":
+                await dm.send("🚫 Annonce annulée à ta demande.")
+                return
+
+            answers.append(content)
+
+        messages = self._build_prompt(answers, ctx.author)
+
+        try:
+            response = await self.client.responses.create(
+                model=self.model,
+                messages=messages,
+                max_output_tokens=MAX_OUTPUT_TOKENS,
+            )
+        except Exception as e:
+            await dm.send(f"❌ Erreur lors de la génération de l'annonce : {e}")
             return
-        await channel.send(final_announce or "Annonce vide.")
-        await dm.send("✅ Annonce publiée dans #📣 annonces 📣.")
+
+        final_announce = extract_generated_text(response).strip()
+        if not final_announce:
+            await dm.send("❌ L'IA n'a pas réussi à générer d'annonce.")
+            return
+
+        if not final_announce.lower().startswith("@everyone"):
+            final_announce = "@everyone " + final_announce
+
+        channel = self._find_announcement_channel(ctx.guild)
+        if not channel:
+            await dm.send(
+                f"❌ Canal d'annonces introuvable. Vérifie la variable `ANNONCE_CHANNEL_NAME` (valeur actuelle : {ANNONCE_CHANNEL!r})."
+            )
+            return
+
+        await channel.send(final_announce)
+        await dm.send(f"✅ Annonce publiée dans #{channel.name}.")
 
 
 async def setup(bot: commands.Bot):
