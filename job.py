@@ -6,6 +6,7 @@ import json
 import re
 import unicodedata
 import tempfile
+import hashlib, io
 import discord
 from discord.ext import commands, tasks
 from collections import defaultdict
@@ -17,6 +18,15 @@ JOB_MIN_LEVEL = 1
 JOB_MAX_LEVEL = 100
 LOGO_FILENAME = "metier.png"
 LOGO_PATH = os.path.join(os.path.dirname(__file__), LOGO_FILENAME)
+
+
+def _canon_json(d: dict) -> str:
+    return json.dumps(d, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _md5(s: str) -> str:
+    return hashlib.md5(s.encode("utf-8")).hexdigest()
+
 
 def normalize_string(s: str) -> str:
     s = s.replace("’", "'")
@@ -137,6 +147,17 @@ class JobCog(commands.Cog):
     async def get_console_channel(self, guild: discord.Guild):
         return discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
 
+    async def _find_last_marker(self, ch: discord.TextChannel, marker: str, filename: str | None = None):
+        async for msg in ch.history(limit=300, oldest_first=False):
+            if msg.author == self.bot.user and marker in (msg.content or ""):
+                if filename is None:
+                    return msg
+                for att in msg.attachments:
+                    if att.filename == filename:
+                        return msg
+                return msg
+        return None
+
     def _logo_embed(self, embed: discord.Embed) -> discord.Embed:
         if os.path.exists(LOGO_PATH):
             embed.set_thumbnail(url=f"attachment://{LOGO_FILENAME}")
@@ -177,13 +198,59 @@ class JobCog(commands.Cog):
         ch = await self.get_console_channel(guild)
         if not ch:
             return False
-        data_str = json.dumps(self.jobs_data, indent=4, ensure_ascii=False)
-        if len(data_str) < 1900:
-            await ch.send(f"===BOTJOBS===\n```json\n{data_str}\n```")
-        else:
-            temp_path = self._as_temp_file(data_str)
-            await ch.send("===BOTJOBS=== (fichier)", file=discord.File(fp=temp_path, filename="jobs_data.json"))
-            os.remove(temp_path)
+
+        data_canon = _canon_json(self.jobs_data)
+        digest = _md5(data_canon)
+        header = f"===BOTJOBS=== etag:{digest}"
+
+        last = await self._find_last_marker(ch, "===BOTJOBS===", filename="jobs_data.json")
+
+        if len(data_canon) < 1900:
+            content = f"{header}\n```json\n{data_canon}\n```"
+            if last and ("etag:" in (last.content or "")) and (digest in last.content):
+                return True
+            try:
+                if last:
+                    await last.edit(content=content, attachments=[])
+                else:
+                    await ch.send(content)
+            except Exception:
+                if last:
+                    try:
+                        await last.delete()
+                    except:
+                        pass
+                await ch.send(content)
+            return True
+
+        payload = data_canon.encode("utf-8")
+        file_obj = io.BytesIO(payload)
+        file_obj.seek(0)
+
+        if last and ("etag:" in (last.content or "")) and (digest in last.content):
+            return True
+
+        try:
+            if last:
+                try:
+                    await last.edit(
+                        content=f"{header} (fichier)",
+                        attachments=[discord.File(file_obj, filename="jobs_data.json")],
+                    )
+                except Exception:
+                    try:
+                        await last.delete()
+                    except:
+                        pass
+                    file_obj.seek(0)
+                    await ch.send(f"{header} (fichier)", file=discord.File(file_obj, filename="jobs_data.json"))
+            else:
+                await ch.send(f"{header} (fichier)", file=discord.File(file_obj, filename="jobs_data.json"))
+        finally:
+            try:
+                file_obj.close()
+            except:
+                pass
         return True
 
     async def initialize_data(self):

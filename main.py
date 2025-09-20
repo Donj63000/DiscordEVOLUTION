@@ -179,6 +179,12 @@ class EvoBot(commands.Bot):
         last, inst, ts = await self.parse_latest_lock(ch)
         if last and last.id == my.id:
             logging.info("Lock acquis par %s", self.INSTANCE_ID)
+            async for msg in ch.history(limit=100, oldest_first=False):
+                if msg.id != self._lock_message_id and msg.author == self.user and msg.content.startswith(LOCK_TAG):
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
             return True
         logging.warning("Lock non acquis, une autre instance est leader.")
         return False
