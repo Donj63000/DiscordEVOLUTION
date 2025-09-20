@@ -130,7 +130,7 @@ class StatsCog(commands.Cog):
         except Exception as e:
             print(f"[Stats] Erreur lors de la sauvegarde locale : {e}")
 
-    @tasks.loop(seconds=60.0)
+    @tasks.loop(seconds=int(os.getenv("STATS_SAVE_INTERVAL", "900")))
     async def save_loop(self):
         await self.save_stats_data()
 

@@ -6,6 +6,7 @@ import os
 import re
 import unicodedata
 import io
+import hashlib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
@@ -245,9 +246,47 @@ class ConsoleProfileStore:
     async def _save_blob(self, guild_id: int, blob: dict) -> None:
         ch = await self._get_console_channel(guild_id)
         blob["updated_at"] = datetime.now(timezone.utc).isoformat()
-        b = json.dumps(blob, ensure_ascii=False, indent=2).encode("utf-8")
-        file = discord.File(io.BytesIO(b), filename=PROFILES_FILENAME)
-        await ch.send(content=f"{PROFILES_MARKER} (fichier)", file=file)
+
+        data_canon = json.dumps(blob, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.md5(data_canon.encode("utf-8")).hexdigest()
+        header = f"{PROFILES_MARKER} etag:{digest}"
+
+        last = None
+        async for msg in ch.history(limit=HISTORY_SCAN_LIMIT, oldest_first=False):
+            if msg.author == self.bot.user and any(att.filename == PROFILES_FILENAME for att in msg.attachments):
+                last = msg
+                break
+            if msg.author == self.bot.user and PROFILES_MARKER in (msg.content or ""):
+                last = msg
+                break
+
+        if last and ("etag:" in (last.content or "")) and (digest in last.content):
+            return
+
+        b = data_canon.encode("utf-8")
+        buf = io.BytesIO(b)
+        buf.seek(0)
+        try:
+            if last:
+                try:
+                    await last.edit(
+                        content=f"{header} (fichier)",
+                        attachments=[discord.File(buf, filename=PROFILES_FILENAME)],
+                    )
+                except Exception:
+                    try:
+                        await last.delete()
+                    except Exception:
+                        pass
+                    buf.seek(0)
+                    await ch.send(content=f"{header} (fichier)", file=discord.File(buf, filename=PROFILES_FILENAME))
+            else:
+                await ch.send(content=f"{header} (fichier)", file=discord.File(buf, filename=PROFILES_FILENAME))
+        finally:
+            try:
+                buf.close()
+            except Exception:
+                pass
 
     async def ensure_unique_slug(self, guild_id: int, base_slug: str, owner_id: int) -> str:
         blob = await self._load_blob(guild_id)

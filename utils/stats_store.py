@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import hashlib
 import json
 import logging
 import os
 import re
 import tempfile
+import time
 from typing import Optional
 
 import discord
@@ -14,11 +16,20 @@ log = logging.getLogger("utils.stats_store")
 
 CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*\n(?P<body>.+?)```", re.DOTALL)
 
+
+def _json_digest(obj) -> str:
+    payload = json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
 class StatsStore:
     def __init__(self, bot, channel_name: str = "console"):
         self.bot = bot
         self.channel_name = channel_name
-        self._msg = None
+        self._msg: discord.Message | None = None
+        self._etag: str | None = None
+        self._last_save: float = 0.0
+        self.min_interval = int(os.getenv("STATS_MIN_INTERVAL", "900"))
 
     async def _get_channel(self):
         chan = discord.utils.get(self.bot.get_all_channels(), name=self.channel_name)
@@ -30,6 +41,10 @@ class StatsStore:
         chan = await self._get_channel()
         if not chan:
             return False
+        digest = _json_digest(data)
+        now = time.time()
+        if self._etag == digest and (now - self._last_save) < self.min_interval:
+            return True
         payload = json.dumps(data, ensure_ascii=False, indent=2)
         content = f"```json\n{payload}\n```"
         if len(content) <= 2000:
@@ -44,31 +59,44 @@ class StatsStore:
                 except Exception:
                     log.exception("Impossible d'enregistrer les stats dans #%s", self.channel_name)
                     return False
+            self._etag = digest
+            self._last_save = now
             return True
         fd, path = tempfile.mkstemp(suffix=".json")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(payload)
-            if self._msg:
-                try:
-                    await self._msg.delete()
-                except:
-                    pass
-                self._msg = None
             try:
-                msg = await chan.send(
-                    "===BOTSTATS=== (fichier)",
-                    file=discord.File(path, filename="stats_data.json"),
-                )
+                if self._msg:
+                    try:
+                        await self._msg.edit(
+                            content="===BOTSTATS=== (fichier)",
+                            attachments=[discord.File(path, filename="stats_data.json")],
+                        )
+                    except Exception:
+                        try:
+                            await self._msg.delete()
+                        except Exception:
+                            pass
+                        self._msg = await chan.send(
+                            "===BOTSTATS=== (fichier)",
+                            file=discord.File(path, filename="stats_data.json"),
+                        )
+                else:
+                    self._msg = await chan.send(
+                        "===BOTSTATS=== (fichier)",
+                        file=discord.File(path, filename="stats_data.json"),
+                    )
             except Exception:
                 log.exception("Impossible d'envoyer le fichier de stats dans #%s", self.channel_name)
                 return False
-            self._msg = msg
         finally:
             try:
                 os.remove(path)
             except:
                 pass
+        self._etag = digest
+        self._last_save = now
         return True
 
     async def load(self) -> Optional[dict]:
@@ -99,6 +127,7 @@ class StatsStore:
             data = await self._extract_payload(msg)
             if data is not None:
                 self._msg = msg
+                self._etag = _json_digest(data)
                 return data
         return None
 
