@@ -15,22 +15,78 @@ except Exception:  # noqa: PIE786 - optional dependency may be missing
 def parse_duration(s: str) -> timedelta:
     """Convert short duration expressions into a :class:`timedelta`.
 
-    Supported formats include ``"2h"``, ``"1:30"`` or ``"90m"``.
+    Supported formats include ``"2h"``, ``"1:30"``, ``"1:30:45"``,
+    ``"2h30"``, ``"1h 45m"`` or ``"90m"``. Seconds can be provided via the
+    suffix ``s``/``sec`` and French words such as ``minutes`` or
+    ``secondes`` are also accepted.
     """
 
     s = s.strip().lower()
+    if not s:
+        raise ValueError("Format de durée inconnu")
 
-    if match := re.fullmatch(r"(\d+):(\d\d)", s):
-        hours, minutes = map(int, match.groups())
-        return timedelta(hours=hours, minutes=minutes)
+    if match := re.fullmatch(r"(\d+):(\d{1,2})(?::(\d{1,2}))?", s):
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
+        seconds = int(match.group(3) or 0)
+        return timedelta(hours=hours, minutes=minutes, seconds=seconds)
 
-    if s.endswith("h"):
-        return timedelta(hours=int(s[:-1]))
+    normalized = s
+    replacements = (
+        ("heures", "h"),
+        ("heure", "h"),
+        ("hrs", "h"),
+        ("hr", "h"),
+        ("minutes", "m"),
+        ("minute", "m"),
+        ("mins", "m"),
+        ("min", "m"),
+        ("mn", "m"),
+        ("secondes", "s"),
+        ("seconde", "s"),
+        ("seconds", "s"),
+        ("second", "s"),
+        ("secs", "s"),
+        ("sec", "s"),
+    )
+    for pattern, replacement in replacements:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
 
-    if s.endswith("m"):
-        return timedelta(minutes=int(s[:-1]))
+    normalized = re.sub(r"\bet\b", " ", normalized)
+    normalized = re.sub(r"[+,/;\-]", " ", normalized)
 
-    raise ValueError("Format de durée inconnu")
+    pattern = re.compile(r"(\d+)\s*([hms])")
+    hours = minutes = seconds = 0
+    matched_units: set[str] = set()
+    for match in pattern.finditer(normalized):
+        value = int(match.group(1))
+        unit = match.group(2)
+        matched_units.add(unit)
+        if unit == "h":
+            hours += value
+        elif unit == "m":
+            minutes += value
+        else:
+            seconds += value
+
+    remaining = pattern.sub(" ", normalized)
+    extras = re.findall(r"\d+", remaining)
+    if extras:
+        if matched_units.intersection({"h", "m"}) or not matched_units:
+            for extra in extras:
+                minutes += int(extra)
+            remaining = re.sub(r"\d+", " ", remaining)
+        else:
+            raise ValueError("Format de durée inconnu")
+    else:
+        remaining = re.sub(r"\d+", " ", remaining)
+    if remaining.strip():
+        raise ValueError("Format de durée inconnu")
+
+    if hours == minutes == seconds == 0:
+        raise ValueError("Format de durée inconnu")
+
+    return timedelta(hours=hours, minutes=minutes, seconds=seconds)
 
 
 PARIS = ZoneInfo("Europe/Paris")
