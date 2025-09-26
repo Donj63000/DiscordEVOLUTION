@@ -93,18 +93,53 @@ class AnnonceCog(commands.Cog):
         ]
 
     def _find_announcement_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
-        target = (ANNONCE_CHANNEL or "").strip().casefold()
-        if not target:
+        target_raw = (ANNONCE_CHANNEL or "").strip()
+        if not target_raw:
             return None
 
+        def _channel_id_from(value: str) -> int | None:
+            value = (value or "").strip()
+            if value.startswith("<#") and value.endswith(">"):
+                value = value[2:-1]
+            return int(value) if value.isdigit() else None
+
+        def _normalize(value: str) -> str:
+            value = (value or "").strip().casefold()
+            cleaned = []
+            for ch in value:
+                if ch in {" ", "-", "_"}:
+                    continue
+                cleaned.append(ch)
+            return "".join(cleaned)
+
+        target_id = _channel_id_from(target_raw)
+        if target_id is not None:
+            channel = getattr(guild, "get_channel", lambda _id: None)(target_id)
+            if channel is not None:
+                return channel
+
+        target_norm = _normalize(target_raw)
+        target_cf = target_raw.casefold()
+
         for channel in guild.text_channels:
-            name = channel.name.casefold()
-            if name == target:
+            name_cf = channel.name.casefold()
+            if name_cf == target_cf:
                 return channel
-            if name.replace("-", "") == target.replace("-", ""):
+
+        for channel in guild.text_channels:
+            name_norm = _normalize(channel.name)
+            if name_norm == target_norm:
                 return channel
-            if target in name:
+
+        if target_norm:
+            for channel in guild.text_channels:
+                if target_norm in _normalize(channel.name):
+                    return channel
+
+        for channel in guild.text_channels:
+            if target_cf in channel.name.casefold():
                 return channel
+
         return None
 
     @commands.command(name="annonce", aliases=["annoncestaff", "*annonce"])
