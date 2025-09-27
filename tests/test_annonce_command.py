@@ -78,3 +78,21 @@ def test_find_channel_from_plain_digits(monkeypatch):
     found = cog._find_announcement_channel(guild)
 
     assert found is guild.text_channels[1]
+
+
+def test_extract_generated_text_responses_shape():
+    resp = {
+        "output": [
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Bonjour la guilde!"}
+                    ],
+                },
+            }
+        ]
+    }
+
+    assert annonce.extract_generated_text(resp) == "Bonjour la guilde!"

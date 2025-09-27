@@ -20,32 +20,63 @@ DM_TIMEOUT = int(os.getenv("ANNONCE_DM_TIMEOUT", "300"))
 
 
 def extract_generated_text(resp_obj) -> str:
-    if isinstance(resp_obj, str):
-        return resp_obj
-    txt = ""
     try:
-        data = resp_obj
-        if hasattr(resp_obj, "to_dict"):
-            data = resp_obj.to_dict()
-        elif hasattr(resp_obj, "dict"):
-            data = resp_obj.dict()
-        if isinstance(data, dict):
-            if "content" in data:
-                parts = data.get("content")
-                if isinstance(parts, list):
-                    for part in parts:
-                        if isinstance(part, dict):
-                            t = part.get("text") or part.get("content")
-                            if isinstance(t, str):
-                                txt += t
-                elif isinstance(data.get("content"), str):
-                    txt = data["content"]
-            elif isinstance(data.get("data"), list):
-                for item in data["data"]:
-                    txt += extract_generated_text(item)
+        t = getattr(resp_obj, "output_text", None)
+        if isinstance(t, str) and t.strip():
+            return t.strip()
     except Exception:
         pass
-    return txt.strip()
+
+    data = None
+    try:
+        if hasattr(resp_obj, "to_dict"):
+            data = resp_obj.to_dict()
+        elif hasattr(resp_obj, "model_dump"):
+            data = resp_obj.model_dump()
+        elif hasattr(resp_obj, "dict"):
+            data = resp_obj.dict()
+        elif isinstance(resp_obj, dict):
+            data = resp_obj
+    except Exception:
+        data = resp_obj if isinstance(resp_obj, dict) else None
+
+    if not isinstance(data, dict):
+        return (resp_obj if isinstance(resp_obj, str) else "").strip()
+
+    texts: list[str] = []
+
+    outputs = data.get("output") or data.get("outputs") or []
+    for item in outputs:
+        msg = (item or {}).get("message")
+        if isinstance(msg, dict):
+            for part in msg.get("content", []):
+                if isinstance(part, dict):
+                    t = part.get("text") or part.get("content")
+                    if isinstance(t, str):
+                        texts.append(t)
+    if texts:
+        return "".join(texts).strip()
+
+    for ch in data.get("choices", []):
+        msg = ch.get("message") if isinstance(ch, dict) else None
+        if isinstance(msg, dict):
+            c = msg.get("content")
+            if isinstance(c, str) and c.strip():
+                texts.append(c.strip())
+    if texts:
+        return "\n".join(texts).strip()
+
+    content = data.get("content")
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                t = part.get("text") or part.get("content")
+                if isinstance(t, str):
+                    texts.append(t)
+    elif isinstance(content, str):
+        texts.append(content)
+
+    return "".join(texts).strip()
 
 
 QUESTIONS = [
@@ -142,7 +173,7 @@ class AnnonceCog(commands.Cog):
 
         return None
 
-    @commands.command(name="annonce", aliases=["annoncestaff", "*annonce", "annonces"])
+    @commands.command(name="annoncestaff", aliases=["annonces", "annonce-staff"])
     @commands.has_role(STAFF_ROLE_NAME)
     async def annonce_cmd(self, ctx: commands.Context):
         if not self.client or not os.environ.get("OPENAI_API_KEY"):
@@ -152,12 +183,18 @@ class AnnonceCog(commands.Cog):
             )
             return
 
-        dm = await ctx.author.create_dm()
-        await ctx.reply("📨 Je t'ai envoyé un DM pour préparer ton annonce.", mention_author=False)
-
-        await dm.send(
-            "Salut ! Réponds aux questions qui suivent. Tu peux écrire `annule` à tout moment pour arrêter."
-        )
+        try:
+            dm = await ctx.author.create_dm()
+            await dm.send(
+                "Salut ! Réponds aux questions qui suivent. Tu peux écrire `annule` à tout moment pour arrêter."
+            )
+            await ctx.reply("📨 Je t'ai envoyé un DM pour préparer ton annonce.", mention_author=False)
+        except discord.Forbidden:
+            await ctx.reply(
+                "❌ Je ne peux pas t’envoyer de MP. Active les MP pour ce serveur, puis relance `!annonces`.",
+                mention_author=False,
+            )
+            return
 
         answers: list[str] = []
         for question in QUESTIONS:
@@ -184,8 +221,9 @@ class AnnonceCog(commands.Cog):
         try:
             response = await self.client.responses.create(
                 model=self.model,
-                messages=messages,
+                input=messages,
                 max_output_tokens=MAX_OUTPUT_TOKENS,
+                store=False,
             )
         except Exception as e:
             await dm.send(f"❌ Erreur lors de la génération de l'annonce : {e}")
@@ -206,7 +244,10 @@ class AnnonceCog(commands.Cog):
             )
             return
 
-        await channel.send(final_announce)
+        await channel.send(
+            final_announce,
+            allowed_mentions=discord.AllowedMentions(everyone=True)
+        )
         await dm.send(f"✅ Annonce publiée dans #{channel.name}.")
 
 
