@@ -12,7 +12,7 @@ except Exception:
     AsyncOpenAI = None
 
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-ANNONCE_CHANNEL = os.getenv("ANNONCE_CHANNEL_NAME", "annonce")
+ANNONCE_CHANNEL = os.getenv("ANNONCE_CHANNEL_NAME", "annonces")
 DEFAULT_MODEL = os.getenv("OPENAI_STAFF_MODEL", "gpt-5")
 OPENAI_TIMEOUT = float(os.getenv("IASTAFF_TIMEOUT", "120"))
 MAX_OUTPUT_TOKENS = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
@@ -142,7 +142,7 @@ class AnnonceCog(commands.Cog):
 
         return None
 
-    @commands.command(name="annonce", aliases=["annoncestaff", "*annonce"])
+    @commands.command(name="annonce", aliases=["annoncestaff", "*annonce", "annonces"])
     @commands.has_role(STAFF_ROLE_NAME)
     async def annonce_cmd(self, ctx: commands.Context):
         if not self.client or not os.environ.get("OPENAI_API_KEY"):
