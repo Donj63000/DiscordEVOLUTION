@@ -5,6 +5,7 @@ import os
 import asyncio
 import discord
 from discord.ext import commands
+from utils.openai_config import resolve_staff_model
 
 try:
     from openai import AsyncOpenAI
@@ -12,40 +13,90 @@ except Exception:
     AsyncOpenAI = None
 
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-ANNONCE_CHANNEL = os.getenv("ANNONCE_CHANNEL_NAME", "annonces")
-DEFAULT_MODEL = os.getenv("OPENAI_STAFF_MODEL", "gpt-5")
+ANNONCE_CHANNEL = os.getenv("ANNONCE_CHANNEL_NAME", "organisation")
+
+DEFAULT_MODEL = resolve_staff_model()
+
 OPENAI_TIMEOUT = float(os.getenv("IASTAFF_TIMEOUT", "120"))
 MAX_OUTPUT_TOKENS = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
 DM_TIMEOUT = int(os.getenv("ANNONCE_DM_TIMEOUT", "300"))
 
 
 def extract_generated_text(resp_obj) -> str:
+    if not resp_obj:
+        return ""
     if isinstance(resp_obj, str):
-        return resp_obj
-    txt = ""
-    try:
-        data = resp_obj
-        if hasattr(resp_obj, "to_dict"):
-            data = resp_obj.to_dict()
-        elif hasattr(resp_obj, "dict"):
-            data = resp_obj.dict()
-        if isinstance(data, dict):
-            if "content" in data:
-                parts = data.get("content")
-                if isinstance(parts, list):
-                    for part in parts:
-                        if isinstance(part, dict):
-                            t = part.get("text") or part.get("content")
-                            if isinstance(t, str):
-                                txt += t
-                elif isinstance(data.get("content"), str):
-                    txt = data["content"]
-            elif isinstance(data.get("data"), list):
-                for item in data["data"]:
-                    txt += extract_generated_text(item)
-    except Exception:
-        pass
-    return txt.strip()
+        return resp_obj.strip()
+
+    direct = getattr(resp_obj, "output_text", None)
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    def _gather_from_output(output) -> list[str]:
+        chunks: list[str] = []
+        if not output:
+            return chunks
+        for item in output:
+            content_list = getattr(item, "content", None)
+            if content_list is None and isinstance(item, dict):
+                content_list = item.get("content")
+            if not content_list:
+                continue
+            for content in content_list:
+                if content is None:
+                    continue
+                ctype = getattr(content, "type", "") or (content.get("type") if isinstance(content, dict) else "")
+                if ctype in {"text", "output_text"}:
+                    candidate = getattr(content, "text", None)
+                    if candidate is None and isinstance(content, dict):
+                        candidate = content.get("text") or content.get("content")
+                    if isinstance(candidate, str):
+                        chunks.append(candidate)
+                elif ctype in {"json", "json_schema"}:
+                    candidate = getattr(content, "json", None) or getattr(content, "json_schema", None)
+                    if candidate is None and isinstance(content, dict):
+                        candidate = content.get("json") or content.get("json_schema")
+                    if isinstance(candidate, str):
+                        chunks.append(candidate)
+        return chunks
+
+    pieces = []
+    pieces.extend(_gather_from_output(getattr(resp_obj, "output", None)))
+
+    data = resp_obj
+    if hasattr(resp_obj, "to_dict"):
+        data = resp_obj.to_dict()
+    elif hasattr(resp_obj, "dict"):
+        data = resp_obj.dict()
+
+    if isinstance(data, dict):
+        pieces.extend(_gather_from_output(data.get("output")))
+        if not pieces and isinstance(data.get("content"), list):
+            for part in data["content"]:
+                if isinstance(part, dict):
+                    maybe_text = part.get("text") or part.get("content")
+                    if isinstance(maybe_text, str):
+                        pieces.append(maybe_text)
+        if not pieces and isinstance(data.get("data"), list):
+            for item in data["data"]:
+                nested = extract_generated_text(item)
+                if nested:
+                    pieces.append(nested)
+
+    if not pieces:
+        content_attr = getattr(resp_obj, "content", None)
+        if isinstance(content_attr, list):
+            for part in content_attr:
+                if isinstance(part, dict):
+                    maybe_text = part.get("text") or part.get("content")
+                    if isinstance(maybe_text, str):
+                        pieces.append(maybe_text)
+
+    if not pieces:
+        return ""
+    return "".join(pieces).strip()
+
+
 
 
 QUESTIONS = [
@@ -184,7 +235,7 @@ class AnnonceCog(commands.Cog):
         try:
             response = await self.client.responses.create(
                 model=self.model,
-                messages=messages,
+                input=messages,
                 max_output_tokens=MAX_OUTPUT_TOKENS,
             )
         except Exception as e:
@@ -211,4 +262,6 @@ class AnnonceCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
+    # Remplace l'ancienne commande !annonce pour éviter les doubles enregistrements.
+    bot.remove_command("annonce")
     await bot.add_cog(AnnonceCog(bot))

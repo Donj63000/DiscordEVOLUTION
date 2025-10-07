@@ -130,6 +130,10 @@ class EvoBot(commands.Bot):
         for ext in base_exts:
             await self._safe_load(ext)
 
+        loaded_org = await self._safe_load("cogs.organisation")
+        if not loaded_org:
+            await self._safe_load("organisation")
+
         await self.load_extension("cogs.profil")
 
         await self._load_iastaff_anywhere()

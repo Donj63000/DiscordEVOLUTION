@@ -222,12 +222,9 @@ def _content_to_string(content_parts: list[dict]) -> str:
 class IAStaff(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        if AsyncOpenAI is None:
-            raise RuntimeError("La librairie 'openai' n'est pas installée. Ajoute 'openai' à requirements.txt.")
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            log.warning("OPENAI_API_KEY manquante: !iastaff renverra une erreur tant que la clé n'est pas définie.")
-        self.client = AsyncOpenAI(api_key=api_key, timeout=OPENAI_TIMEOUT)
+        self.client: AsyncOpenAI | None = None
+        self._load_error: str | None = None
+        self._ensure_client()
         self.model = os.getenv("OPENAI_STAFF_MODEL", DEFAULT_MODEL)
         self.system_prompt = os.getenv("IASTAFF_SYSTEM_PROMPT", SYSTEM_PROMPT_DEFAULT)
         self.history: dict[int, list[dict[str, str]]] = {}
@@ -236,7 +233,36 @@ class IAStaff(commands.Cog):
         self.logo_path = os.path.join(os.path.dirname(__file__), LOGO_FILENAME)
         self.has_logo = os.path.exists(self.logo_path)
 
+    def _ensure_client(self) -> bool:
+        if self.client is not None:
+            return True
+        if AsyncOpenAI is None:
+            self._load_error = "Librairie openai manquante. Installe openai>=1.58.0."
+            log.warning("IAStaff indisponible: %s", self._load_error)
+            return False
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            self._load_error = "OPENAI_API_KEY manquante. Configure la cle puis redeploie."
+            log.warning("OPENAI_API_KEY manquante: !iastaff renverra une erreur tant que la cle n'est pas definie.")
+            return False
+        try:
+            self.client = AsyncOpenAI(api_key=api_key, timeout=OPENAI_TIMEOUT)
+        except Exception as exc:
+            self._load_error = f"Impossible d'initialiser openai.AsyncOpenAI: {exc}"
+            log.error("IAStaff: initialisation du client OpenAI impossible: %s", exc, exc_info=True)
+            self.client = None
+            return False
+        self._load_error = None
+        return True
+
+
     async def cog_load(self):
+        if not self._ensure_client():
+            if self._load_error:
+                log.warning("IAStaff charge mais desactive: %s", self._load_error)
+            else:
+                log.warning("IAStaff charge mais le client OpenAI est indisponible.")
+            return
         log.info("IAStaff prêt (model=%s | history=%d tours | web=%s | files=%s)", self.model, HISTORY_TURNS, "on" if ENABLE_WEB_SEARCH else "off", "on" if VECTOR_STORE_ID else "off")
 
     def _get_lock(self, channel_id: int) -> asyncio.Lock:
@@ -346,6 +372,8 @@ class IAStaff(commands.Cog):
         return out
 
     async def _ask_openai(self, messages: list[dict]) -> str:
+        if not self._ensure_client():
+            raise RuntimeError(self._load_error or "Client OpenAI indisponible.")
         req = self._build_request(messages)
         try:
             resp = await self.client.responses.create(**req)
@@ -413,8 +441,9 @@ class IAStaff(commands.Cog):
     @commands.command(name="iastaff", aliases=["staffia"])
     @commands.has_role(STAFF_ROLE_NAME)
     async def iastaff_cmd(self, ctx: commands.Context, *, message: str):
-        if not os.environ.get("OPENAI_API_KEY"):
-            await ctx.reply("❌ `OPENAI_API_KEY` n'est pas configurée sur l'hébergement. Ajoute la variable puis redeploie.", mention_author=False)
+        if not self._ensure_client():
+            reason = self._load_error or "Client OpenAI indisponible."
+            await ctx.reply(f"[! ] IA Staff indisponible : {reason}", mention_author=False)
             return
         msg = (message or "").strip()
         if not msg:

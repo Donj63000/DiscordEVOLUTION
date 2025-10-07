@@ -98,6 +98,8 @@ async def test_purge_expired_session_removes():
 @pytest.mark.asyncio
 async def test_missing_api_key_raises(monkeypatch):
     cog = IACog(bot=object())
+    monkeypatch.setattr('ia.load_dotenv', lambda: None)
+    monkeypatch.setenv('GEMINI_API_KEY', '')
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     with pytest.raises(RuntimeError):
         cog.configure_gemini()

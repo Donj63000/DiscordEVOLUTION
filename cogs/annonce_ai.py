@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import re
@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Any
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from utils.openai_config import resolve_staff_model
 
 try:
     from openai import AsyncOpenAI  # SDK officiel
@@ -23,7 +24,7 @@ except Exception:
 
 ANNOUNCE_DB_BLOCK = os.getenv("ANNOUNCE_DB_BLOCK", "announce")  # tag du code-fence en #console
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-DEFAULT_MODEL = os.getenv("OPENAI_STAFF_MODEL", "gpt-4o-mini")
+DEFAULT_MODEL = resolve_staff_model()
 ANNONCE_CHANNEL_NAME = os.getenv("ANNONCE_CHANNEL_NAME", "annonce")
 CONSOLE_CHANNEL_NAME = os.getenv("CONSOLE_CHANNEL_NAME", "console")
 
@@ -31,6 +32,27 @@ CONSOLE_CHANNEL_NAME = os.getenv("CONSOLE_CHANNEL_NAME", "console")
 def _hex_to_int(color: str) -> int:
     color = (color or "").strip().lstrip("#")
     return int(color, 16) if color else 0x2ECC71
+
+
+
+def _is_temperature_error(exc: Exception) -> bool:
+    msg = getattr(exc, "message", None) or str(exc)
+    lowered = msg.lower()
+    if "temperature" not in lowered:
+        return False
+    return (
+        "not supported" in lowered
+        or "unsupported parameter" in lowered
+        or "unsupported value" in lowered
+        or "does not support" in lowered
+        or "only the default" in lowered
+    )
+
+
+def _is_inference_config_error(exc: Exception) -> bool:
+    msg = getattr(exc, "message", None) or str(exc)
+    lowered = msg.lower()
+    return "inference_config" in lowered and ("unexpected" in lowered or "unrecognized" in lowered or "unsupported" in lowered or "not supported" in lowered or "unknown" in lowered)
 
 
 @dataclass
@@ -74,6 +96,9 @@ class AnnounceAICog(commands.Cog):
         self._drafts: Dict[int, AnnounceDraft] = {}
         self._scheduled: Dict[str, ScheduledAnnounce] = {}
         self._client: Optional[AsyncOpenAI] = None
+        self._supports_response_format = True
+        self._supports_temperature = True
+        self._temperature_mode = "inference_config"
         if AsyncOpenAI is not None and os.getenv("OPENAI_API_KEY"):
             self._client = AsyncOpenAI()
         self.scheduler_loop.start()
@@ -151,21 +176,69 @@ class AnnounceAICog(commands.Cog):
             f"Contraintes:\n- 3 variantes: Bref, Standard, RP léger (thème Dofus).\n"
             f"- Retourne STRICTEMENT le JSON demandé."
         )
-        resp = await self._client.responses.create(
-            model=DEFAULT_MODEL,
-            instructions=self._system_prompt(),
-            input=input_text,
-            response_format={"type": "json_schema", "json_schema": self._json_schema()},
-            temperature=float(os.getenv("IASTAFF_TEMPERATURE", "0.4")),
-            max_output_tokens=int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1200")),
-        )
+        temperature_value = float(os.getenv("IASTAFF_TEMPERATURE", "0.4"))
+        max_tokens = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1200"))
+        request_kwargs: Dict[str, Any] = {
+            "model": DEFAULT_MODEL,
+            "instructions": self._system_prompt(),
+            "input": input_text,
+            "max_output_tokens": max_tokens,
+        }
+        if self._supports_temperature:
+            if self._temperature_mode == "inference_config":
+                request_kwargs["inference_config"] = {"temperature": temperature_value}
+            elif self._temperature_mode == "legacy":
+                request_kwargs["temperature"] = temperature_value
+        if self._supports_response_format:
+            request_kwargs["response_format"] = {"type": "json_schema", "json_schema": self._json_schema()}
+        while True:
+            try:
+                resp = await self._client.responses.create(**request_kwargs)
+                break
+            except TypeError as exc:
+                handled = False
+                if self._supports_temperature and self._temperature_mode == "inference_config" and _is_inference_config_error(exc):
+                    self._temperature_mode = "legacy"
+                    request_kwargs.pop("inference_config", None)
+                    request_kwargs["temperature"] = temperature_value
+                    handled = True
+                elif self._supports_response_format and "response_format" in str(exc):
+                    self._supports_response_format = False
+                    request_kwargs.pop("response_format", None)
+                    handled = True
+                if handled:
+                    continue
+                raise
+            except Exception as exc:
+                handled = False
+                if self._supports_temperature and self._temperature_mode == "inference_config" and _is_inference_config_error(exc):
+                    self._temperature_mode = "legacy"
+                    request_kwargs.pop("inference_config", None)
+                    request_kwargs["temperature"] = temperature_value
+                    handled = True
+                elif self._supports_temperature and _is_temperature_error(exc):
+                    self._supports_temperature = False
+                    self._temperature_mode = "disabled"
+                    request_kwargs.pop("temperature", None)
+                    request_kwargs.pop("inference_config", None)
+                    handled = True
+                if handled:
+                    continue
+                raise
         text = getattr(resp, "output_text", "") or ""
         if not text:
             if getattr(resp, "output", None):
                 for msg in resp.output:
-                    for c in getattr(msg, "content", []):
-                        if getattr(c, "type", "") in ("output_text", "text") and getattr(c, "text", ""):
+                    for c in getattr(msg, "content", []) or []:
+                        c_type = getattr(c, "type", "")
+                        if c_type in ("output_text", "text") and getattr(c, "text", ""):
                             text += c.text
+                        elif c_type in ("json_schema", "json"):
+                            payload = getattr(c, "json_schema", None) or getattr(c, "json", None) or getattr(c, "content", None)
+                            if isinstance(payload, (dict, list)):
+                                text += json.dumps(payload)
+                            elif isinstance(payload, str):
+                                text += payload
         if not text:
             raise RuntimeError("Réponse OpenAI vide.")
 

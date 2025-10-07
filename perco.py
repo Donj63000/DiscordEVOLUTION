@@ -20,7 +20,7 @@ from discord.ext import commands
 log = logging.getLogger(__name__)
 
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-ANNOUNCE_CHANNEL_NAME = "📢annonces📢"
+ANNOUNCE_CHANNEL_NAME = os.getenv("ANNONCE_CHANNEL_NAME", "annonces")
 CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 PERCO_TAG = "===PERCO==="
 
@@ -184,7 +184,7 @@ class PercoCog(commands.Cog):
 
         notes: list[str] = []
         if announced:
-            notes.append("Annonce publiée dans #📢annonces📢.")
+            notes.append(f"Annonce publiée dans #{ANNOUNCE_CHANNEL_NAME}.")
         else:
             notes.append("Impossible de publier l'annonce (voir logs).")
         if stored:
