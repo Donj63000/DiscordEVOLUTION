@@ -217,7 +217,7 @@ class PlayersCog(commands.Cog):
         if member_id in self.persos_data:
             stored_name = self.persos_data[member_id].get("discord_name", member.display_name)
             del self.persos_data[member_id]
-            sauvegarder_donnees(self.persos_data)
+            await self.dump_data_to_console()
             recruitment_channel = discord.utils.get(member.guild.text_channels, name="📥 Recrutement 📥")
             if recruitment_channel:
                 await recruitment_channel.send(
@@ -346,7 +346,7 @@ class PlayersCog(commands.Cog):
             return
         author_id = str(ctx.author.id)
         author_name = ctx.author.display_name
-        self._verifier_et_fusionner_id(author_id, author_name)
+        self._verifier_et_fusionner_id(author_id, author_name, nom_perso)
         if author_id not in self.persos_data:
             self.persos_data[author_id] = {
                 "discord_name": author_name,
@@ -501,24 +501,46 @@ class PlayersCog(commands.Cog):
             return [exact_match]
         return results
 
-    def _verifier_et_fusionner_id(self, vrai_id: str, discord_name: str):
+    def _verifier_et_fusionner_id(self, vrai_id: str, *aliases: str):
         if vrai_id in self.persos_data:
             return
-        id_fictif = None
-        for uid, data in self.persos_data.items():
-            stored_name = data.get("discord_name", "").lower()
-            if stored_name == discord_name.lower():
-                id_fictif = uid
-                break
-        if id_fictif:
-            self.persos_data[vrai_id] = self.persos_data[id_fictif]
-            del self.persos_data[id_fictif]
-            sauvegarder_donnees(self.persos_data)
+        alias_pairs: list[tuple[str, str]] = []
+        for alias in aliases:
+            if not alias:
+                continue
+            lowered = alias.lower()
+            slug = ''.join(ch for ch in lowered if ch.isalnum())
+            alias_pairs.append((lowered, slug))
+        if not alias_pairs:
+            return
+        for uid, data in list(self.persos_data.items()):
+            candidates = (
+                data.get("discord_name", ""),
+                data.get("main", ""),
+            )
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                cand_lower = candidate.lower()
+                cand_slug = ''.join(ch for ch in cand_lower if ch.isalnum())
+                for alias_lower, alias_slug in alias_pairs:
+                    if (
+                        cand_lower == alias_lower
+                        or cand_lower in alias_lower
+                        or alias_lower in cand_lower
+                        or (cand_slug and cand_slug == alias_slug)
+                    ):
+                        if uid == vrai_id:
+                            return
+                        self.persos_data[vrai_id] = data
+                        del self.persos_data[uid]
+                        sauvegarder_donnees(self.persos_data)
+                        return
 
     async def auto_register_member(self, discord_id: int, discord_display_name: str, dofus_pseudo: str):
         await self._ensure_initialized()
         author_id = str(discord_id)
-        self._verifier_et_fusionner_id(author_id, discord_display_name)
+        self._verifier_et_fusionner_id(author_id, discord_display_name, dofus_pseudo)
         if author_id not in self.persos_data:
             self.persos_data[author_id] = {
                 "discord_name": discord_display_name,
