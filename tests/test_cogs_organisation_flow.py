@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import discord
 
-from cogs import organisation as organisation_cog
+organisation_cog = pytest.importorskip(
+    "cogs.organisation",
+    reason="Legacy organisation flow removed; tests retained for historical reference.",
+)
 
 
 def make_info(**overrides):

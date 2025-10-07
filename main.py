@@ -130,9 +130,9 @@ class EvoBot(commands.Bot):
         for ext in base_exts:
             await self._safe_load(ext)
 
-        loaded_org = await self._safe_load("cogs.organisation")
+        loaded_org = await self._safe_load("organisation")
         if not loaded_org:
-            await self._safe_load("organisation")
+            logging.error("Extension 'organisation' introuvable ou invalide.")
 
         await self.load_extension("cogs.profil")
 
