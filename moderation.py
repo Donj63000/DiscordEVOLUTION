@@ -40,10 +40,18 @@ class ModerationCog(commands.Cog):
                 await self._save_warnings()
 
     def _compile_patterns(self):
-        sets={"serious_insult":ia.SERIOUS_INSULT_KEYWORDS,"discrimination":ia.DISCRIMINATION_KEYWORDS,"threat":ia.THREAT_KEYWORDS}
-        for label,keyw in sets.items():
+        base_sets={"serious_insult":ia.SERIOUS_INSULT_KEYWORDS,"discrimination":ia.DISCRIMINATION_KEYWORDS,"threat":ia.THREAT_KEYWORDS}
+        for label,keyw in base_sets.items():
             esc=[re.escape(_strip_accents(k)).replace(r'\ ',r'\s+') for k in keyw if len(k)>=3]
-            self.patterns[label]=re.compile(r'(?<!\w)(?:'+('|'.join(esc))+r')(?!\w)',re.I|re.S)
+            if esc:
+                self.patterns[label]=re.compile(r'(?<!\w)(?:'+('|'.join(esc))+r')(?!\w)',re.I|re.S)
+        amb_words=[re.escape(_strip_accents(k)).replace(r'\ ',r'\s+') for k in ia.AMBIGUOUS_INSULT_KEYWORDS if k]
+        amb_qual=[re.escape(_strip_accents(k)).replace(r'\ ',r'\s+') for k in ia.AMBIGUOUS_INSULT_QUALIFIERS if k]
+        if amb_words and amb_qual:
+            qual_group='(?:'+('|'.join(amb_qual))+')'
+            word_group='(?:'+('|'.join(amb_words))+')'
+            pattern=r'(?<!\w)'+qual_group+r'(?:\s+\w+){0,2}?\s+'+word_group+r'(?!\w)'
+            self.patterns["ambiguous_insult"]=re.compile(pattern,re.I|re.S)
 
     def _load_warnings(self):
         if os.path.isfile(WARNINGS_FILE):
