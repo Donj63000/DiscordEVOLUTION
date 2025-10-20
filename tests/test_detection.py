@@ -3,6 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import ia
+from moderation import ModerationCog
 
 
 def test_is_exact_match_variations():
@@ -21,3 +22,10 @@ def test_is_exact_match_variations():
 def test_short_keyword_handling():
     assert ia.is_exact_match("tg", "tg")
     assert not ia.is_exact_match("gg", "tg")
+
+
+def test_moderation_allows_neutral_dog_reference():
+    cog=object.__new__(ModerationCog)
+    cog.patterns={}
+    ModerationCog._compile_patterns(cog)
+    assert cog._classify("j'adopte un chien") is None
