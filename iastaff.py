@@ -4,8 +4,14 @@
 import os
 import logging
 import asyncio
+from datetime import time as datetime_time
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 
 try:
     from openai import AsyncOpenAI
@@ -31,6 +37,56 @@ ENABLE_WEB_SEARCH = os.getenv("IASTAFF_ENABLE_WEB", "1") != "0"
 VECTOR_STORE_ID = os.getenv("IASTAFF_VECTOR_STORE_ID", "").strip()
 
 LOGO_FILENAME = os.getenv("IASTAFF_LOGO", "iastaff.png")
+
+def _normalize_channel_name(value: str) -> str:
+    return "".join(ch for ch in value.lower() if ch.isalnum())
+
+def _parse_id_list(value: str) -> list[int]:
+    ids: list[int] = []
+    for part in value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except Exception:
+            continue
+    return ids
+
+def _parse_hour(value: str, default: int) -> int:
+    try:
+        hour = int(value)
+    except Exception:
+        return default
+    if 0 <= hour <= 23:
+        return hour
+    return default
+
+def _parse_minute(value: str, default: int) -> int:
+    try:
+        minute = int(value)
+    except Exception:
+        return default
+    if 0 <= minute <= 59:
+        return minute
+    return default
+
+def _resolve_zone(name: str):
+    if ZoneInfo is None:
+        return None
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return None
+
+MORNING_TZ_NAME = os.getenv("IASTAFF_MORNING_TZ", "Europe/Paris")
+MORNING_TIMEZONE = _resolve_zone(MORNING_TZ_NAME) or _resolve_zone("UTC")
+MORNING_HOUR = _parse_hour(os.getenv("IASTAFF_MORNING_HOUR", "10"), 10)
+MORNING_MINUTE = _parse_minute(os.getenv("IASTAFF_MORNING_MINUTE", "0"), 0)
+if MORNING_TIMEZONE is not None:
+    MORNING_TRIGGER_TIME = datetime_time(hour=MORNING_HOUR, minute=MORNING_MINUTE, tzinfo=MORNING_TIMEZONE)
+else:
+    MORNING_TRIGGER_TIME = datetime_time(hour=MORNING_HOUR, minute=MORNING_MINUTE)
 
 GUILD_RULES = """Règlement Officiel de la Guilde Evolution – Édition du 19/02/2025
 
@@ -232,6 +288,21 @@ class IAStaff(commands.Cog):
         self.channel_ctx_cache: dict[int, tuple[int | None, str]] = {}
         self.logo_path = os.path.join(os.path.dirname(__file__), LOGO_FILENAME)
         self.has_logo = os.path.exists(self.logo_path)
+        raw_ids = os.getenv("IASTAFF_MORNING_CHANNEL_IDS", "")
+        self.morning_channel_ids = _parse_id_list(raw_ids)
+        raw_names = os.getenv("IASTAFF_MORNING_CHANNEL_NAMES", "📄 Général 📄,général,general")
+        self.morning_channel_names = [name.strip() for name in raw_names.split(",") if name.strip()]
+        self._morning_name_tokens = {
+            token
+            for token in (_normalize_channel_name(name) for name in self.morning_channel_names)
+            if token
+        }
+        self.morning_message = os.getenv(
+            "IASTAFF_MORNING_MESSAGE",
+            "Bonjour à tous les membres de la guilde Evolution ! Passez une excellente journée ☀️",
+        ).strip()
+        if not self.morning_message:
+            self.morning_message = "Bonjour à tous les membres de la guilde Evolution ! Passez une excellente journée ☀️"
 
     def _ensure_client(self) -> bool:
         if self.client is not None:
@@ -264,6 +335,47 @@ class IAStaff(commands.Cog):
                 log.warning("IAStaff charge mais le client OpenAI est indisponible.")
             return
         log.info("IAStaff prêt (model=%s | history=%d tours | web=%s | files=%s)", self.model, HISTORY_TURNS, "on" if ENABLE_WEB_SEARCH else "off", "on" if VECTOR_STORE_ID else "off")
+        if not self.morning_greeting.is_running():
+            self.morning_greeting.start()
+
+    async def cog_unload(self):
+        if self.morning_greeting.is_running():
+            self.morning_greeting.cancel()
+
+    def _resolve_morning_channels(self) -> list[discord.TextChannel]:
+        channels: list[discord.TextChannel] = []
+        seen: set[int] = set()
+        for channel_id in self.morning_channel_ids:
+            channel = self.bot.get_channel(channel_id)
+            if isinstance(channel, discord.TextChannel) and channel.id not in seen:
+                channels.append(channel)
+                seen.add(channel.id)
+        if self._morning_name_tokens:
+            for guild in self.bot.guilds:
+                for channel in guild.text_channels:
+                    if channel.id in seen:
+                        continue
+                    if _normalize_channel_name(channel.name) in self._morning_name_tokens:
+                        channels.append(channel)
+                        seen.add(channel.id)
+        return channels
+
+    @tasks.loop(time=MORNING_TRIGGER_TIME)
+    async def morning_greeting(self):
+        if not self.bot.is_ready():
+            return
+        message = self.morning_message
+        if not message:
+            return
+        for channel in self._resolve_morning_channels():
+            try:
+                await channel.send(message)
+            except Exception as exc:
+                log.warning("IAStaff morning greeting failure on %s: %s", getattr(channel, "name", channel.id), exc)
+
+    @morning_greeting.before_loop
+    async def before_morning_greeting(self):
+        await self.bot.wait_until_ready()
 
     def _get_lock(self, channel_id: int) -> asyncio.Lock:
         lock = self.locks.get(channel_id)
