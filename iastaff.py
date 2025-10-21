@@ -391,16 +391,26 @@ class IAStaff(commands.Cog):
         if len(buf) > max_items:
             self.history[channel_id] = buf[-max_items:]
 
-    async def _build_channel_context(self, ctx: commands.Context) -> str:
-        ch: discord.TextChannel = ctx.channel
-        last_id = ch.last_message_id
-        cached = self.channel_ctx_cache.get(ch.id)
+    async def _build_channel_context(
+        self,
+        channel: discord.abc.Messageable,
+        before: discord.Message | None,
+    ) -> str:
+        ch = channel
+        channel_id = getattr(ch, "id", None)
+        last_id = getattr(ch, "last_message_id", None)
+        if channel_id is None:
+            return ""
+        cached = self.channel_ctx_cache.get(channel_id)
         if cached and cached[0] == last_id:
             return cached[1]
         lines = ["Contexte du canal (jusqu’aux 40 derniers messages) :"]
         gathered_chars = 0
         msgs = []
-        async for m in ch.history(limit=CONTEXT_MESSAGES, before=ctx.message, oldest_first=True):
+        history = getattr(ch, "history", None)
+        if history is None:
+            return ""
+        async for m in history(limit=CONTEXT_MESSAGES, before=before, oldest_first=True):
             msgs.append(m)
         for m in msgs:
             txt = (m.clean_content or "").strip()
@@ -415,7 +425,7 @@ class IAStaff(commands.Cog):
             lines.append(line)
             gathered_chars += len(line) + 1
         block = "\n".join(lines)
-        self.channel_ctx_cache[ch.id] = (last_id, block)
+        self.channel_ctx_cache[channel_id] = (last_id, block)
         return block
 
     def _make_messages(self, channel_ctx: str, channel_id: int, user_msg: str) -> list[dict]:
@@ -540,23 +550,111 @@ class IAStaff(commands.Cog):
         emb.set_footer(text=f"Modèle: {self.model}")
         return emb, files
 
-    async def _send_long_reply(self, ctx: commands.Context, text: str):
+    async def _send_long_reply(
+        self,
+        channel: discord.abc.Messageable,
+        text: str,
+        *,
+        ctx: commands.Context | None = None,
+        origin_message: discord.Message | None = None,
+    ):
         if not text:
-            await ctx.reply("Je n’ai rien reçu de l’API.", mention_author=False)
+            target_ctx = ctx.reply if ctx is not None else None
+            if target_ctx is not None:
+                await target_ctx("Je n’ai rien reçu de l’API.", mention_author=False)
+            elif origin_message is not None:
+                await origin_message.reply("Je n’ai rien reçu de l’API.", mention_author=False)
+            else:
+                await channel.send("Je n’ai rien reçu de l’API.")
             return
         parts = chunk_text(text, EMBED_SAFE_CHUNK)
         total = len(parts)
         for i, part in enumerate(parts, start=1):
             emb, files = self._make_embed(part, i, total)
-            await ctx.send(embed=emb, files=files or None)
+            if ctx is not None:
+                await ctx.send(embed=emb, files=files or None)
+            elif origin_message is not None and i == 1:
+                await origin_message.reply(embed=emb, files=files or None, mention_author=False)
+            else:
+                await channel.send(embed=emb, files=files or None)
+
+    async def handle_staff_message(
+        self,
+        channel: discord.abc.Messageable,
+        author: discord.abc.User,
+        message: str,
+        *,
+        ctx: commands.Context | None = None,
+        origin_message: discord.Message | None = None,
+    ):
+        if not self._ensure_client():
+            reason = self._load_error or "Client OpenAI indisponible."
+            if ctx is not None:
+                await ctx.reply(f"[! ] IA Staff indisponible : {reason}", mention_author=False)
+            elif origin_message is not None:
+                await origin_message.reply(f"[! ] IA Staff indisponible : {reason}", mention_author=False)
+            else:
+                await channel.send(f"[! ] IA Staff indisponible : {reason}")
+            return
+        content = (message or "").strip()
+        if not content:
+            if ctx is not None:
+                await ctx.reply("Donne un message après la commande, ex: `!iastaff Quel est le plan ?`", mention_author=False)
+            elif origin_message is not None:
+                await origin_message.reply("Message vide ignoré.", mention_author=False)
+            else:
+                await channel.send("Message vide ignoré.")
+            return
+        if isinstance(author, discord.Member):
+            has_role = any(role.name == STAFF_ROLE_NAME for role in author.roles)
+            if not has_role:
+                if ctx is not None:
+                    await ctx.reply("Accès réservé au Staff.", mention_author=False)
+                elif origin_message is not None:
+                    await origin_message.reply("Accès réservé au Staff.", mention_author=False)
+                else:
+                    await channel.send("Accès réservé au Staff.")
+                return
+        channel_id = getattr(channel, "id", None)
+        if channel_id is None:
+            if ctx is not None:
+                await ctx.reply("Salon incompatible avec l’IA Staff.", mention_author=False)
+            elif origin_message is not None:
+                await origin_message.reply("Salon incompatible avec l’IA Staff.", mention_author=False)
+            else:
+                await channel.send("Salon incompatible avec l’IA Staff.")
+            return
+        lock = self._get_lock(channel_id)
+        async with lock:
+            typing_target = ctx if ctx is not None else channel
+            async with typing_target.typing():
+                channel_ctx = await self._build_channel_context(channel, origin_message if origin_message is not None else (ctx.message if ctx is not None else None))
+                messages = self._make_messages(channel_ctx, channel_id, content)
+                try:
+                    text = await self._ask_openai(messages)
+                except Exception as e:
+                    if ctx is not None:
+                        await ctx.reply(f"❌ {e}", mention_author=False)
+                    elif origin_message is not None:
+                        await origin_message.reply(f"❌ {e}", mention_author=False)
+                    else:
+                        await channel.send(f"❌ {e}")
+                    return
+            if not text.strip():
+                if ctx is not None:
+                    await ctx.reply("La réponse de l'IA est vide. Réessaie en reformulant (ou `!iastaff reset`).", mention_author=False)
+                elif origin_message is not None:
+                    await origin_message.reply("La réponse de l'IA est vide. Réessaie plus tard.", mention_author=False)
+                else:
+                    await channel.send("La réponse de l'IA est vide. Réessaie plus tard.")
+                return
+            self._push_history(channel_id, "user", content)
+            self._push_history(channel_id, "assistant", text)
+        await self._send_long_reply(channel, text, ctx=ctx, origin_message=origin_message)
 
     @commands.command(name="iastaff", aliases=["staffia"])
     @commands.has_role(STAFF_ROLE_NAME)
     async def iastaff_cmd(self, ctx: commands.Context, *, message: str):
-        if not self._ensure_client():
-            reason = self._load_error or "Client OpenAI indisponible."
-            await ctx.reply(f"[! ] IA Staff indisponible : {reason}", mention_author=False)
-            return
         msg = (message or "").strip()
         if not msg:
             await ctx.reply("Donne un message après la commande, ex: `!iastaff Quel est le plan ?`", mention_author=False)
@@ -577,22 +675,7 @@ class IAStaff(commands.Cog):
             )
             await ctx.reply(details, mention_author=False)
             return
-        lock = self._get_lock(channel_id)
-        async with lock:
-            async with ctx.typing():
-                channel_ctx = await self._build_channel_context(ctx)
-                messages = self._make_messages(channel_ctx, channel_id, msg)
-                try:
-                    text = await self._ask_openai(messages)
-                except Exception as e:
-                    await ctx.reply(f"❌ {e}", mention_author=False)
-                    return
-            if not text.strip():
-                await ctx.reply("La réponse de l'IA est vide. Réessaie en reformulant (ou `!iastaff reset`).", mention_author=False)
-                return
-            self._push_history(channel_id, "user", msg)
-            self._push_history(channel_id, "assistant", text)
-        await self._send_long_reply(ctx, text)
+        await self.handle_staff_message(ctx.channel, ctx.author, msg, ctx=ctx)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(IAStaff(bot))
