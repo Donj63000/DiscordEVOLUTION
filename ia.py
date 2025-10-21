@@ -647,13 +647,15 @@ class IACog(commands.Cog):
         if self.bot.user and self.bot.user.mention in message.content:
             q = message.content.replace(self.bot.user.mention, "").strip()
             if q:
-                if time.time() < self.quota_exceeded_until:
-                    qlen = len(self.request_queue)
-                    await ctx.send(f"**IA saturée**. Requête en file. ({qlen} en file)")
-                    self.request_queue.append((ctx, lambda co: self.handle_ai_request(co, q)))
-                    self.pending_requests = True
+                ia_staff = self.bot.get_cog("IAStaff")
+                if ia_staff is None or not hasattr(ia_staff, "handle_staff_message"):
+                    await message.reply("IA Staff indisponible pour le moment.", mention_author=False)
                     return
-                await self.handle_ai_request(ctx, q)
+                try:
+                    await ia_staff.handle_staff_message(message.channel, message.author, q, origin_message=message)
+                except Exception as exc:
+                    await message.reply(f"IA Staff indisponible : {exc}", mention_author=False)
+                return
 
 async def setup(bot: commands.Bot):
     cog = IACog(bot)
