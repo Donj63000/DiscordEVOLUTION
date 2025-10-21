@@ -3,7 +3,6 @@
 
 import os
 import json
-import datetime
 import re
 import asyncio
 import unicodedata
@@ -14,8 +13,6 @@ import ia
 WARNINGS_FILE = os.path.join(os.path.dirname(__file__), "warnings_data.json")
 STAFF_CHANNEL_NAME = "📊 Général-staff 📊"
 STAFF_ROLE_NAME = "Staff"
-TIMEOUT_THRESHOLD = 2
-TIMEOUT_DURATION = datetime.timedelta(hours=1)
 SAVE_INTERVAL = 60
 
 def _strip_accents(t:str)->str:
@@ -87,18 +84,6 @@ class ModerationCog(commands.Cog):
                 return label
         return None
 
-    async def _timeout(self,member:discord.Member)->bool:
-        until=datetime.datetime.now(datetime.timezone.utc)+TIMEOUT_DURATION
-        try:
-            await member.edit(timed_out_until=until,reason="Avertissements multiples")
-            return True
-        except Exception:
-            try:
-                await member.timeout(until,reason="Avertissements multiples")
-                return True
-            except Exception:
-                return False
-
     @commands.Cog.listener("on_message")
     async def _listener(self,message:discord.Message):
         if not message.guild or message.author.bot:
@@ -119,10 +104,7 @@ class ModerationCog(commands.Cog):
             pass
         staff_ch=discord.utils.get(message.guild.text_channels,name=STAFF_CHANNEL_NAME)
         if staff_ch:
-            await staff_ch.send(f"Infraction {cat} par {message.author.mention} (avertissement {count}/{TIMEOUT_THRESHOLD})\n> {message.content}")
-        if count>=TIMEOUT_THRESHOLD:
-            if await self._timeout(message.author) and staff_ch:
-                await staff_ch.send(f"{message.author.mention} a été mute {TIMEOUT_DURATION} après plusieurs avertissements.")
+            await staff_ch.send(f"Infraction {cat} par {message.author.mention} (avertissement {count})\n> {message.content}")
 
     @commands.has_role(STAFF_ROLE_NAME)
     @commands.command(name="warnings")
