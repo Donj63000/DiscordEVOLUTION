@@ -5,7 +5,7 @@ import os
 import asyncio
 import discord
 from discord.ext import commands
-from utils.openai_config import resolve_staff_model
+from utils.openai_config import resolve_staff_model, build_async_openai_client
 
 try:
     from openai import AsyncOpenAI
@@ -114,7 +114,7 @@ class AnnonceCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.model = DEFAULT_MODEL
-        self.client = AsyncOpenAI(timeout=OPENAI_TIMEOUT) if AsyncOpenAI else None
+        self.client = build_async_openai_client(AsyncOpenAI, timeout=OPENAI_TIMEOUT)
 
     def _build_prompt(self, answers: list[str], author: discord.Member) -> list[dict]:
         staff_context = [

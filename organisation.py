@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Tuple
 
 import discord
-from utils.openai_config import resolve_staff_model
+from utils.openai_config import resolve_staff_model, build_async_openai_client
 
 
 def _ensure_utils() -> None:
@@ -204,9 +204,7 @@ class OrganisationCog(commands.Cog):
         self.bot = bot
         self.model = DEFAULT_MODEL
         self._sessions: Dict[Tuple[int, int], OrganisationSession] = {}
-        self._client: Optional[AsyncOpenAI] = None
-        if AsyncOpenAI is not None and os.getenv("OPENAI_API_KEY"):
-            self._client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self._client: Optional[AsyncOpenAI] = build_async_openai_client(AsyncOpenAI)
 
     # ------------------------------------------------------------------
     # Prompts
