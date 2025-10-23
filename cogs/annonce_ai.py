@@ -10,7 +10,7 @@ from typing import Optional, List, Dict, Any
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from utils.openai_config import resolve_staff_model
+from utils.openai_config import resolve_staff_model, build_async_openai_client
 
 try:
     from openai import AsyncOpenAI  # SDK officiel
@@ -95,12 +95,10 @@ class AnnounceAICog(commands.Cog):
         self.bot = bot
         self._drafts: Dict[int, AnnounceDraft] = {}
         self._scheduled: Dict[str, ScheduledAnnounce] = {}
-        self._client: Optional[AsyncOpenAI] = None
+        self._client: Optional[AsyncOpenAI] = build_async_openai_client(AsyncOpenAI)
         self._supports_response_format = True
         self._supports_temperature = True
         self._temperature_mode = "inference_config"
-        if AsyncOpenAI is not None and os.getenv("OPENAI_API_KEY"):
-            self._client = AsyncOpenAI()
         self.scheduler_loop.start()
 
     def cog_unload(self) -> None:
