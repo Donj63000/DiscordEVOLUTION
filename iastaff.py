@@ -7,6 +7,7 @@ import asyncio
 from datetime import time as datetime_time
 import discord
 from discord.ext import commands, tasks
+from utils.openai_config import build_async_openai_client
 
 try:
     from zoneinfo import ZoneInfo
@@ -311,17 +312,20 @@ class IAStaff(commands.Cog):
             self._load_error = "Librairie openai manquante. Installe openai>=1.58.0."
             log.warning("IAStaff indisponible: %s", self._load_error)
             return False
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            self._load_error = "OPENAI_API_KEY manquante. Configure la cle puis redeploie."
-            log.warning("OPENAI_API_KEY manquante: !iastaff renverra une erreur tant que la cle n'est pas definie.")
-            return False
         try:
-            self.client = AsyncOpenAI(api_key=api_key, timeout=OPENAI_TIMEOUT)
+            self.client = build_async_openai_client(AsyncOpenAI, timeout=OPENAI_TIMEOUT)
         except Exception as exc:
             self._load_error = f"Impossible d'initialiser openai.AsyncOpenAI: {exc}"
             log.error("IAStaff: initialisation du client OpenAI impossible: %s", exc, exc_info=True)
             self.client = None
+            return False
+        if self.client is None:
+            if not os.environ.get("OPENAI_API_KEY"):
+                self._load_error = "OPENAI_API_KEY manquante. Configure la cle puis redeploie."
+                log.warning("OPENAI_API_KEY manquante: !iastaff renverra une erreur tant que la cle n'est pas definie.")
+            else:
+                self._load_error = "Configuration OpenAI invalide. Verifie projet et organisation."
+                log.error("IAStaff: configuration OpenAI invalide (projet ou organisation).")
             return False
         self._load_error = None
         return True
