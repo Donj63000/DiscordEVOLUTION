@@ -36,7 +36,9 @@ def make_cog(monkeypatch) -> annonce.AnnonceCog:
 
 
 def test_find_channel_from_display_name(monkeypatch):
-    monkeypatch.setattr(annonce, "ANNONCE_CHANNEL", "📣 annonces 📣")
+    monkeypatch.delenv("ANNONCE_CHANNEL_ID", raising=False)
+    monkeypatch.delenv("ANNONCE_CHANNEL", raising=False)
+    monkeypatch.setenv("ANNONCE_CHANNEL_NAME", "📣 annonces 📣")
     cog = make_cog(monkeypatch)
     guild = DummyGuild(
         [
@@ -51,7 +53,9 @@ def test_find_channel_from_display_name(monkeypatch):
 
 
 def test_find_channel_from_id_string(monkeypatch):
-    monkeypatch.setattr(annonce, "ANNONCE_CHANNEL", "<#42>")
+    monkeypatch.delenv("ANNONCE_CHANNEL_ID", raising=False)
+    monkeypatch.delenv("ANNONCE_CHANNEL", raising=False)
+    monkeypatch.setenv("ANNONCE_CHANNEL_NAME", "<#42>")
     cog = make_cog(monkeypatch)
     guild = DummyGuild(
         [
@@ -66,7 +70,9 @@ def test_find_channel_from_id_string(monkeypatch):
 
 
 def test_find_channel_from_plain_digits(monkeypatch):
-    monkeypatch.setattr(annonce, "ANNONCE_CHANNEL", "42")
+    monkeypatch.delenv("ANNONCE_CHANNEL_ID", raising=False)
+    monkeypatch.delenv("ANNONCE_CHANNEL", raising=False)
+    monkeypatch.setenv("ANNONCE_CHANNEL_NAME", "42")
     cog = make_cog(monkeypatch)
     guild = DummyGuild(
         [

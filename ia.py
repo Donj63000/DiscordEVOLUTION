@@ -9,6 +9,8 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from utils.channel_resolver import resolve_text_channel
+
 try:
     from rapidfuzz.distance import Levenshtein
 except Exception:
@@ -118,7 +120,7 @@ class IACog(commands.Cog):
         self.quota_block_duration = 3600
         self.quota_exceeded_until = 0
         self.debug_mode = True
-        self.annonce_channel_name = os.getenv("ANNONCE_CHANNEL_NAME", "annonces")
+        self.annonce_channel_name = os.getenv("ANNONCE_CHANNEL_NAME") or "📣 annonces 📣"
         self.event_channel_name = "🌈 organisation 🌈"
         self.pl_channel_name = "📍 xplock-rondesasa-ronde 📍"
         self.last_reglement_reminder = 0
@@ -491,12 +493,17 @@ class IACog(commands.Cog):
         if not user_message:
             await ctx.send("Usage: !annonce <texte>")
             return
-        chan = discord.utils.get(ctx.guild.text_channels, name=self.annonce_channel_name)
+        chan = resolve_text_channel(
+            ctx.guild,
+            id_env="ANNONCE_CHANNEL_ID",
+            name_env="ANNONCE_CHANNEL_NAME",
+            default_name=self.annonce_channel_name,
+        )
         if not chan:
             legacy_names = {"📣 annonces 📣", "annonces"}
             legacy_names.discard(self.annonce_channel_name)
             for legacy in legacy_names:
-                chan = discord.utils.get(ctx.guild.text_channels, name=legacy)
+                chan = resolve_text_channel(ctx.guild, default_name=legacy)
                 if chan:
                     break
         if not chan:

@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Any
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from utils.channel_resolver import resolve_text_channel
 from utils.openai_config import resolve_staff_model, build_async_openai_client
 
 try:
@@ -25,8 +26,8 @@ except Exception:
 ANNOUNCE_DB_BLOCK = os.getenv("ANNOUNCE_DB_BLOCK", "announce")  # tag du code-fence en #console
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
 DEFAULT_MODEL = resolve_staff_model()
-ANNONCE_CHANNEL_NAME = os.getenv("ANNONCE_CHANNEL_NAME", "annonce")
-CONSOLE_CHANNEL_NAME = os.getenv("CONSOLE_CHANNEL_NAME", "console")
+ANNONCE_CHANNEL_NAME = os.getenv("ANNONCE_CHANNEL_NAME", "📣 annonces 📣")
+CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", os.getenv("CONSOLE_CHANNEL_NAME", "console"))
 
 
 def _hex_to_int(color: str) -> int:
@@ -113,10 +114,20 @@ class AnnounceAICog(commands.Cog):
         return any(r.name == STAFF_ROLE_NAME for r in getattr(member, "roles", []))
 
     def _find_channel(self, guild: discord.Guild, name: str) -> Optional[discord.TextChannel]:
-        return discord.utils.get(guild.text_channels, name=name)
+        return resolve_text_channel(
+            guild,
+            id_env="ANNONCE_CHANNEL_ID",
+            name_env="ANNONCE_CHANNEL_NAME",
+            default_name=name or ANNONCE_CHANNEL_NAME,
+        )
 
     async def _console_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
-        return discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+        return resolve_text_channel(
+            guild,
+            id_env="CHANNEL_CONSOLE_ID",
+            name_env="CHANNEL_CONSOLE",
+            default_name=CONSOLE_CHANNEL_NAME,
+        )
 
     def _system_prompt(self) -> str:
         return (
@@ -435,7 +446,10 @@ class AnnounceAICog(commands.Cog):
             channel_name = str(self.channel.value).strip()
             channel = None
             if channel_name:
-                channel = discord.utils.get(interaction.guild.text_channels, name=channel_name)
+                channel = resolve_text_channel(
+                    interaction.guild,
+                    default_name=channel_name,
+                )
             if not channel:
                 channel = self.parent._find_channel(interaction.guild, ANNONCE_CHANNEL_NAME)
             if not channel:
