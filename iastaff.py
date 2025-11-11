@@ -7,7 +7,7 @@ import asyncio
 from datetime import time as datetime_time
 import discord
 from discord.ext import commands, tasks
-from utils.openai_config import build_async_openai_client
+from utils.openai_config import build_async_openai_client, resolve_staff_model
 
 try:
     from zoneinfo import ZoneInfo
@@ -22,7 +22,8 @@ except Exception:
 log = logging.getLogger("iastaff")
 
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-DEFAULT_MODEL = os.getenv("OPENAI_STAFF_MODEL", "gpt-5")
+# Par défaut spécifique à IA Staff : GPT‑5 mini
+DEFAULT_MODEL = resolve_staff_model(default="gpt-5-mini")
 
 CONTEXT_MESSAGES = int(os.getenv("IASTAFF_CHANNEL_CONTEXT", "40"))
 PER_MSG_TRUNC = int(os.getenv("IASTAFF_PER_MSG_CHARS", "200"))
@@ -282,7 +283,8 @@ class IAStaff(commands.Cog):
         self.client: AsyncOpenAI | None = None
         self._load_error: str | None = None
         self._ensure_client()
-        self.model = os.getenv("OPENAI_STAFF_MODEL", DEFAULT_MODEL)
+        # Normalisé via utils.openai_config (ENV > défaut "gpt-5-mini" spécifique IA Staff)
+        self.model = resolve_staff_model(default=DEFAULT_MODEL)
         self.system_prompt = os.getenv("IASTAFF_SYSTEM_PROMPT", SYSTEM_PROMPT_DEFAULT)
         self.history: dict[int, list[dict[str, str]]] = {}
         self.locks: dict[int, asyncio.Lock] = {}
@@ -678,6 +680,19 @@ class IAStaff(commands.Cog):
                 f"Web Search: {'activé' if ENABLE_WEB_SEARCH else 'désactivé'} | File Search: {'activé' if VECTOR_STORE_ID else 'désactivé'}"
             )
             await ctx.reply(details, mention_author=False)
+            return
+        # Nouveau : !iastaff model <id> → switch du modèle à chaud (runtime)
+        if low.startswith("model "):
+            new_model = msg.split(None, 1)[1].strip()
+            # normalisation basique côté bot (aliases ENV gérés par resolve_staff_model si besoin)
+            normalized = new_model.lower().replace(" ", "-").replace("_", "-")
+            self.model = normalized
+            await ctx.reply(
+                f"Modèle IA Staff mis à jour pour cette instance : `{self.model}`.\n"
+                "💡 Pour rendre ce choix **persistant** après redémarrage Render, définis "
+                "`OPENAI_STAFF_MODEL` dans les variables d'environnement.",
+                mention_author=False,
+            )
             return
         await self.handle_staff_message(ctx.channel, ctx.author, msg, ctx=ctx)
 
