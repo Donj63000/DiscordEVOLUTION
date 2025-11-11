@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -256,7 +257,7 @@ class EventConversationCog(commands.Cog):
 
     # ---------- lifecycle ------------------------------------------------- #
     async def cog_load(self) -> None:
-        self.console = ConsoleStore(self.bot, channel_name="console")
+        self.console = ConsoleStore(self.bot, channel_name=os.getenv("CHANNEL_CONSOLE", "console"))
         chan = await self.console._channel()
         if chan is None:
             return

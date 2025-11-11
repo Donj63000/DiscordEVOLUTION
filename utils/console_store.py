@@ -2,7 +2,8 @@ from __future__ import annotations
 import json
 import logging
 import discord
-from copy import deepcopy
+
+from utils.channel_resolver import resolve_text_channel
 
 log = logging.getLogger(__name__)
 CODEBLOCK = "```event"
@@ -20,10 +21,17 @@ class ConsoleStore:
     # Helpers                                                            #
     # ------------------------------------------------------------------ #
     async def _channel(self) -> discord.TextChannel | None:
-        chan = discord.utils.get(self.bot.get_all_channels(), name=self.channel_name)
-        if chan is None:
-            log.warning("Canal #%s introuvable – persistance désactivée", self.channel_name)
-        return chan
+        for guild in getattr(self.bot, "guilds", []):
+            chan = resolve_text_channel(
+                guild,
+                id_env="CHANNEL_CONSOLE_ID",
+                name_env="CHANNEL_CONSOLE",
+                default_name=self.channel_name,
+            )
+            if chan is not None:
+                return chan
+        log.warning("Canal #%s introuvable – persistance désactivée", self.channel_name)
+        return None
 
     def _serialisable(self, data: dict) -> str:
         """Renvoie la chaîne JSON sans les clés transient (_msg…)."""
