@@ -12,6 +12,8 @@ from typing import Optional
 
 import discord
 
+from utils.channel_resolver import resolve_text_channel
+
 log = logging.getLogger("utils.stats_store")
 
 CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*\n(?P<body>.+?)```", re.DOTALL)
@@ -32,10 +34,22 @@ class StatsStore:
         self.min_interval = int(os.getenv("STATS_MIN_INTERVAL", "900"))
 
     async def _get_channel(self):
-        chan = discord.utils.get(self.bot.get_all_channels(), name=self.channel_name)
-        if not chan:
-            log.warning("Canal #%s introuvable – persistance désactivée", self.channel_name)
-        return chan
+        for guild in getattr(self.bot, "guilds", []):
+            chan = resolve_text_channel(
+                guild,
+                id_env="CHANNEL_CONSOLE_ID",
+                name_env="CHANNEL_CONSOLE",
+                default_name=self.channel_name,
+            )
+            if chan:
+                return chan
+        get_all_channels = getattr(self.bot, "get_all_channels", None)
+        if callable(get_all_channels):
+            chan = discord.utils.get(get_all_channels(), name=self.channel_name)
+            if chan:
+                return chan
+        log.warning("Canal #%s introuvable – persistance désactivée", self.channel_name)
+        return None
 
     async def save(self, data) -> bool:
         chan = await self._get_channel()
@@ -126,8 +140,6 @@ class StatsStore:
         async for msg in iter_candidates():
             data = await self._extract_payload(msg)
             if data is not None:
-                self._msg = msg
-                self._etag = _json_digest(data)
                 return data
         return None
 
@@ -145,7 +157,10 @@ class StatsStore:
                 continue
             try:
                 raw = await att.read()
-                return json.loads(raw.decode("utf-8"))
+                data = json.loads(raw.decode("utf-8"))
+                self._msg = msg
+                self._etag = _json_digest(data)
+                return data
             except Exception:
                 log.warning("Lecture JSON impossible depuis %s", filename, exc_info=True)
 
@@ -156,7 +171,10 @@ class StatsStore:
             return None
         body = match.group("body").strip()
         try:
-            return json.loads(body)
+            data = json.loads(body)
+            self._msg = msg
+            self._etag = _json_digest(data)
+            return data
         except Exception:
             log.warning("Contenu JSON invalide dans le message de stats", exc_info=True)
             return None
