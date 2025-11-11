@@ -5,6 +5,7 @@ import os
 import asyncio
 import discord
 from discord.ext import commands
+from utils.channel_resolver import resolve_text_channel
 from utils.openai_config import resolve_staff_model, build_async_openai_client
 
 try:
@@ -13,7 +14,7 @@ except Exception:
     AsyncOpenAI = None
 
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-ANNONCE_CHANNEL = os.getenv("ANNONCE_CHANNEL_NAME", "organisation")
+DEFAULT_ANNOUNCE_NAME = "📣 annonces 📣"
 
 DEFAULT_MODEL = resolve_staff_model()
 
@@ -144,53 +145,24 @@ class AnnonceCog(commands.Cog):
         ]
 
     def _find_announcement_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
-        target_raw = (ANNONCE_CHANNEL or "").strip()
-        if not target_raw:
-            return None
-
-        def _channel_id_from(value: str) -> int | None:
-            value = (value or "").strip()
-            if value.startswith("<#") and value.endswith(">"):
-                value = value[2:-1]
-            return int(value) if value.isdigit() else None
-
-        def _normalize(value: str) -> str:
-            value = (value or "").strip().casefold()
-            cleaned = []
-            for ch in value:
-                if ch in {" ", "-", "_"}:
-                    continue
-                cleaned.append(ch)
-            return "".join(cleaned)
-
-        target_id = _channel_id_from(target_raw)
-        if target_id is not None:
-            channel = getattr(guild, "get_channel", lambda _id: None)(target_id)
-            if channel is not None:
+        primary = os.getenv("ANNONCE_CHANNEL_NAME")
+        channel = resolve_text_channel(
+            guild,
+            id_env="ANNONCE_CHANNEL_ID",
+            name_env="ANNONCE_CHANNEL_NAME",
+            default_name=primary or DEFAULT_ANNOUNCE_NAME,
+        )
+        if channel:
+            return channel
+        legacy = os.getenv("ANNONCE_CHANNEL") or "organisation"
+        if legacy and legacy != primary:
+            channel = resolve_text_channel(guild, default_name=legacy)
+            if channel:
                 return channel
-
-        target_norm = _normalize(target_raw)
-        target_cf = target_raw.casefold()
-
-        for channel in guild.text_channels:
-            name_cf = channel.name.casefold()
-            if name_cf == target_cf:
+        if primary and primary != DEFAULT_ANNOUNCE_NAME:
+            channel = resolve_text_channel(guild, default_name=DEFAULT_ANNOUNCE_NAME)
+            if channel:
                 return channel
-
-        for channel in guild.text_channels:
-            name_norm = _normalize(channel.name)
-            if name_norm == target_norm:
-                return channel
-
-        if target_norm:
-            for channel in guild.text_channels:
-                if target_norm in _normalize(channel.name):
-                    return channel
-
-        for channel in guild.text_channels:
-            if target_cf in channel.name.casefold():
-                return channel
-
         return None
 
     @commands.command(name="annonce", aliases=["annoncestaff", "*annonce", "annonces"])
@@ -252,8 +224,9 @@ class AnnonceCog(commands.Cog):
 
         channel = self._find_announcement_channel(ctx.guild)
         if not channel:
+            channel_label = os.getenv("ANNONCE_CHANNEL_NAME") or DEFAULT_ANNOUNCE_NAME
             await dm.send(
-                f"❌ Canal d'annonces introuvable. Vérifie la variable `ANNONCE_CHANNEL_NAME` (valeur actuelle : {ANNONCE_CHANNEL!r})."
+                f"❌ Canal d'annonces introuvable. Vérifie la variable `ANNONCE_CHANNEL_NAME` (valeur actuelle : {channel_label!r})."
             )
             return
 

@@ -6,14 +6,16 @@ from discord.ext import commands, tasks
 from datetime import datetime
 from collections import defaultdict
 
+from utils.channel_resolver import resolve_text_channel
+
 CHECK_INTERVAL_HOURS = 168  # 1 semaine
 VOTE_DURATION_SECONDS = 300  # 5 minutes
 STAFF_ROLE_NAME = "Staff"
 VALID_MEMBER_ROLE_NAME = "Membre validé d'Evolution"
 INVITE_ROLE_NAME = "Invité"
 VETERAN_ROLE_NAME = "Vétéran"
-STAFF_CHANNEL_NAME = "📊 Général-staff 📊"
-CONSOLE_CHANNEL_NAME = "console"  # <-- canal console, identique à job.py
+STAFF_CHANNEL_NAME = os.getenv("STAFF_CHANNEL_NAME", "📊 Général-staff 📊")
+CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 BOTUP_TAG = "===BOTUP==="         # <-- marqueur spécial pour retrouver le JSON
 MESSAGE_THRESHOLD = 20
 JOINED_THRESHOLD_DAYS = 6 * 30
@@ -51,9 +53,14 @@ class UpCog(commands.Cog):
         # 1) Cherche dans le canal console un message avec "===BOTUP===" et du JSON
         console_channel = None
         for guild in self.bot.guilds:
-            c = discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
-            if c:
-                console_channel = c
+            channel = resolve_text_channel(
+                guild,
+                id_env="CHANNEL_CONSOLE_ID",
+                name_env="CHANNEL_CONSOLE",
+                default_name=CONSOLE_CHANNEL_NAME,
+            )
+            if channel:
+                console_channel = channel
                 break
 
         if console_channel:
@@ -97,9 +104,14 @@ class UpCog(commands.Cog):
         """
         console_channel = None
         for guild in self.bot.guilds:
-            c = discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
-            if c:
-                console_channel = c
+            channel = resolve_text_channel(
+                guild,
+                id_env="CHANNEL_CONSOLE_ID",
+                name_env="CHANNEL_CONSOLE",
+                default_name=CONSOLE_CHANNEL_NAME,
+            )
+            if channel:
+                console_channel = channel
                 break
         if not console_channel:
             print(f"[UpCog] Pas de canal {CONSOLE_CHANNEL_NAME}, impossible d'y sauvegarder la data.")
@@ -191,7 +203,12 @@ class UpCog(commands.Cog):
         et si oui, lance un vote de promotion si pas déjà voté/refusé/promu.
         """
         for guild in self.bot.guilds:
-            staff_channel = discord.utils.get(guild.text_channels, name=STAFF_CHANNEL_NAME)
+            staff_channel = resolve_text_channel(
+                guild,
+                id_env="STAFF_CHANNEL_ID",
+                name_env="STAFF_CHANNEL_NAME",
+                default_name=STAFF_CHANNEL_NAME,
+            )
             if not staff_channel:
                 continue
 

@@ -32,6 +32,7 @@ from models import EventData
 from utils.console_store import ConsoleStore
 from utils.storage import EventStore
 from utils.datetime_utils import parse_french_datetime
+from utils.channel_resolver import resolve_text_channel
 
 __all__ = ["setup"]
 
@@ -367,7 +368,12 @@ class EventConversationCog(commands.Cog):
             return await dm.send(f"❌ Impossible de créer l’événement : {exc.text}")
 
         # --- annonce publique ------------------------------------------- #
-        announce_channel = discord.utils.get(guild.text_channels, name=self.announce_channel_name)
+        announce_channel = resolve_text_channel(
+            guild,
+            id_env="ORGANISATION_CHANNEL_ID",
+            name_env="ORGANISATION_CHANNEL_NAME",
+            default_name=self.announce_channel_name,
+        )
         if announce_channel is None:
             return await dm.send(f"❌ Canal #{self.announce_channel_name} introuvable.")
 

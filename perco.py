@@ -16,12 +16,13 @@ from typing import Dict, Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
+from utils.channel_resolver import resolve_text_channel
 
 log = logging.getLogger(__name__)
 
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-ANNOUNCE_CHANNEL_NAME = os.getenv("ANNONCE_CHANNEL_NAME", "annonces")
-CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
+ANNOUNCE_CHANNEL_FALLBACK = os.getenv("ANNONCE_CHANNEL_NAME") or "📣 annonces 📣"
+CONSOLE_CHANNEL_FALLBACK = os.getenv("CHANNEL_CONSOLE") or "console"
 PERCO_TAG = "===PERCO==="
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -118,9 +119,18 @@ class PercoCog(commands.Cog):
             state = PercoState()
             self.states[guild.id] = state
 
-        channel = discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+        channel = resolve_text_channel(
+            guild,
+            id_env="CHANNEL_CONSOLE_ID",
+            name_env="CHANNEL_CONSOLE",
+            default_name=CONSOLE_CHANNEL_FALLBACK,
+        )
         if not channel:
-            log.info("Salon #%s introuvable sur %s pour charger le statut perco.", CONSOLE_CHANNEL_NAME, guild.name)
+            log.info(
+                "Salon #%s introuvable sur %s pour charger le statut perco.",
+                CONSOLE_CHANNEL_FALLBACK,
+                guild.name,
+            )
             return state
 
         async for msg in channel.history(limit=1000, oldest_first=False):
@@ -178,17 +188,17 @@ class PercoCog(commands.Cog):
         state.updated_by = getattr(user, "id", None)
         state.updated_at = int(time.time())
 
-        announced = await self._announce_status(guild, state)
-        stored = await self._store_status(guild, state)
+        announced_channel = await self._announce_status(guild, state)
+        stored_channel = await self._store_status(guild, state)
         embed = self._build_status_embed(guild, state)
 
         notes: list[str] = []
-        if announced:
-            notes.append(f"Annonce publiée dans #{ANNOUNCE_CHANNEL_NAME}.")
+        if announced_channel:
+            notes.append(f"Annonce publiée dans {announced_channel.mention}.")
         else:
             notes.append("Impossible de publier l'annonce (voir logs).")
-        if stored:
-            notes.append("Statut sauvegardé dans #console.")
+        if stored_channel:
+            notes.append(f"Statut sauvegardé dans {stored_channel.mention}.")
         else:
             notes.append("Statut non sauvegardé dans #console.")
 
@@ -214,11 +224,20 @@ class PercoCog(commands.Cog):
         embed.set_footer(text="Statut des percepteurs")
         return embed
 
-    async def _announce_status(self, guild: discord.Guild, state: PercoState) -> bool:
-        channel = discord.utils.get(guild.text_channels, name=ANNOUNCE_CHANNEL_NAME)
+    async def _announce_status(self, guild: discord.Guild, state: PercoState) -> Optional[discord.TextChannel]:
+        channel = resolve_text_channel(
+            guild,
+            id_env="ANNONCE_CHANNEL_ID",
+            name_env="ANNONCE_CHANNEL_NAME",
+            default_name=ANNOUNCE_CHANNEL_FALLBACK,
+        )
         if not channel:
-            log.warning("Salon #%s introuvable sur %s pour publier le statut perco.", ANNOUNCE_CHANNEL_NAME, guild.name)
-            return False
+            log.warning(
+                "Salon #%s introuvable sur %s pour publier le statut perco.",
+                ANNOUNCE_CHANNEL_FALLBACK,
+                guild.name,
+            )
+            return None
 
         config = STATUS_CONFIG.get(state.status, STATUS_CONFIG["good"])
         embed = discord.Embed(
@@ -248,18 +267,27 @@ class PercoCog(commands.Cog):
                 await channel.send(content=content, embed=embed, file=file)
             else:
                 await channel.send(content=content, embed=embed)
-            return True
+            return channel
         except discord.Forbidden:
             log.warning("Permissions insuffisantes pour envoyer le statut perco dans #%s.", channel.name)
         except discord.HTTPException as exc:
             log.warning("Impossible d'envoyer l'annonce perco: %s", exc)
-        return False
+        return None
 
-    async def _store_status(self, guild: discord.Guild, state: PercoState) -> bool:
-        channel = discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+    async def _store_status(self, guild: discord.Guild, state: PercoState) -> Optional[discord.TextChannel]:
+        channel = resolve_text_channel(
+            guild,
+            id_env="CHANNEL_CONSOLE_ID",
+            name_env="CHANNEL_CONSOLE",
+            default_name=CONSOLE_CHANNEL_FALLBACK,
+        )
         if not channel:
-            log.warning("Salon #%s introuvable sur %s pour sauvegarder le statut perco.", CONSOLE_CHANNEL_NAME, guild.name)
-            return False
+            log.warning(
+                "Salon #%s introuvable sur %s pour sauvegarder le statut perco.",
+                CONSOLE_CHANNEL_FALLBACK,
+                guild.name,
+            )
+            return None
 
         payload = {
             "status": state.status,
@@ -272,22 +300,22 @@ class PercoCog(commands.Cog):
             try:
                 message = await channel.fetch_message(state.console_message_id)
                 await message.edit(content=content)
-                return True
+                return channel
             except (discord.NotFound, discord.Forbidden):
                 state.console_message_id = None
             except discord.HTTPException as exc:
                 log.warning("Échec de mise à jour du message console perco: %s", exc)
-                return False
+                return None
 
         try:
             message = await channel.send(content)
             state.console_message_id = message.id
-            return True
+            return channel
         except discord.Forbidden:
             log.warning("Permissions insuffisantes pour écrire dans #%s.", channel.name)
         except discord.HTTPException as exc:
             log.warning("Impossible d'envoyer le statut perco dans la console: %s", exc)
-        return False
+        return None
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild) -> None:

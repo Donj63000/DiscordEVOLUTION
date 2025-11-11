@@ -1,9 +1,13 @@
+import os
 import discord
 from discord.ext import commands
 import asyncio
 import datetime
 
+from utils.channel_resolver import resolve_text_channel
+
 open_tickets = set()
+TICKET_CHANNEL_FALLBACK = os.getenv("TICKET_CHANNEL_NAME") or "🎫 ticket 🎫"
 
 class TicketView(discord.ui.View):
     def __init__(self, author: discord.User, staff_role_name: str):
@@ -122,11 +126,18 @@ class TicketCog(commands.Cog):
         embed.add_field(name="Demandeur", value=user.display_name, inline=True)
         embed.add_field(name="Statut", value="En attente ⌛", inline=True)
         embed.add_field(name="Contenu du ticket", value=ticket_content, inline=False)
-        ticket_channel = discord.utils.get(ctx.guild.text_channels, name="🎟️ ticket 🎟️")
+        ticket_channel = resolve_text_channel(
+            ctx.guild,
+            id_env="TICKET_CHANNEL_ID",
+            name_env="TICKET_CHANNEL_NAME",
+            default_name=TICKET_CHANNEL_FALLBACK,
+        )
         if ticket_channel is None:
             open_tickets.discard(user.id)
             try:
-                await user.send("❌ Le ticket n'a pu être créé car le salon `#🎟️ ticket 🎟️` est introuvable.")
+                await user.send(
+                    "❌ Le ticket n'a pu être créé car le salon d'assistance est introuvable."
+                )
             except discord.Forbidden:
                 pass
             return
