@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 
 import discord
 
@@ -23,12 +24,17 @@ def _take_digits(value: str | None) -> int | None:
 def _normalize(value: str | None) -> str:
     if not value:
         return ""
-    text = value.strip().lower()
+    filtered = []
+    for char in value:
+        if unicodedata.category(char).startswith("So"):
+            continue
+        filtered.append(char)
+    text = "".join(filtered).strip().lower()
     text = text.replace("’", "'")
     text = re.sub(r"\s+", "-", text)
     text = text.replace("_", "-")
     text = re.sub(r"-{2,}", "-", text)
-    return text
+    return text.strip("-")
 
 
 def resolve_text_channel(

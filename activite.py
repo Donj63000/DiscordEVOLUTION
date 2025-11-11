@@ -18,6 +18,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from datetime import datetime, timedelta, date
+from utils.channel_resolver import resolve_text_channel
 
 # Import d'un module externe "calendrier" contenant la fonction gen_cal
 from calendrier import gen_cal, MONTH_NAMES_FR
@@ -26,8 +27,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Noms de canaux / rôles
-ORGA_CHANNEL_NAME = "🌈 organisation 🌈"
-CONSOLE_CHANNEL_NAME = "console"
+ORGANISATION_CHANNEL_FALLBACK = os.getenv("ORGANISATION_CHANNEL_NAME", "organisation")
+CONSOLE_CHANNEL_FALLBACK = os.getenv("CHANNEL_CONSOLE", "console")
 VALIDATED_ROLE_NAME = "Membre validé d'Evolution"
 
 # Fichier de persistance
@@ -325,6 +326,22 @@ class ActiviteCog(commands.Cog):
         self.liste_message_map = {}
         self.single_event_msg_map = {}
 
+    def _resolve_console_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
+        return resolve_text_channel(
+            guild,
+            id_env="CHANNEL_CONSOLE_ID",
+            name_env="CHANNEL_CONSOLE",
+            default_name=CONSOLE_CHANNEL_FALLBACK,
+        )
+
+    def _resolve_organisation_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
+        return resolve_text_channel(
+            guild,
+            id_env="ORGANISATION_CHANNEL_ID",
+            name_env="ORGANISATION_CHANNEL_NAME",
+            default_name=ORGANISATION_CHANNEL_FALLBACK,
+        )
+
     async def cog_load(self):
         """Chargement asynchrone du Cog."""
         await self.initialize_data()
@@ -348,7 +365,12 @@ class ActiviteCog(commands.Cog):
             logger.info("Pas de fichier local trouvé, on part sur des données vierges.")
 
         # 2) Chercher éventuellement dans le channel console pour un message plus récent
-        console_channel = discord.utils.get(self.bot.get_all_channels(), name=CONSOLE_CHANNEL_NAME)
+        console_channel = None
+        for guild in self.bot.guilds:
+            candidate = self._resolve_console_channel(guild)
+            if candidate:
+                console_channel = candidate
+                break
         if console_channel:
             # On va scroller l'historique en commençant par le plus récent
             async for msg in console_channel.history(limit=1000, oldest_first=False):
@@ -361,7 +383,10 @@ class ActiviteCog(commands.Cog):
                                     file_bytes = await att.read()
                                     data_loaded = json.loads(file_bytes.decode("utf-8"))
                                     self.activities_data = data_loaded
-                                    logger.info(f"Données surchargées depuis un fichier joint JSON dans {CONSOLE_CHANNEL_NAME}.")
+                                    logger.info(
+                                        "Données surchargées depuis un fichier joint JSON dans %s.",
+                                        console_channel.name,
+                                    )
                                     raise StopAsyncIteration  # On force la sortie
                                 except Exception as ex:
                                     logger.warning(f"Impossible de parser le fichier JSON joint : {ex}")
@@ -374,12 +399,22 @@ class ActiviteCog(commands.Cog):
                             raw_json = msg.content[start_idx:end_idx]
                             data_loaded = json.loads(raw_json)
                             self.activities_data = data_loaded
-                            logger.info(f"Données surchargées depuis {CONSOLE_CHANNEL_NAME} (bloc texte JSON).")
+                            logger.info(
+                                "Données surchargées depuis %s (bloc texte JSON).",
+                                console_channel.name,
+                            )
                             raise StopAsyncIteration
                         except Exception as e:
-                            logger.warning(f"Impossible de parser le JSON {CONSOLE_CHANNEL_NAME} inline: {e}")
+                            logger.warning(
+                                "Impossible de parser le JSON %s inline: %s",
+                                console_channel.name,
+                                e,
+                            )
         else:
-            logger.info(f"Channel {CONSOLE_CHANNEL_NAME} introuvable, on reste sur le fichier local.")
+            logger.info(
+                "Channel %s introuvable, on reste sur le fichier local.",
+                CONSOLE_CHANNEL_FALLBACK,
+            )
 
         # Si on arrive ici sans StopAsyncIteration, c'est qu’on n’a pas trouvé de JSON plus récent
         self.initialized = True
@@ -411,14 +446,14 @@ class ActiviteCog(commands.Cog):
         Envoie les données dans le channel console, après une opération critique.
         Les données peuvent être trop volumineuses => on envoie un fichier joint.
         """
-        console_channel = discord.utils.get(ctx.guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+        console_channel = self._resolve_console_channel(ctx.guild)
         if not console_channel:
             return
         await self._dump_data(console_channel)
 
     async def dump_data_to_console_no_ctx(self, guild: discord.Guild):
         """Variante sans ctx, ex. depuis la boucle asynchrone."""
-        console_channel = discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+        console_channel = self._resolve_console_channel(guild)
         if not console_channel:
             return
         await self._dump_data(console_channel)
@@ -436,7 +471,7 @@ class ActiviteCog(commands.Cog):
                 with open(temp_file_path, "w", encoding="utf-8") as tmp:
                     tmp.write(data_str)
             except Exception as ex:
-                logger.warning(f"Erreur création du fichier temp {CONSOLE_CHANNEL_NAME}: {ex}")
+                logger.warning(f"Erreur création du fichier temp {CONSOLE_CHANNEL_FALLBACK}: {ex}")
                 return
 
             await console_channel.send(
@@ -453,7 +488,12 @@ class ActiviteCog(commands.Cog):
             return
 
         now = datetime.now()
-        org_channel = discord.utils.get(self.bot.get_all_channels(), name=ORGA_CHANNEL_NAME)
+        org_channel = None
+        for guild in self.bot.guilds:
+            candidate = self._resolve_organisation_channel(guild)
+            if candidate:
+                org_channel = candidate
+                break
         if not org_channel:
             return
 
@@ -629,7 +669,7 @@ class ActiviteCog(commands.Cog):
         em.add_field(name="ID", value=event_id, inline=True)
         await ctx.send(embed=em)
 
-        org_chan = discord.utils.get(guild.text_channels, name=ORGA_CHANNEL_NAME)
+        org_chan = self._resolve_organisation_channel(guild)
         if org_chan:
             val_role = discord.utils.get(guild.roles, name=VALIDATED_ROLE_NAME)
             mention = f"<@&{val_role.id}>" if val_role else "@everyone"
