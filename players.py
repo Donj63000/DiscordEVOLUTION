@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 from utils.channel_resolver import resolve_text_channel
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "players_data.json")
+DATA_FILE_NAME = "players_data.json"
 CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 CONSOLE_CHANNEL_ID = os.getenv("CHANNEL_CONSOLE_ID")
 PLAYERS_MARKER = "===PLAYERSDATA==="
@@ -109,7 +110,7 @@ class PlayersCog(commands.Cog):
                     print(f"[DEBUG] Impossible de supprimer l'ancien snapshot console : {exc}")
             sent_message = await console_channel.send(
                 f"{PLAYERS_MARKER} (fichier)",
-                file=discord.File(fp=temp_file_path, filename="players_data.json")
+                file=discord.File(fp=temp_file_path, filename=DATA_FILE_NAME)
             )
             self.console_message_id = sent_message.id
 
@@ -146,29 +147,48 @@ class PlayersCog(commands.Cog):
         return None
 
     async def _load_data_from_console(self, console_channel: discord.TextChannel) -> bool:
-        async for msg in console_channel.history(limit=1000):
-            if msg.author != self.bot.user:
+        try:
+            pinned_messages = await console_channel.pins()
+        except Exception:
+            pinned_messages = []
+        candidates: List[discord.Message] = []
+        seen_ids = set()
+        for message in pinned_messages:
+            if message.id not in seen_ids:
+                candidates.append(message)
+                seen_ids.add(message.id)
+        async for message in console_channel.history(limit=1000, oldest_first=False):
+            if message.id not in seen_ids:
+                candidates.append(message)
+                seen_ids.add(message.id)
+        for message in candidates:
+            if message.author != self.bot.user:
                 continue
-            if PLAYERS_MARKER in msg.content:
-                data = self._extract_json_from_message(msg.content)
-                if data is not None:
+            content = message.content or ""
+            has_marker = PLAYERS_MARKER in content
+            has_file = any(att.filename == DATA_FILE_NAME for att in message.attachments)
+            if not (has_marker or has_file):
+                continue
+            for attachment in message.attachments:
+                if attachment.filename != DATA_FILE_NAME:
+                    continue
+                try:
+                    raw = await attachment.read()
+                    data = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    print(f"[DEBUG] Erreur lors du parsing JSON joint depuis {CONSOLE_CHANNEL_NAME}: {exc}")
+                    continue
+                if self._looks_like_players_data(data):
                     self.persos_data = data
-                    self.console_message_id = msg.id
-                    print(f"[DEBUG] Données récupérées depuis le salon #{CONSOLE_CHANNEL_NAME}.")
-                    return True
-            if msg.attachments:
-                for attachment in msg.attachments:
-                    if not attachment.filename.lower().endswith(".json"):
-                        continue
-                    try:
-                        raw = await attachment.read()
-                        data = json.loads(raw.decode("utf-8"))
-                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                        print(f"[DEBUG] Erreur lors du parsing JSON joint depuis {CONSOLE_CHANNEL_NAME}: {exc}")
-                        continue
-                    self.persos_data = data
-                    self.console_message_id = msg.id
+                    self.console_message_id = message.id
                     print(f"[DEBUG] Données récupérées depuis le fichier joint dans #{CONSOLE_CHANNEL_NAME}.")
+                    return True
+            if "```json" in content:
+                data = self._extract_json_from_message(content)
+                if data is not None and self._looks_like_players_data(data):
+                    self.persos_data = data
+                    self.console_message_id = message.id
+                    print(f"[DEBUG] Données récupérées depuis le salon #{CONSOLE_CHANNEL_NAME}.")
                     return True
         return False
 
@@ -187,6 +207,26 @@ class PlayersCog(commands.Cog):
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"[DEBUG] Erreur lors du parsing JSON depuis {CONSOLE_CHANNEL_NAME}: {exc}")
             return None
+
+    def _looks_like_players_data(self, data: dict) -> bool:
+        if not isinstance(data, dict) or not data:
+            return False
+        forbidden = {
+            "messages",
+            "edits",
+            "deletions",
+            "reactions_added",
+            "reactions_removed",
+            "voice",
+            "presence",
+            "logs",
+        }
+        if any(key in data for key in forbidden):
+            return False
+        for value in data.values():
+            if isinstance(value, dict) and any(k in value for k in ("discord_name", "main", "mules")):
+                return True
+        return False
 
     async def _get_console_snapshot(self, console_channel: discord.TextChannel) -> Optional[discord.Message]:
         if self.console_message_id:
@@ -434,13 +474,13 @@ class PlayersCog(commands.Cog):
     @membre_group.command(name="liste")
     async def membre_liste(self, ctx: commands.Context):
         await self._ensure_initialized()
-        if not self.persos_data:
+        filtered_ids = [uid for uid in self.persos_data if uid.isdigit()]
+        if not filtered_ids:
             await ctx.send("Aucun joueur enregistré.")
             return
-        all_keys = list(self.persos_data.keys())
-        all_keys.sort(key=lambda k: self.persos_data[k].get("discord_name", "").lower())
+        filtered_ids.sort(key=lambda k: self.persos_data[k].get("discord_name", "").lower())
         embed_count = 0
-        for chunk in chunk_list(all_keys, 25):
+        for chunk in chunk_list(filtered_ids, 25):
             embed_count += 1
             embed = discord.Embed(
                 title=f"Liste des joueurs (partie {embed_count})",
@@ -468,7 +508,7 @@ class PlayersCog(commands.Cog):
             await ctx.send(embed=embed)
 
         await ctx.send(
-            f"{len(self.persos_data)} joueur(s) au total. Utilisez `!membre <pseudo>` pour une fiche détaillée."
+            f"{len(filtered_ids)} joueur(s) au total. Utilisez `!membre <pseudo>` pour une fiche détaillée."
         )
 
     async def _afficher_membre_joueur_embed(self, ctx: commands.Context, user_id: str, user_name: str):
