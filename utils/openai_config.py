@@ -44,6 +44,11 @@ def resolve_staff_model(default: str = "gpt-4o-mini") -> str:
         "gpt5": "gpt-5",
         "gpt-5.0": "gpt-5",
         "gpt-5": "gpt-5",
+        "gpt5-mini": "gpt-5-mini",
+        "gpt-5-mini": "gpt-5-mini",
+        "gpt-5m": "gpt-5-mini",
+        "gpt5m": "gpt-5-mini",
+        "mini-5": "gpt-5-mini",
     }
     return resolve_openai_model("OPENAI_STAFF_MODEL", default, aliases)
 
