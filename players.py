@@ -8,10 +8,13 @@ import discord
 from discord.ext import commands
 from typing import Dict, List, Optional, Tuple
 
+from utils.channel_resolver import resolve_text_channel
+
 DATA_FILE = os.path.join(os.path.dirname(__file__), "players_data.json")
 CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 CONSOLE_CHANNEL_ID = os.getenv("CHANNEL_CONSOLE_ID")
 PLAYERS_MARKER = "===PLAYERSDATA==="
+RECRUITMENT_CHANNEL_FALLBACK = os.getenv("RECRUTEMENT_CHANNEL_NAME") or "📋 Recrutement 📋"
 
 def charger_donnees() -> Dict[str, dict]:
     print(f"[DEBUG] Chemin absolu du fichier JSON : {DATA_FILE}")
@@ -218,7 +221,12 @@ class PlayersCog(commands.Cog):
             stored_name = self.persos_data[member_id].get("discord_name", member.display_name)
             del self.persos_data[member_id]
             await self.dump_data_to_console()
-            recruitment_channel = discord.utils.get(member.guild.text_channels, name="📥 Recrutement 📥")
+            recruitment_channel = resolve_text_channel(
+                member.guild,
+                id_env="RECRUTEMENT_CHANNEL_ID",
+                name_env="RECRUTEMENT_CHANNEL_NAME",
+                default_name=RECRUITMENT_CHANNEL_FALLBACK,
+            )
             if recruitment_channel:
                 await recruitment_channel.send(
                     f"Le membre **{stored_name}** a quitté le serveur. Sa fiche a été supprimée."

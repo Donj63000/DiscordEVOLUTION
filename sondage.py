@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 import os
 import random
 
+from utils.channel_resolver import resolve_text_channel
+
 ALPHABET_EMOJIS = [
     "🇦", "🇧", "🇨", "🇩", "🇪", "🇫", "🇬", "🇭", "🇮",
     "🇯", "🇰", "🇱", "🇲", "🇳", "🇴", "🇵", "🇶", "🇷",
@@ -11,7 +13,7 @@ ALPHABET_EMOJIS = [
 ]
 
 POLL_STORAGE = {}
-ANNONCE_CHANNEL_NAME = os.getenv("ANNONCE_CHANNEL_NAME", "annonces")
+ANNONCE_CHANNEL_FALLBACK = os.getenv("ANNONCE_CHANNEL_NAME") or "📣 annonces 📣"
 
 
 def random_pastel_color() -> int:
@@ -92,9 +94,14 @@ class SondageCog(commands.Cog):
             end_time_msg = f"Fin prévue : {end_time_val.strftime('%d/%m/%Y %H:%M')}"
         embed.add_field(name="⏳ Fin du sondage", value=end_time_msg, inline=False)
         embed.set_footer(text=f"ID du message (pour !close_sondage) : {ctx.message.id}")
-        annonce_channel = discord.utils.get(ctx.guild.text_channels, name=ANNONCE_CHANNEL_NAME)
+        annonce_channel = resolve_text_channel(
+            ctx.guild,
+            id_env="ANNONCE_CHANNEL_ID",
+            name_env="ANNONCE_CHANNEL_NAME",
+            default_name=ANNONCE_CHANNEL_FALLBACK,
+        )
         if not annonce_channel:
-            await ctx.send(f"Le canal #{ANNONCE_CHANNEL_NAME} est introuvable.")
+            await ctx.send("Le canal d'annonces est introuvable. Vérifie ANNONCE_CHANNEL_ID ou ANNONCE_CHANNEL_NAME.")
             return
         sondage_message = await annonce_channel.send("@everyone Nouveau sondage :", embed=embed)
         for i in range(len(choices)):

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
 import discord
 from discord.ext import commands
 from datetime import datetime
+
+from utils.channel_resolver import resolve_text_channel
+
+WELCOME_CHANNEL_FALLBACK = os.getenv("WELCOME_CHANNEL_NAME") or "🛫 Bienvenue 🛫"
 
 class EntreeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -14,7 +19,12 @@ class EntreeCog(commands.Cog):
         if member.bot:
             return
 
-        bienvenue_channel = discord.utils.get(member.guild.text_channels, name="🛫 Bienvenue 🛫")
+        bienvenue_channel = resolve_text_channel(
+            member.guild,
+            id_env="WELCOME_CHANNEL_ID",
+            name_env="WELCOME_CHANNEL_NAME",
+            default_name=WELCOME_CHANNEL_FALLBACK,
+        )
         if not bienvenue_channel:
             print("[DEBUG] Le canal '🛫 Bienvenue 🛫' est introuvable.")
             return
@@ -38,7 +48,12 @@ class EntreeCog(commands.Cog):
         if member.bot:
             return
 
-        bienvenue_channel = discord.utils.get(member.guild.text_channels, name="🛫 Bienvenue 🛫")
+        bienvenue_channel = resolve_text_channel(
+            member.guild,
+            id_env="WELCOME_CHANNEL_ID",
+            name_env="WELCOME_CHANNEL_NAME",
+            default_name=WELCOME_CHANNEL_FALLBACK,
+        )
         if not bienvenue_channel:
             print("[DEBUG] Le canal '🛫 Bienvenue 🛫' est introuvable.")
             return
