@@ -8,6 +8,8 @@ import os
 from discord.ext import commands
 from datetime import datetime
 
+from utils.channel_resolver import resolve_text_channel
+
 # Constantes de configuration (noms des rôles / salons et délais)
 INVITES_ROLE_NAME = "Invités"
 VALIDATED_ROLE_NAME = "Membre validé d'Evolution"
@@ -217,7 +219,12 @@ class WelcomeCog(commands.Cog):
         else:
             print("[WARNING] PlayersCog introuvable, pas d'inscription auto.")
 
-        general_channel = discord.utils.get(member.guild.text_channels, name=GENERAL_CHANNEL_NAME)
+        general_channel = resolve_text_channel(
+            member.guild,
+            id_env="GENERAL_CHANNEL_ID",
+            name_env="GENERAL_CHANNEL_NAME",
+            default_name=GENERAL_CHANNEL_NAME,
+        )
         if general_channel:
             annonce_msg_general = (
                 f"🔥 **Nouvelle recrue en approche** ! 🔥\n\n"
@@ -230,7 +237,12 @@ class WelcomeCog(commands.Cog):
         else:
             print(f"[DEBUG] Canal '{GENERAL_CHANNEL_NAME}' introuvable.")
 
-        recruitment_channel = discord.utils.get(member.guild.text_channels, name=RECRUITMENT_CHANNEL_NAME)
+        recruitment_channel = resolve_text_channel(
+            member.guild,
+            id_env="RECRUITMENT_CHANNEL_ID",
+            name_env="RECRUITMENT_CHANNEL_NAME",
+            default_name=RECRUITMENT_CHANNEL_NAME,
+        )
         if recruitment_channel:
             if recruiter_pseudo.lower() == "non":
                 recruiter_info = "n’a pas indiqué de recruteur"
@@ -245,8 +257,18 @@ class WelcomeCog(commands.Cog):
             print(f"[DEBUG] Canal '{RECRUITMENT_CHANNEL_NAME}' introuvable.")
 
     async def fallback_public_greeting(self, member: discord.Member):
-        general_channel = discord.utils.get(member.guild.text_channels, name=GENERAL_CHANNEL_NAME)
-        welcome_channel = discord.utils.get(member.guild.text_channels, name=WELCOME_CHANNEL_NAME)
+        general_channel = resolve_text_channel(
+            member.guild,
+            id_env="GENERAL_CHANNEL_ID",
+            name_env="GENERAL_CHANNEL_NAME",
+            default_name=GENERAL_CHANNEL_NAME,
+        )
+        welcome_channel = resolve_text_channel(
+            member.guild,
+            id_env="WELCOME_CHANNEL_ID",
+            name_env="WELCOME_CHANNEL_NAME",
+            default_name=WELCOME_CHANNEL_NAME,
+        )
         if general_channel:
             extra = f" Passe sur {welcome_channel.mention} pour plus d'informations." if welcome_channel else ""
             await general_channel.send(

@@ -15,6 +15,7 @@ CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 CONSOLE_CHANNEL_ID = os.getenv("CHANNEL_CONSOLE_ID")
 PLAYERS_MARKER = "===PLAYERSDATA==="
 RECRUITMENT_CHANNEL_FALLBACK = os.getenv("RECRUTEMENT_CHANNEL_NAME") or "📋 Recrutement 📋"
+NOT_REGISTERED_MESSAGE = "Vous n'êtes pas encore enregistré. Faites `!membre principal <NomPerso>` d'abord."
 
 def charger_donnees() -> Dict[str, dict]:
     print(f"[DEBUG] Chemin absolu du fichier JSON : {DATA_FILE}")
@@ -383,7 +384,8 @@ class PlayersCog(commands.Cog):
                 "mules": []
             }
         mules_list = self.persos_data[author_id].get("mules", [])
-        if nom_mule in mules_list:
+        existing = {mule.lower() for mule in mules_list if isinstance(mule, str)}
+        if nom_mule.lower() in existing:
             await ctx.send(f"La mule **{nom_mule}** est déjà enregistrée.")
             return
         mules_list.append(nom_mule)
@@ -401,16 +403,21 @@ class PlayersCog(commands.Cog):
         author_name = ctx.author.display_name
         self._verifier_et_fusionner_id(author_id, author_name)
         if author_id not in self.persos_data:
-            await ctx.send("Vous n'êtes pas encore enregistré.")
+            await ctx.send(NOT_REGISTERED_MESSAGE)
             return
         mules_list = self.persos_data[author_id].get("mules", [])
-        if nom_mule not in mules_list:
+        index_to_remove = None
+        for idx, mule in enumerate(mules_list):
+            if isinstance(mule, str) and mule.lower() == nom_mule.lower():
+                index_to_remove = idx
+                break
+        if index_to_remove is None:
             await ctx.send(f"La mule **{nom_mule}** n'est pas dans votre liste.")
             return
-        mules_list.remove(nom_mule)
+        removed_mule = mules_list.pop(index_to_remove)
         self.persos_data[author_id]["mules"] = mules_list
         await self.dump_data_to_console(ctx)
-        await ctx.send(f"La mule **{nom_mule}** a été retirée de votre liste.")
+        await ctx.send(f"La mule **{removed_mule}** a été retirée de votre liste.")
 
     @membre_group.command(name="moi")
     async def membre_moi(self, ctx: commands.Context):
@@ -419,7 +426,7 @@ class PlayersCog(commands.Cog):
         author_name = ctx.author.display_name
         self._verifier_et_fusionner_id(author_id, author_name)
         if author_id not in self.persos_data:
-            await ctx.send("Vous n'êtes pas encore enregistré. Faites `!membre principal <NomPerso>` d'abord.")
+            await ctx.send(NOT_REGISTERED_MESSAGE)
             return
         data = self.persos_data[author_id]
         await self._envoyer_fiche_embed(ctx, author_id, author_name, data)
