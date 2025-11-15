@@ -10,7 +10,9 @@ from typing import Dict, List, Optional, Tuple
 
 from utils.channel_resolver import resolve_text_channel
 
-DATA_FILE = os.path.join(os.path.dirname(__file__), "players_data.json")
+DATA_ROOT = os.path.dirname(__file__)
+DATA_FILE = os.path.join(DATA_ROOT, "players_data.json")
+LEGACY_DATA_FILE = os.path.join(DATA_ROOT, "data", "players_data.json")
 DATA_FILE_NAME = "players_data.json"
 CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 CONSOLE_CHANNEL_ID = os.getenv("CHANNEL_CONSOLE_ID")
@@ -18,19 +20,35 @@ PLAYERS_MARKER = "===PLAYERSDATA==="
 RECRUITMENT_CHANNEL_FALLBACK = os.getenv("RECRUTEMENT_CHANNEL_NAME") or "📋 Recrutement 📋"
 NOT_REGISTERED_MESSAGE = "Vous n'êtes pas encore enregistré. Faites `!membre principal <NomPerso>` d'abord."
 
+def _load_json_candidate(path: str) -> Optional[Dict[str, dict]]:
+    if not os.path.exists(path):
+        print(f"[DEBUG] Fichier JSON introuvable : {path}")
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[DEBUG] Erreur lors de la lecture du JSON {path} : {e}")
+        return None
+    if not isinstance(data, dict):
+        print(f"[DEBUG] Format inattendu pour {path}.")
+        return None
+    print(f"[DEBUG] {len(data)} enregistrements chargés depuis {path}")
+    return data
+
+
 def charger_donnees() -> Dict[str, dict]:
     print(f"[DEBUG] Chemin absolu du fichier JSON : {DATA_FILE}")
-    if not os.path.exists(DATA_FILE):
-        print("[DEBUG] Le fichier JSON n'existe pas. On retourne un dict vide.")
-        return {}
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            print(f"[DEBUG] {len(data)} enregistrements chargés depuis {DATA_FILE}")
-            return data
-    except (json.JSONDecodeError, OSError) as e:
-        print(f"[DEBUG] Erreur lors de la lecture du JSON : {e}")
-        return {}
+    for candidate in (DATA_FILE, LEGACY_DATA_FILE):
+        data = _load_json_candidate(candidate)
+        if data is None:
+            continue
+        if candidate != DATA_FILE and not os.path.exists(DATA_FILE):
+            sauvegarder_donnees(data)
+            print(f"[DEBUG] Données migrées depuis {candidate}")
+        return data
+    print("[DEBUG] Aucun fichier JSON valide trouvé. On retourne un dict vide.")
+    return {}
 
 def sauvegarder_donnees(data: Dict[str, dict]):
     print(f"[DEBUG] Sauvegarde de {len(data)} enregistrements dans {DATA_FILE}")
@@ -40,6 +58,18 @@ def sauvegarder_donnees(data: Dict[str, dict]):
 def chunk_list(lst, chunk_size=25):
     for i in range(0, len(lst), chunk_size):
         yield lst[i : i + chunk_size]
+
+
+def _parse_channel_id(raw_value: Optional[str]) -> Optional[int]:
+    if not raw_value:
+        return None
+    digits = "".join(ch for ch in raw_value if ch.isdigit())
+    if not digits:
+        return None
+    try:
+        return int(digits)
+    except ValueError:
+        return None
 
 class PlayersCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -122,28 +152,29 @@ class PlayersCog(commands.Cog):
 
     async def _resolve_console_channel(self, guild: Optional[discord.Guild] = None) -> Optional[discord.TextChannel]:
         channel: Optional[discord.abc.GuildChannel] = None
-        if CONSOLE_CHANNEL_ID:
-            try:
-                channel_id = int(CONSOLE_CHANNEL_ID)
-            except ValueError:
-                print(f"[DEBUG] CHANNEL_CONSOLE_ID invalide : {CONSOLE_CHANNEL_ID}")
-            else:
-                channel = self.bot.get_channel(channel_id)
-                if channel is None:
-                    try:
-                        channel = await self.bot.fetch_channel(channel_id)
-                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                        channel = None
-                if isinstance(channel, discord.TextChannel):
-                    return channel
+        channel_id = _parse_channel_id(CONSOLE_CHANNEL_ID)
+        if channel_id:
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                try:
+                    channel = await self.bot.fetch_channel(channel_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    channel = None
+            if isinstance(channel, discord.TextChannel):
+                return channel
         target_guilds: List[discord.Guild] = []
         if guild:
             target_guilds.append(guild)
         target_guilds.extend(g for g in self.bot.guilds if g not in target_guilds)
         for g in target_guilds:
-            channel = discord.utils.get(g.text_channels, name=CONSOLE_CHANNEL_NAME)
-            if channel:
-                return channel
+            resolved = resolve_text_channel(
+                g,
+                id_env="CHANNEL_CONSOLE_ID",
+                name_env="CHANNEL_CONSOLE",
+                default_name=CONSOLE_CHANNEL_NAME,
+            )
+            if resolved:
+                return resolved
         return None
 
     async def _load_data_from_console(self, console_channel: discord.TextChannel) -> bool:
