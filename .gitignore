@@ -19,5 +19,6 @@ welcome_data.json
 # Encryption key
 secret.key
 
+.env
 __pycache__/
 tests/__pycache__/
