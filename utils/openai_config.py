@@ -5,7 +5,10 @@
 from __future__ import annotations
 
 import os
+import logging
 from typing import Any, Mapping
+
+log = logging.getLogger(__name__)
 
 
 def _clean_env(value: str, prefixes: tuple[str, ...] | None = None) -> str:
@@ -24,6 +27,10 @@ def _normalise_model_name(value: str) -> str:
     """Lowercase the model id and standardise separators."""
     lowered = value.strip().lower()
     return lowered.replace(' ', '-').replace('_', '-').replace('--', '-')
+
+
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def resolve_openai_model(env_var: str, default: str, aliases: Mapping[str, str] | None = None) -> str:
@@ -65,7 +72,13 @@ def build_async_openai_client(client_cls: Any, *, timeout: float | None = None) 
     kwargs: dict[str, Any] = {"api_key": api_key}
     if project:
         kwargs["project"] = project
-    if organization:
+    use_org = organization and _truthy(os.getenv("OPENAI_FORCE_ORG"))
+    if organization and not use_org:
+        log.debug(
+            "OPENAI_ORG_ID/OPENAI_ORGANIZATION provided but ignored. "
+            "Set OPENAI_FORCE_ORG=1 to force the header when needed."
+        )
+    if use_org:
         kwargs["organization"] = organization
     if base_url:
         kwargs["base_url"] = base_url

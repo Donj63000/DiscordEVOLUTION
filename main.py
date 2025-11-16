@@ -114,6 +114,7 @@ class EvoBot(commands.Bot):
             "ia",
             "activite",
             "ticket",
+            "music",
             "players",
             "sondage",
             "stats",
@@ -125,6 +126,7 @@ class EvoBot(commands.Bot):
             "moderation",
             "annonce",
             "perco",
+            "avis",
         ]
 
         for ext in base_exts:

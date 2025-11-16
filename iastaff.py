@@ -4,10 +4,10 @@
 import os
 import logging
 import asyncio
-from datetime import time as datetime_time
+from datetime import datetime, time as datetime_time
 import discord
 from discord.ext import commands, tasks
-from utils.openai_config import build_async_openai_client, resolve_staff_model
+from utils.openai_config import build_async_openai_client, resolve_openai_model, resolve_staff_model
 
 try:
     from zoneinfo import ZoneInfo
@@ -39,6 +39,45 @@ ENABLE_WEB_SEARCH = os.getenv("IASTAFF_ENABLE_WEB", "1") != "0"
 VECTOR_STORE_ID = os.getenv("IASTAFF_VECTOR_STORE_ID", "").strip()
 
 LOGO_FILENAME = os.getenv("IASTAFF_LOGO", "iastaff.png")
+DEFAULT_GENERAL_CHANNEL_NAME = "📑𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥📑"
+
+FRENCH_WEEKDAYS = [
+    "lundi",
+    "mardi",
+    "mercredi",
+    "jeudi",
+    "vendredi",
+    "samedi",
+    "dimanche",
+]
+
+FRENCH_MONTHS = [
+    "janvier",
+    "février",
+    "mars",
+    "avril",
+    "mai",
+    "juin",
+    "juillet",
+    "août",
+    "septembre",
+    "octobre",
+    "novembre",
+    "décembre",
+]
+
+DEFAULT_MORNING_SYSTEM_PROMPT = (
+    "Tu es EvoBot, le messager officiel de la guilde Evolution sur Discord. "
+    "Chaque matin, tu écris en français un court message chaleureux et motivant, sans ping ni hashtag."
+)
+
+DEFAULT_MORNING_USER_PROMPT = (
+    "Nous sommes {long_date} ({iso_date}). "
+    "Rédige un unique message de bonjour pour le canal {channel_name} de la guilde Evolution. "
+    "Mentionne un détail contextuel sur la journée (météo imaginaire, énergie, objectif ludique, inspiration), "
+    "mets en avant l'esprit d'équipe puis termine par un encouragement adapté au jour ({weekday_cap}). "
+    "Ne dépasse pas trois phrases et n'utilise pas exactement la même tournure que le message précédent : {previous_message}."
+)
 
 def _normalize_channel_name(value: str) -> str:
     return "".join(ch for ch in value.lower() if ch.isalnum())
@@ -293,19 +332,34 @@ class IAStaff(commands.Cog):
         self.has_logo = os.path.exists(self.logo_path)
         raw_ids = os.getenv("IASTAFF_MORNING_CHANNEL_IDS", "")
         self.morning_channel_ids = _parse_id_list(raw_ids)
-        raw_names = os.getenv("IASTAFF_MORNING_CHANNEL_NAMES", "📄 Général 📄,général,general")
+        raw_names = os.getenv(
+            "IASTAFF_MORNING_CHANNEL_NAMES",
+            f"{DEFAULT_GENERAL_CHANNEL_NAME},📄 Général 📄,général,general",
+        )
         self.morning_channel_names = [name.strip() for name in raw_names.split(",") if name.strip()]
         self._morning_name_tokens = {
             token
             for token in (_normalize_channel_name(name) for name in self.morning_channel_names)
             if token
         }
+        self.primary_morning_channel_name = self.morning_channel_names[0] if self.morning_channel_names else DEFAULT_GENERAL_CHANNEL_NAME
         self.morning_message = os.getenv(
             "IASTAFF_MORNING_MESSAGE",
             "Bonjour à tous les membres de la guilde Evolution ! Passez une excellente journée ☀️",
         ).strip()
         if not self.morning_message:
             self.morning_message = "Bonjour à tous les membres de la guilde Evolution ! Passez une excellente journée ☀️"
+        self.morning_model = resolve_openai_model("IASTAFF_MORNING_MODEL", "gpt-5-mini")
+        self.morning_temperature = float(os.getenv("IASTAFF_MORNING_TEMPERATURE", "0.75"))
+        self.morning_max_tokens = int(os.getenv("IASTAFF_MORNING_MAX_TOKENS", "450"))
+        self.morning_system_prompt = os.getenv(
+            "IASTAFF_MORNING_SYSTEM_PROMPT", DEFAULT_MORNING_SYSTEM_PROMPT
+        ).strip() or DEFAULT_MORNING_SYSTEM_PROMPT
+        self.morning_user_prompt = os.getenv(
+            "IASTAFF_MORNING_USER_PROMPT", DEFAULT_MORNING_USER_PROMPT
+        ).strip() or DEFAULT_MORNING_USER_PROMPT
+        self._last_morning_content: str | None = None
+        self._last_morning_date: str | None = None
 
     def _ensure_client(self) -> bool:
         if self.client is not None:
@@ -366,11 +420,73 @@ class IAStaff(commands.Cog):
                         seen.add(channel.id)
         return channels
 
+    def _current_morning_datetime(self) -> datetime:
+        if MORNING_TIMEZONE is not None:
+            return datetime.now(tz=MORNING_TIMEZONE)
+        return datetime.now()
+
+    def _render_morning_prompt(self, now: datetime) -> str:
+        weekday = FRENCH_WEEKDAYS[now.weekday()]
+        month = FRENCH_MONTHS[now.month - 1]
+        long_date = f"{weekday.capitalize()} {now.day:02d} {month} {now.year}"
+        iso_date = now.date().isoformat()
+        return self.morning_user_prompt.format(
+            long_date=long_date,
+            weekday=weekday,
+            weekday_cap=weekday.capitalize(),
+            day=f"{now.day:02d}",
+            month=month,
+            month_cap=month.capitalize(),
+            year=str(now.year),
+            iso_date=iso_date,
+            previous_message=self._last_morning_content or "",
+            channel_name=self.primary_morning_channel_name,
+        )
+
+    async def _generate_morning_message(self) -> str:
+        if not self._ensure_client():
+            return ""
+        now = self._current_morning_datetime()
+        today_key = now.date().isoformat()
+        prompt = self._render_morning_prompt(now).strip()
+        if not prompt:
+            return ""
+        messages = [
+            {"role": "system", "content": [{"type": "input_text", "text": self.morning_system_prompt}]},
+            {"role": "user", "content": [{"type": "input_text", "text": prompt}]},
+        ]
+        req = {
+            "model": self.morning_model,
+            "input": messages,
+            "max_output_tokens": self.morning_max_tokens,
+            "store": False,
+            "temperature": self.morning_temperature,
+        }
+        for attempt in range(3):
+            try:
+                resp = await self.client.responses.create(**req)
+            except Exception as exc:
+                log.warning("IAStaff: génération du message du matin échouée (tentative %d): %s", attempt + 1, exc)
+                await asyncio.sleep(2)
+                continue
+            text = extract_generated_text(resp).strip()
+            if not text:
+                continue
+            if self._last_morning_content and text == self._last_morning_content and attempt < 2:
+                req["temperature"] = min(1.2, req.get("temperature", self.morning_temperature) + 0.1)
+                continue
+            self._last_morning_content = text
+            self._last_morning_date = today_key
+            return text
+        return ""
+
     @tasks.loop(time=MORNING_TRIGGER_TIME)
     async def morning_greeting(self):
         if not self.bot.is_ready():
             return
-        message = self.morning_message
+        message = await self._generate_morning_message()
+        if not message:
+            message = self.morning_message
         if not message:
             return
         for channel in self._resolve_morning_channels():
