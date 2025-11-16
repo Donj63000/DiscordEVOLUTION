@@ -67,7 +67,8 @@ def build_async_openai_client(client_cls: Any, *, timeout: float | None = None) 
     if not api_key:
         return None
     project = _clean_env(os.getenv("OPENAI_PROJECT") or os.getenv("OPENAI_PROJECT_ID") or "", ("proj-", "proj_"))
-    organization = _clean_env(os.getenv("OPENAI_ORG_ID") or os.getenv("OPENAI_ORGANIZATION") or "", ("org-", "org_"))
+    organization_raw = (os.getenv("OPENAI_ORG_ID") or os.getenv("OPENAI_ORGANIZATION") or "").strip()
+    organization = _clean_env(organization_raw, ("org-", "org_"))
     base_url = (os.getenv("OPENAI_BASE_URL") or "").strip()
     kwargs: dict[str, Any] = {"api_key": api_key}
     if project:
@@ -84,8 +85,18 @@ def build_async_openai_client(client_cls: Any, *, timeout: float | None = None) 
         kwargs["base_url"] = base_url
     if timeout is not None:
         kwargs["timeout"] = timeout
+    removed_org_env: list[tuple[str, str]] = []
     try:
-        return client_cls(**kwargs)
-    except TypeError:
-        kwargs.pop("project", None)
-        return client_cls(**kwargs)
+        if organization_raw:
+            for key in ("OPENAI_ORG_ID", "OPENAI_ORGANIZATION"):
+                value = os.environ.pop(key, None)
+                if value is not None:
+                    removed_org_env.append((key, value))
+        try:
+            return client_cls(**kwargs)
+        except TypeError:
+            kwargs.pop("project", None)
+            return client_cls(**kwargs)
+    finally:
+        for key, value in removed_org_env:
+            os.environ[key] = value

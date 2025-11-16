@@ -258,7 +258,19 @@ class DefenderCog(commands.Cog):
                 inline=False
             )
 
-        await message.reply(embed=embed, mention_author=False)
+        try:
+            await message.reply(embed=embed, mention_author=False)
+        except discord.HTTPException as exc:
+            # Si le message original n'existe plus (ex: supprimé avant la réponse),
+            # Discord retourne un "Unknown message" -> on bascule sur un envoi simple.
+            if getattr(exc, "code", None) == 50035 or "Unknown message" in str(exc):
+                self.logger.warning("Impossible de répondre directement (message introuvable), envoi dans le salon.")
+                try:
+                    await message.channel.send(embed=embed, mention_author=False)
+                except discord.HTTPException as sub_exc:
+                    self.logger.error("Echec de l'envoi Defender fallback: %s", sub_exc)
+            else:
+                self.logger.error("Echec de l'envoi Defender: %s", exc)
 
     # -----------------------------------------------------------------------
     # 8) ANALYSE PRINCIPALE  (PhishTank, VirusTotal, etc.)
