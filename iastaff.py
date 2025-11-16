@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import json
 import logging
 import asyncio
 from datetime import datetime, time as datetime_time
@@ -360,6 +361,8 @@ class IAStaff(commands.Cog):
         ).strip() or DEFAULT_MORNING_USER_PROMPT
         self._last_morning_content: str | None = None
         self._last_morning_date: str | None = None
+        flag_value = (os.getenv("IASTAFF_ENABLE_TOOLS") or "1").strip().lower()
+        self.enable_tools = flag_value not in {"0", "false", "off"}
 
     def _ensure_client(self) -> bool:
         if self.client is not None:
@@ -596,6 +599,645 @@ class IAStaff(commands.Cog):
             base["tools"] = tools
         return base
 
+    def _command_tools(self) -> list[dict]:
+        """Describe the Discord commands that can be invoked via OpenAI tool-calling."""
+        if not self.enable_tools:
+            return []
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_activity",
+                    "description": "Crée une activité via `!activite creer <titre> <JJ/MM/AAAA HH:MM> <description>`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["title", "datetime"],
+                        "properties": {
+                            "title": {"type": "string"},
+                            "datetime": {"type": "string", "description": "Date au format JJ/MM/AAAA HH:MM"},
+                            "description": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_activities",
+                    "description": "Affiche la liste des activités via `!activite liste`.",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "join_activity",
+                    "description": "Inscrit un membre à une activité via `!activite join <id>`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": {"id": {"type": "string"}},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "cancel_activity",
+                    "description": "Annule une activité via `!activite annuler <id>`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": {"id": {"type": "string"}},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "leave_activity",
+                    "description": "Se retire d'une activité via `!activite leave <id>`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": {"id": {"type": "string"}},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "activity_info",
+                    "description": "Affiche les détails d'une activité via `!activite info <id>`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": {"id": {"type": "string"}},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "modify_activity",
+                    "description": "Met à jour une activité via `!activite modifier <id> <JJ/MM/AAAA HH:MM> <description>`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["id", "datetime"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "datetime": {"type": "string"},
+                            "description": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "open_ticket",
+                    "description": "Ouvre un ticket via `!ticket`.",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "start_organisation",
+                    "description": "Lance l'assistant `!organisation`.",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "start_announce",
+                    "description": "Démarre `!annonce` pour préparer une publication.",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "start_event",
+                    "description": "Prépare les informations (titre/date/description) puis lance `!event`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["title", "date_time", "description"],
+                        "properties": {
+                            "title": {"type": "string"},
+                            "date_time": {"type": "string"},
+                            "description": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "clear_console",
+                    "description": "Nettoie le salon console via `!clear console`.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "channel": {
+                                "type": "string",
+                                "description": "Nom du salon à nettoyer (par défaut: console).",
+                            }
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "show_warnings",
+                    "description": "Consulte les avertissements d'un membre via `!warnings @membre`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["member"],
+                        "properties": {
+                            "member": {
+                                "type": "string",
+                                "description": "Mention, ID ou pseudo Discord du membre.",
+                            }
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "reset_warnings",
+                    "description": "Réinitialise les avertissements d'un membre via `!resetwarnings @membre`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["member"],
+                        "properties": {
+                            "member": {
+                                "type": "string",
+                                "description": "Mention, ID ou pseudo Discord du membre.",
+                            }
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "add_recruitment_entry",
+                    "description": "Ajoute un joueur via `!recrutement <Pseudo>`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["pseudo"],
+                        "properties": {"pseudo": {"type": "string"}},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delete_member_record",
+                    "description": "Supprime une fiche via `!membre del <pseudo>`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["pseudo"],
+                        "properties": {"pseudo": {"type": "string"}},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "stats_reset",
+                    "description": "Réinitialise les stats via `!stats reset`.",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "stats_enable",
+                    "description": "Active la collecte via `!stats on`.",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "stats_disable",
+                    "description": "Désactive la collecte via `!stats off`.",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "job_list_all",
+                    "description": "Affiche tous les métiers enregistrés via `!job liste`.",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "job_list_professions",
+                    "description": "Affiche le catalogue des noms de métiers via `!job liste metier`.",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "job_lookup_player",
+                    "description": "Montre les métiers d'un joueur via `!job <pseudo|mention>`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["player"],
+                        "properties": {"player": {"type": "string"}},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "job_lookup_profession",
+                    "description": "Liste les joueurs par métier via `!job <nom_metier>`.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["profession"],
+                        "properties": {"profession": {"type": "string"}},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        ]
+
+    def _resolve_member_argument(self, ctx: commands.Context, raw: str):
+        if ctx.guild is None or not raw:
+            return None
+        value = raw.strip()
+        if not value:
+            return None
+        if value.startswith("<@") and value.endswith(">"):
+            inner = value[2:-1]
+            if inner.startswith("!"):
+                inner = inner[1:]
+            value = inner
+        member = None
+        if value.isdigit():
+            member = ctx.guild.get_member(int(value))
+            if member is not None:
+                return member
+        lowered = value.lower()
+        members = getattr(ctx.guild, "members", None) or []
+        for item in members:
+            item_id = getattr(item, "id", None)
+            if item_id is not None and str(item_id) == value:
+                return item
+            display_name = getattr(item, "display_name", "")
+            username = getattr(item, "name", "")
+            if display_name.lower() == lowered or username.lower() == lowered:
+                return item
+        return None
+
+    def _format_command_summary(self, commands: list[str], summary: str) -> str:
+        visible = [cmd for cmd in commands if cmd]
+        sections: list[str] = []
+        if visible:
+            cmd_lines = "\n".join(f"- `{cmd}`" for cmd in visible)
+            sections.append(f"Commandes exécutées :\n{cmd_lines}")
+        if summary:
+            sections.append(summary.strip())
+        return "\n\n".join(sections).strip()
+
+    def _get_job_cog(self):
+        try:
+            return self.bot.get_cog("JobCog")
+        except Exception:
+            return None
+
+    async def _summarize_job_profession(self, ctx: commands.Context, profession: str) -> str:
+        job_cog = self._get_job_cog()
+        guild = getattr(ctx, "guild", None)
+        if job_cog is None or guild is None:
+            return ""
+        try:
+            await job_cog.load_from_console(guild)
+        except Exception:
+            pass
+        canonical = job_cog.resolve_job_name(profession) if hasattr(job_cog, "resolve_job_name") else None
+        if not canonical:
+            suggestions = []
+            if hasattr(job_cog, "suggest_similar_jobs"):
+                try:
+                    suggestions = job_cog.suggest_similar_jobs(profession)
+                except Exception:
+                    suggestions = []
+            if suggestions:
+                joined = ", ".join(f"`{s}`" for s in suggestions[:5])
+                return f"Aucun métier exact trouvé pour **{profession}**. Suggestions : {joined}"
+            return f"Aucun métier correspondant à **{profession}**."
+        entries: list[tuple[str, int]] = []
+        for key, data in (getattr(job_cog, "jobs_data", {}) or {}).items():
+            jobs = data.get("jobs") or {}
+            level = jobs.get(canonical)
+            if level is None:
+                continue
+            member = None
+            if str(key).isdigit():
+                member = guild.get_member(int(key))
+            display_name = data.get("name") or (member.display_name if member else None) or str(key)
+            entries.append((display_name, int(level)))
+        if not entries:
+            return f"Aucun membre n'est encore enregistré comme **{canonical}**."
+        entries.sort(key=lambda item: (-item[1], item[0].lower()))
+        listed = ", ".join(f"{name} (niv. {lvl})" for name, lvl in entries[:10])
+        lines = [
+            f"Il y a **{len(entries)}** {canonical.lower()}(s) enregistrés.",
+            listed,
+        ]
+        if len(entries) > 10:
+            lines.append(f"... et {len(entries) - 10} autre(s).")
+        return "\n".join(filter(None, lines))
+
+    async def _summarize_job_player(self, ctx: commands.Context, player_raw: str) -> str:
+        job_cog = self._get_job_cog()
+        guild = getattr(ctx, "guild", None)
+        if job_cog is None or guild is None:
+            return ""
+        try:
+            await job_cog.load_from_console(guild)
+        except Exception:
+            pass
+        member = self._resolve_member_argument(ctx, player_raw)
+        display_name = (member.display_name if member else (player_raw or "").strip()) or "ce joueur"
+        identifier = str(member.id) if member else ""
+        jobs = job_cog.get_user_jobs(identifier, display_name) if hasattr(job_cog, "get_user_jobs") else {}
+        if not jobs and display_name:
+            lowered = display_name.lower()
+            for key, data in (getattr(job_cog, "jobs_data", {}) or {}).items():
+                if data.get("name", "").lower() == lowered:
+                    jobs = data.get("jobs", {})
+                    if not member and str(key).isdigit():
+                        guild_member = guild.get_member(int(key))
+                        if guild_member:
+                            display_name = guild_member.display_name
+                    break
+        if not jobs:
+            return f"Aucune fiche métier enregistrée pour **{display_name}**."
+        items = sorted(
+            ((name, int(level)) for name, level in jobs.items()),
+            key=lambda kv: (-kv[1], kv[0].lower()),
+        )
+        listed = ", ".join(f"{name} (niv. {lvl})" for name, lvl in items[:10])
+        lines = [
+            f"Métiers enregistrés pour **{display_name}** ({len(items)} entrées).",
+            listed,
+        ]
+        if len(items) > 10:
+            lines.append(f"... et {len(items) - 10} autre(s).")
+        return "\n".join(filter(None, lines))
+
+    async def _dispatch_command_tool(self, ctx: commands.Context, name: str, args_json: dict) -> str:
+        """Route a tool call to the matching Discord command."""
+        normalized = (name or "").strip().lower()
+        payload = args_json or {}
+        channel_id = getattr(ctx.channel, "id", None)
+        user_id = getattr(ctx.author, "id", None)
+
+        async def invoke(cmd_name: str, /, *pos_args, **kwargs):
+            command = self.bot.get_command(cmd_name)
+            if not command:
+                log.warning("IAStaff: commande %s introuvable pour tool %s", cmd_name, normalized)
+                raise RuntimeError(f"Commande inconnue: {cmd_name}")
+            log.debug(
+                "IAStaff tool dispatch command=%s tool=%s user=%s channel=%s payload=%s",
+                cmd_name,
+                normalized,
+                user_id,
+                channel_id,
+                {"args": pos_args, "kwargs": kwargs},
+            )
+            return await ctx.invoke(command, *pos_args, **kwargs)
+
+        if normalized == "create_activity":
+            title = (payload.get("title") or "").strip()
+            datetime_value = (payload.get("datetime") or "").strip()
+            description_value = (payload.get("description") or "").strip()
+            if not title or not datetime_value:
+                raise RuntimeError("Informations manquantes pour create_activity")
+            parts = [title, datetime_value]
+            if description_value:
+                parts.append(description_value)
+            args_text = " ".join(parts)
+            await invoke("activite", action="creer", args=args_text)
+            return f"Activité créée avec `!activite creer` : **{title}** ({datetime_value})."
+        if normalized == "list_activities":
+            await invoke("activite", action="liste", args=None)
+            return "Liste des activités affichée."
+        if normalized == "join_activity":
+            event_id = (payload.get("id") or "").strip()
+            if not event_id:
+                raise RuntimeError("Identifiant requis pour join_activity")
+            await invoke("activite", action="join", args=event_id)
+            return f"Inscription demandée pour l'activité `{event_id}`."
+        if normalized == "cancel_activity":
+            event_id = (payload.get("id") or "").strip()
+            if not event_id:
+                raise RuntimeError("Identifiant requis pour cancel_activity")
+            await invoke("activite", action="annuler", args=event_id)
+            return f"Annulation demandée pour l'activité `{event_id}`."
+        if normalized == "leave_activity":
+            event_id = (payload.get("id") or "").strip()
+            if not event_id:
+                raise RuntimeError("Identifiant requis pour leave_activity")
+            await invoke("activite", action="leave", args=event_id)
+            return f"Désinscription demandée pour l'activité `{event_id}`."
+        if normalized == "activity_info":
+            event_id = (payload.get("id") or "").strip()
+            if not event_id:
+                raise RuntimeError("Identifiant requis pour activity_info")
+            await invoke("activite", action="info", args=event_id)
+            return f"Détails demandés pour l'activité `{event_id}`."
+        if normalized == "modify_activity":
+            event_id = (payload.get("id") or "").strip()
+            datetime_value = (payload.get("datetime") or "").strip()
+            description_value = (payload.get("description") or "").strip()
+            if not event_id or not datetime_value:
+                raise RuntimeError("Paramètres requis pour modify_activity")
+            args_text = f"{event_id} {datetime_value}"
+            if description_value:
+                args_text = f"{args_text} {description_value}"
+            await invoke("activite", action="modifier", args=args_text)
+            return f"Modification demandée pour l'activité `{event_id}` ({datetime_value})."
+        if normalized == "open_ticket":
+            await invoke("ticket")
+            return "Ouverture de ticket initialisée (`!ticket`)."
+        if normalized == "start_organisation":
+            await invoke("organisation")
+            return "Assistant d'organisation lancé (`!organisation`)."
+        if normalized == "start_announce":
+            await invoke("annonce")
+            return "Assistant d'annonce lancé (`!annonce`)."
+        if normalized == "start_event":
+            title = (payload.get("title") or "").strip()
+            date_time = (payload.get("date_time") or "").strip()
+            description = (payload.get("description") or "").strip()
+            if not title or not date_time or not description:
+                raise RuntimeError("Informations requises pour start_event")
+            await invoke("event")
+            summary_lines = [
+                f"Briefing événement : **{title}**",
+                f"Date/heure : {date_time}",
+                description,
+            ]
+            summary = "\n".join(line for line in summary_lines if line)
+            return self._format_command_summary(["!event"], summary)
+        if normalized == "clear_console":
+            channel_value = (payload.get("channel") or "console").strip() or "console"
+            await invoke("clear", channel_name=channel_value)
+            return f"Nettoyage demandé via `!clear {channel_value}`."
+        if normalized == "show_warnings":
+            member_raw = payload.get("member")
+            member_obj = self._resolve_member_argument(ctx, member_raw)
+            if member_obj is None:
+                raise RuntimeError("Membre introuvable pour show_warnings")
+            await invoke("warnings", member=member_obj)
+            target_name = getattr(member_obj, "display_name", str(getattr(member_obj, "id", "?")))
+            return f"Avertissements consultés pour {target_name}."
+        if normalized == "reset_warnings":
+            member_raw = payload.get("member")
+            member_obj = self._resolve_member_argument(ctx, member_raw)
+            if member_obj is None:
+                raise RuntimeError("Membre introuvable pour reset_warnings")
+            await invoke("resetwarnings", member=member_obj)
+            target_name = getattr(member_obj, "display_name", str(getattr(member_obj, "id", "?")))
+            return f"Avertissements réinitialisés pour {target_name}."
+        if normalized == "add_recruitment_entry":
+            pseudo = (payload.get("pseudo") or "").strip()
+            if not pseudo:
+                raise RuntimeError("Pseudo requis pour add_recruitment_entry")
+            await invoke("recrutement", pseudo=pseudo)
+            return f"Fiche recrutement créée pour **{pseudo}**."
+        if normalized == "delete_member_record":
+            pseudo = (payload.get("pseudo") or "").strip()
+            if not pseudo:
+                raise RuntimeError("Pseudo requis pour delete_member_record")
+            await invoke("membre del", pseudo=pseudo)
+            return f"Demande de suppression envoyée pour **{pseudo}**."
+        if normalized == "stats_reset":
+            await invoke("stats reset")
+            return "Statistiques réinitialisées (`!stats reset`)."
+        if normalized == "stats_enable":
+            await invoke("stats on")
+            return "Collecte des statistiques activée (`!stats on`)."
+        if normalized == "stats_disable":
+            await invoke("stats off")
+            return "Collecte des statistiques désactivée (`!stats off`)."
+        if normalized == "job_list_all":
+            await invoke("job", "liste")
+            summary = "La liste complète des métiers est disponible ci-dessus."
+            return self._format_command_summary(["!job liste"], summary)
+        if normalized == "job_list_professions":
+            await invoke("job", "liste", "metier")
+            summary = "Catalogue des métiers affiché."
+            return self._format_command_summary(["!job liste metier"], summary)
+        if normalized == "job_lookup_player":
+            player = (payload.get("player") or "").strip()
+            if not player:
+                raise RuntimeError("Pseudo requis pour job_lookup_player")
+            await invoke("job", player)
+            summary = await self._summarize_job_player(ctx, player)
+            return self._format_command_summary([f"!job {player}"], summary or f"Fiche métiers demandée pour **{player}**.")
+        if normalized == "job_lookup_profession":
+            profession = (payload.get("profession") or "").strip()
+            if not profession:
+                raise RuntimeError("Métier requis pour job_lookup_profession")
+            await invoke("job", profession)
+            summary = await self._summarize_job_profession(ctx, profession)
+            return self._format_command_summary([f"!job {profession}"], summary or f"Recherche lancée pour le métier **{profession}**.")
+        raise RuntimeError(f"Tool inconnu: {name}")
+
+    async def _try_chat_with_tools(self, ctx: commands.Context, messages: list[dict]) -> str | None:
+        """Ask Chat Completions for a tool call and execute it if present."""
+        if not self.enable_tools or not self.client:
+            return None
+        tool_specs = self._command_tools()
+        if not tool_specs:
+            return None
+        chat_messages = self._to_chat_messages(messages)
+        chat_messages.insert(
+            1,
+            {
+                "role": "system",
+                "content": (
+                    "Lorsque l'utilisateur demande une action concrète, utilise les outils disponibles "
+                    "create_activity, list_activities, join_activity, cancel_activity, open_ticket, "
+                    "start_organisation et start_announce. Pose une question courte si certains détails "
+                    "manquent, puis exécute l'outil dès que les informations sont complètes."
+                ),
+            },
+        )
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.model,
+                messages=chat_messages,
+                tools=tool_specs,
+                tool_choice="auto",
+            )
+        except Exception as exc:
+            log.warning("IAStaff: Chat Completions tool-calling indisponible: %s", exc)
+            return None
+        choices = getattr(resp, "choices", None)
+        if not choices:
+            return None
+        message = getattr(choices[0], "message", None)
+        tool_calls = getattr(message, "tool_calls", None)
+        if not tool_calls:
+            return None
+        ack_parts: list[str] = []
+        for call in tool_calls:
+            fn = getattr(call, "function", None)
+            if not fn:
+                continue
+            fn_name = getattr(fn, "name", "")
+            raw_args = getattr(fn, "arguments", "") or "{}"
+            try:
+                if isinstance(raw_args, str):
+                    parsed_args = json.loads(raw_args)
+                elif isinstance(raw_args, dict):
+                    parsed_args = raw_args
+                elif hasattr(raw_args, "__dict__"):
+                    parsed_args = {k: v for k, v in raw_args.__dict__.items()}
+                else:
+                    parsed_args = dict(raw_args)
+            except Exception:
+                parsed_args = {}
+            try:
+                ack = await self._dispatch_command_tool(ctx, fn_name, parsed_args)
+                if ack:
+                    ack_parts.append(ack)
+            except Exception as exc:
+                log.warning("IAStaff: échec tool %s: %s", fn_name, exc)
+                ack_parts.append(f"❌ Erreur pendant `{fn_name}` : {exc}")
+        if ack_parts:
+            return "\n".join(ack_parts)
+        return "Action effectuée."
+
     def _to_chat_messages(self, messages: list[dict]) -> list[dict]:
         out = []
         for m in messages:
@@ -752,16 +1394,22 @@ class IAStaff(commands.Cog):
             async with typing_target.typing():
                 channel_ctx = await self._build_channel_context(channel, origin_message if origin_message is not None else (ctx.message if ctx is not None else None))
                 messages = self._make_messages(channel_ctx, channel_id, content)
-                try:
-                    text = await self._ask_openai(messages)
-                except Exception as e:
-                    if ctx is not None:
-                        await ctx.reply(f"❌ {e}", mention_author=False)
-                    elif origin_message is not None:
-                        await origin_message.reply(f"❌ {e}", mention_author=False)
-                    else:
-                        await channel.send(f"❌ {e}")
-                    return
+                tool_ack: str | None = None
+                if ctx is not None:
+                    tool_ack = await self._try_chat_with_tools(ctx, messages)
+                if tool_ack:
+                    text = tool_ack
+                else:
+                    try:
+                        text = await self._ask_openai(messages)
+                    except Exception as e:
+                        if ctx is not None:
+                            await ctx.reply(f"❌ {e}", mention_author=False)
+                        elif origin_message is not None:
+                            await origin_message.reply(f"❌ {e}", mention_author=False)
+                        else:
+                            await channel.send(f"❌ {e}")
+                        return
             if not text.strip():
                 if ctx is not None:
                     await ctx.reply("La réponse de l'IA est vide. Réessaie en reformulant (ou `!iastaff reset`).", mention_author=False)
