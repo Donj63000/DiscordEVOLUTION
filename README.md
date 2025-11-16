@@ -1,6 +1,6 @@
 # DiscordEVOLUTION
 
-Ce dépôt contient le bot Discord utilisé sur le serveur **EVOLUTION**. Il gère l'accueil des nouveaux joueurs, les tickets d'aide, les métiers en jeu et fournit aussi des commandes alimentées par Google Gemini.
+Ce dépôt contient le bot Discord utilisé sur le serveur **EVOLUTION**. Il gère l'accueil des nouveaux joueurs, les tickets d'aide, les métiers en jeu et fournit aussi des commandes alimentées par Google Gemini et OpenAI.
 Ce bot Discord est destiné aux guildes évoluant sur **Dofus Retro**. Il a été développé par **Coca** (sans lien avec la marque de sodas !), membre de la guilde Evolution sur le serveur Boune.
 
 ## Préparation du serveur Discord
@@ -17,7 +17,7 @@ Pour que toutes les fonctionnalités fonctionnent correctement, le serveur doit 
 - `console` : salon privé où le bot sauvegarde/charge ses fichiers JSON.
 - `ticket` : réception des tickets créés avec la commande `!ticket`.
 - `annonces` : utilisé par `!annonce`, `!annoncestaff` et pour les sondages.
-- `organisation` : pour la planification d'activités via `!activite`.
+- `organisation` : pour la planification d'activités via `!activite` et les briefs produit par `!organisation`.
 - `𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥` : canal public où le bot poste un message si les DM sont bloqués.
 - `𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭` : annonces d'entrées ou de départs de la guilde.
 - `𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞` : messages d'arrivée et d'au revoir.
@@ -75,6 +75,8 @@ Vous pouvez générer cette clé avec :
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
+Ajoutez aussi `OPENAI_API_KEY` (ainsi qu'eventuellement `OPENAI_STAFF_MODEL`, `IASTAFF_ROLE` ou `ORGANISATION_CHANNEL_NAME`) pour activer les assistants IA. Sans cette cle, `!organisation` et `!iastaff` signaleront que la fonctionnalite est indisponible.
+
 Lancez ensuite le bot avec :
 
 ```bash
@@ -96,6 +98,17 @@ Le fichier `job.py` permet aux joueurs d'enregistrer leurs professions. Les dern
 - Gestion directe des noms contenant des espaces via `!job <nom du métier> <niveau>` (l'alias `add` reste valable).
 
 ## Planification d'événements
+
+Le bot propose maintenant deux flux complementaires selon la situation.
+
+### `!organisation` - assistant IA en salon
+- Commande reservee au role configure via `IASTAFF_ROLE` (Staff par defaut). L'assistant peut etre lance depuis n'importe quel salon texte et rappelle ensuite de poster l'annonce dans `#organisation` (`ORGANISATION_CHANNEL_NAME`).
+- L'IA pose les questions une par une (type, date/heure, lieu, restrictions, objectifs, logistique). Repondez directement dans le salon; `annule`, `annuler`, `cancel`, `stop`, `fin`, `abort` ou `stopper` coupent la session. `ORGANISATION_TIMEOUT` (240s par defaut) annule automatiquement une conversation inactive.
+- Quand le statut passe a `ready`, `organisation.py` genere un embed ainsi que les mentions/CTA proposes par l'IA (`OPENAI_API_KEY`) et poste un recap pour que le staff ajuste avant publication.
+- `ORGANISATION_BACKEND` (`auto`, `responses`, `chat`) choisit l'API OpenAI utilisee tandis que `ORGANISATION_PLANNER_TEMP` et `ORGANISATION_ANNOUNCE_TEMP` dosent la creativite du questionneur et de l'annonce finale.
+- L'ancien module `cogs.organisation` est maintenant un simple stub qui leve `ImportError` afin d'eviter toute regression quand quelqu'un importe encore l'ancien chemin.
+
+### `!event` - planification en DM
 
 Le nouveau module `event_conversation.py` fournit la commande `!event` destinée au rôle **Staff**. Lorsque vous l'utilisez :
 
@@ -127,6 +140,21 @@ L'ancienne commande `!event` de `ia.py` a été supprimée au profit de ce flux 
 ```bash
 pytest -q
 ```
+
+
+## Assistant IA Staff
+
+Le module `iastaff.py` apporte la commande `!iastaff` (alias `!staffia`) reservee au role configure par `IASTAFF_ROLE` :
+
+- `!iastaff <message>` repond dans le salon courant et reutilise l'historique recent (jusqu'a `IASTAFF_CHANNEL_CONTEXT` messages tronques a `IASTAFF_PER_MSG_CHARS`, limite globale `IASTAFF_CONTEXT_MAX_CHARS`) ainsi qu'une memoire courte (`IASTAFF_HISTORY_TURNS`). Chaque conversation par salon est protegee par un verrou asynchrone.
+- `!iastaff reset`/`clear` vide la memoire du salon, `!iastaff info` affiche la configuration active et `!iastaff model <id>` change de modele a chaud (persistance possible via `OPENAI_STAFF_MODEL`). Les appels reposent sur `OPENAI_API_KEY`, `IASTAFF_TIMEOUT`, `IASTAFF_MAX_OUTPUT_TOKENS` et `IASTAFF_INPUT_MAX_CHARS`; `IASTAFF_ENABLE_WEB` et `IASTAFF_VECTOR_STORE_ID` pilotent respectivement la recherche web et la doc interne.
+- Les reponses longues sont automatiquement scindees en blocs puis envoyees avec l'icone `IASTAFF_LOGO`. En cas d'erreur (client absent, delai, quota), le bot indique clairement pourquoi l'IA est indisponible.
+- Une tache planifiee `morning_greeting` peut poster un bonjour quotidien dans les salons listes via `IASTAFF_MORNING_CHANNEL_IDS` ou `IASTAFF_MORNING_CHANNEL_NAMES`. Ajustez `IASTAFF_MORNING_TZ`, `IASTAFF_MORNING_HOUR`, `IASTAFF_MORNING_MINUTE`, `IASTAFF_MORNING_TEMPERATURE`, `IASTAFF_MORNING_MAX_TOKENS`, `IASTAFF_MORNING_SYSTEM_PROMPT` et `IASTAFF_MORNING_USER_PROMPT` pour personnaliser le ton ainsi que les prompts.
+
+Exemples rapides :
+- `!iastaff Quel est le plan de farm ce week-end ?`
+- `!iastaff reset`
+- `!iastaff model gpt-4o-mini`
 
 ## Modération automatique
 
@@ -193,4 +221,3 @@ Mettez à jour votre profil avec `!profil set` / `!profil stats` — vos points 
 ## Licence
 
 Ce projet est distribué sous la licence MIT. Consultez le fichier [LICENSE](LICENSE) pour plus de détails.
-
