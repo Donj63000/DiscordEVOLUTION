@@ -11,11 +11,21 @@ class FakeMember:
         self.id = member_id
         self.display_name = display_name
         self.name = display_name
+        self.roles = []
+        self.add_roles = AsyncMock()
+        self.remove_roles = AsyncMock()
+
+
+class FakeRole:
+    def __init__(self, role_id, name):
+        self.id = role_id
+        self.name = name
 
 
 class FakeGuild:
-    def __init__(self, members=None):
+    def __init__(self, members=None, roles=None):
         self._members = members or []
+        self._roles = roles or []
 
     def get_member(self, member_id):
         for member in self._members:
@@ -27,21 +37,44 @@ class FakeGuild:
     def members(self):
         return list(self._members)
 
+    @property
+    def roles(self):
+        return list(self._roles)
+
+    def get_role(self, role_id):
+        for role in self._roles:
+            if role.id == role_id:
+                return role
+        return None
+
 
 class FakeContext:
-    def __init__(self, members=None):
+    def __init__(self, members=None, roles=None):
         self.channel = SimpleNamespace(id=777)
         self.author = SimpleNamespace(id=111)
-        self.guild = FakeGuild(members or [])
+        self.guild = FakeGuild(members or [], roles or [])
         self.invoke = AsyncMock()
 
 
 class StubJobCog:
     def __init__(self):
         self.jobs_data = {}
+        self.initialized = True
+        self.loaded_guild = None
+        self.dumped_guild = None
+        self.saved = False
 
     async def load_from_console(self, guild):
-        self.last_guild = guild
+        self.loaded_guild = guild
+
+    async def dump_data_to_console(self, guild):
+        self.dumped_guild = guild
+
+    async def initialize_data(self):
+        self.initialized = True
+
+    def save_data_local(self):
+        self.saved = True
 
     def resolve_job_name(self, name):
         low = (name or "").lower()
@@ -49,7 +82,7 @@ class StubJobCog:
             return "Bijoutier"
         if "paysan" in low:
             return "Paysan"
-        return None
+        return name.title() if name else None
 
     def suggest_similar_jobs(self, name, limit=6):
         return ["Bijoutier"]
@@ -66,6 +99,29 @@ class StubJobCog:
         return {}
 
 
+class StubPlayersCog:
+    def __init__(self):
+        self.persos_data = {}
+        self.initialized = True
+        self.dump_ctx = None
+        self.console_channel = SimpleNamespace()
+
+    async def _ensure_initialized(self):
+        self.initialized = True
+
+    def _verifier_et_fusionner_id(self, vrai_id: str, *aliases: str):
+        return
+
+    async def dump_data_to_console(self, ctx):
+        self.dump_ctx = ctx
+
+    async def _resolve_console_channel(self, guild=None):
+        return self.console_channel
+
+    async def _load_data_from_console(self, channel):
+        return True
+
+
 @pytest.fixture
 def iastaff_tools_cog(monkeypatch):
     monkeypatch.setattr("iastaff.AsyncOpenAI", None)
@@ -78,6 +134,17 @@ def iastaff_tools_cog(monkeypatch):
     bot.get_command = lambda name: None
     cog = IAStaff(bot)
     cog.enable_tools = True
+    cog.job_stub = None
+    cog.players_stub = None
+
+    def get_cog(name: str):
+        if name == "JobCog":
+            return cog.job_stub
+        if name == "PlayersCog":
+            return cog.players_stub
+        return None
+
+    bot.get_cog = get_cog
     return cog
 
 
@@ -219,7 +286,7 @@ async def test_summarize_job_profession_lists_members(iastaff_tools_cog):
         str(member.id): {"name": member.display_name, "jobs": {"Bijoutier": 80}},
         "custom": {"name": "Gamma", "jobs": {"Bijoutier": 40}},
     }
-    iastaff_tools_cog.bot.get_cog = lambda name: stub if name == "JobCog" else None
+    iastaff_tools_cog.job_stub = stub
 
     summary = await iastaff_tools_cog._summarize_job_profession(ctx, "bijoutier")
 
@@ -236,10 +303,133 @@ async def test_summarize_job_player_uses_member_lookup(iastaff_tools_cog):
     stub.jobs_data = {
         str(member.id): {"name": member.display_name, "jobs": {"Bijoutier": 90, "Paysan": 50}}
     }
-    iastaff_tools_cog.bot.get_cog = lambda name: stub if name == "JobCog" else None
+    iastaff_tools_cog.job_stub = stub
 
     summary = await iastaff_tools_cog._summarize_job_player(ctx, "<@333>")
 
     assert "Crafter" in summary
     assert "Bijoutier" in summary
     assert "Paysan" in summary
+
+
+@pytest.mark.asyncio
+async def test_set_member_job_updates_target(iastaff_tools_cog):
+    member = FakeMember(444, "Diso-Team")
+    ctx = FakeContext(members=[member])
+    stub = StubJobCog()
+    stub.jobs_data = {}
+    iastaff_tools_cog.job_stub = stub
+
+    ack = await iastaff_tools_cog._dispatch_command_tool(
+        ctx,
+        "set_member_job",
+        {"member": "<@444>", "job": "Bucheron", "level": 80},
+    )
+
+    entry = stub.jobs_data[str(member.id)]
+    assert entry["jobs"]["Bucheron"] == 80
+    assert "Bucheron" in ack
+
+
+@pytest.mark.asyncio
+async def test_remove_member_job_handles_missing(iastaff_tools_cog):
+    member = FakeMember(555, "Crafter")
+    ctx = FakeContext(members=[member])
+    stub = StubJobCog()
+    stub.jobs_data = {str(member.id): {"name": member.display_name, "jobs": {"Bijoutier": 60}}}
+    iastaff_tools_cog.job_stub = stub
+
+    ack = await iastaff_tools_cog._dispatch_command_tool(
+        ctx,
+        "remove_member_job",
+        {"member": "Crafter", "job": "Bijoutier"},
+    )
+
+    assert "retir" in ack
+    assert "Bijoutier" not in stub.jobs_data[str(member.id)]["jobs"]
+
+
+@pytest.mark.asyncio
+async def test_add_member_mule_creates_entry(iastaff_tools_cog):
+    member = FakeMember(666, "Diso-Team")
+    ctx = FakeContext(members=[member])
+    stub_players = StubPlayersCog()
+    iastaff_tools_cog.players_stub = stub_players
+
+    ack = await iastaff_tools_cog._dispatch_command_tool(
+        ctx,
+        "add_member_mule",
+        {"member": "Diso-Team", "mule": "Diso-Farm"},
+    )
+
+    assert "Diso-Farm" in ack
+    assert "Diso-Farm" in stub_players.persos_data[str(member.id)]["mules"]
+
+
+@pytest.mark.asyncio
+async def test_remove_member_mule_updates_data(iastaff_tools_cog):
+    member = FakeMember(777, "Krosmo")
+    ctx = FakeContext(members=[member])
+    stub_players = StubPlayersCog()
+    stub_players.persos_data = {
+        str(member.id): {"discord_name": member.display_name, "main": "MainChar", "mules": ["Diso-Farm"]}
+    }
+    iastaff_tools_cog.players_stub = stub_players
+
+    ack = await iastaff_tools_cog._dispatch_command_tool(
+        ctx,
+        "remove_member_mule",
+        {"member": "Krosmo", "mule": "Diso-Farm"},
+    )
+
+    assert "retirée" in ack
+    assert not stub_players.persos_data[str(member.id)]["mules"]
+
+
+@pytest.mark.asyncio
+async def test_run_bot_command_invokes_generic_command(iastaff_tools_cog):
+    ctx = FakeContext()
+    dummy_command = object()
+    iastaff_tools_cog.bot.get_command = lambda name: dummy_command if name == "job" else None
+
+    ack = await iastaff_tools_cog._dispatch_command_tool(
+        ctx,
+        "run_bot_command",
+        {"command": "job", "positional_args": ["liste"], "keyword_args": {"foo": "bar"}},
+    )
+
+    ctx.invoke.assert_awaited_once_with(dummy_command, "liste", foo="bar")
+    assert "!job" in ack
+
+
+@pytest.mark.asyncio
+async def test_grant_role_adds_role(iastaff_tools_cog):
+    member = FakeMember(888, "Clody")
+    role = FakeRole(999, "Staff")
+    ctx = FakeContext(members=[member], roles=[role])
+
+    ack = await iastaff_tools_cog._dispatch_command_tool(
+        ctx,
+        "grant_role",
+        {"member": "<@888>", "role": "<@&999>"},
+    )
+
+    member.add_roles.assert_awaited_once()
+    assert "Staff" in ack
+
+
+@pytest.mark.asyncio
+async def test_revoke_role_handles_missing_role(iastaff_tools_cog):
+    member = FakeMember(889, "Dwzo")
+    role = FakeRole(998, "Validé")
+    member.roles.append(role)
+    ctx = FakeContext(members=[member], roles=[role])
+
+    ack = await iastaff_tools_cog._dispatch_command_tool(
+        ctx,
+        "revoke_role",
+        {"member": "Dwzo", "role": "Validé"},
+    )
+
+    member.remove_roles.assert_awaited_once()
+    assert "retiré" in ack

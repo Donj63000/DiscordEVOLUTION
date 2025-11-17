@@ -884,6 +884,130 @@ class IAStaff(commands.Cog):
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "set_member_job",
+                    "description": "Ajoute ou met à jour un métier pour un joueur.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["member", "job", "level"],
+                        "properties": {
+                            "member": {"type": "string", "description": "Mention, ID ou pseudo Discord."},
+                            "job": {"type": "string"},
+                            "level": {"type": ["integer", "string"], "description": "Niveau 1-200."},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "remove_member_job",
+                    "description": "Supprime un métier pour un joueur.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["member", "job"],
+                        "properties": {
+                            "member": {"type": "string"},
+                            "job": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "add_member_mule",
+                    "description": "Ajoute une mule à la fiche d'un joueur.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["member", "mule"],
+                        "properties": {
+                            "member": {"type": "string"},
+                            "mule": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "remove_member_mule",
+                    "description": "Retire une mule de la fiche d'un joueur.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["member", "mule"],
+                        "properties": {
+                            "member": {"type": "string"},
+                            "mule": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "run_bot_command",
+                    "description": "Exécute n'importe quelle commande du bot en fournissant les arguments nécessaires.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["command"],
+                        "properties": {
+                            "command": {"type": "string", "description": "Nom complet de la commande (ex: job, stats reset)."},
+                            "positional_args": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Arguments positionnels à passer tels quels.",
+                                "default": [],
+                            },
+                            "keyword_args": {
+                                "type": "object",
+                                "additionalProperties": {"type": "string"},
+                                "description": "Arguments nommés (clé=valeur).",
+                                "default": {},
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "grant_role",
+                    "description": "Ajoute un rôle Discord à un membre.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["member", "role"],
+                        "properties": {
+                            "member": {"type": "string", "description": "Mention, ID ou pseudo Discord."},
+                            "role": {"type": "string", "description": "Nom, ID ou mention du rôle."},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "revoke_role",
+                    "description": "Retire un rôle Discord d'un membre.",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["member", "role"],
+                        "properties": {
+                            "member": {"type": "string"},
+                            "role": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            },
         ]
 
     def _resolve_member_argument(self, ctx: commands.Context, raw: str):
@@ -914,6 +1038,29 @@ class IAStaff(commands.Cog):
                 return item
         return None
 
+    def _resolve_role(self, ctx: commands.Context, raw: str):
+        guild = getattr(ctx, "guild", None)
+        if guild is None or not raw:
+            return None
+        value = raw.strip()
+        if not value:
+            return None
+        if value.startswith("<@&") and value.endswith(">"):
+            payload = value[3:-1]
+            value = payload
+        if value.isdigit():
+            role = guild.get_role(int(value))
+            if role:
+                return role
+        lowered = value.lower()
+        for role in guild.roles:
+            if role.name.lower() == lowered:
+                return role
+        for role in guild.roles:
+            if lowered in role.name.lower():
+                return role
+        return None
+
     def _format_command_summary(self, commands: list[str], summary: str) -> str:
         visible = [cmd for cmd in commands if cmd]
         sections: list[str] = []
@@ -929,6 +1076,25 @@ class IAStaff(commands.Cog):
             return self.bot.get_cog("JobCog")
         except Exception:
             return None
+
+    def _get_players_cog(self):
+        try:
+            return self.bot.get_cog("PlayersCog")
+        except Exception:
+            return None
+
+    async def _refresh_players_data(self, players_cog, ctx: commands.Context):
+        guild = getattr(ctx, "guild", None)
+        try:
+            channel = await players_cog._resolve_console_channel(guild)
+        except Exception:
+            channel = None
+        if channel is None:
+            return
+        try:
+            await players_cog._load_data_from_console(channel)
+        except Exception:
+            return
 
     async def _summarize_job_profession(self, ctx: commands.Context, profession: str) -> str:
         job_cog = self._get_job_cog()
@@ -1011,6 +1177,193 @@ class IAStaff(commands.Cog):
         if len(items) > 10:
             lines.append(f"... et {len(items) - 10} autre(s).")
         return "\n".join(filter(None, lines))
+
+    def _resolve_job_target(self, job_cog, ctx: commands.Context, member_raw: str) -> tuple[str, str]:
+        if not member_raw:
+            raise RuntimeError("Membre requis pour gérer les métiers.")
+        member = self._resolve_member_argument(ctx, member_raw)
+        if member:
+            return str(member.id), member.display_name
+        value = member_raw.strip()
+        lowered = value.lower()
+        for key, data in (getattr(job_cog, "jobs_data", {}) or {}).items():
+            stored = (data.get("name") or "").lower()
+            if stored and stored == lowered:
+                return str(key), data.get("name") or value
+        for key, data in (getattr(job_cog, "jobs_data", {}) or {}).items():
+            stored = (data.get("name") or "").lower()
+            if stored and (stored in lowered or lowered in stored):
+                return str(key), data.get("name") or value
+        if value.isdigit() and value in job_cog.jobs_data:
+            entry = job_cog.jobs_data[value]
+            return value, entry.get("name") or value
+        raise RuntimeError(f"Membre introuvable pour les métiers : {value}.")
+
+    def _resolve_players_target(self, players_cog, ctx: commands.Context, member_raw: str) -> tuple[str, str]:
+        if not member_raw:
+            raise RuntimeError("Membre requis pour gérer le profil.")
+        member = self._resolve_member_argument(ctx, member_raw)
+        if member:
+            players_cog._verifier_et_fusionner_id(str(member.id), member.display_name)
+            return str(member.id), member.display_name
+        value = member_raw.strip()
+        lowered = value.lower()
+        for key, data in (players_cog.persos_data or {}).items():
+            candidates = (
+                data.get("discord_name", ""),
+                data.get("main", ""),
+            )
+            for candidate in candidates:
+                if candidate and candidate.lower() == lowered:
+                    return str(key), candidate
+        if value in players_cog.persos_data:
+            entry = players_cog.persos_data[value]
+            label = entry.get("discord_name") or entry.get("main") or value
+            return value, label
+        raise RuntimeError(f"Profil introuvable pour {value}.")
+
+    async def _set_member_job(self, ctx: commands.Context, member_raw: str, job_name: str, level_value: int) -> str:
+        job_cog = self._get_job_cog()
+        guild = getattr(ctx, "guild", None)
+        if job_cog is None or guild is None:
+            raise RuntimeError("Module métiers indisponible.")
+        if not getattr(job_cog, "initialized", True):
+            await job_cog.initialize_data()
+        await job_cog.load_from_console(guild)
+        target_id, display_name = self._resolve_job_target(job_cog, ctx, member_raw)
+        canonical = job_cog.resolve_job_name(job_name) if hasattr(job_cog, "resolve_job_name") else None
+        if canonical is None:
+            canonical = job_name.strip()
+        if not canonical:
+            raise RuntimeError("Nom de métier invalide.")
+        entry = job_cog.jobs_data.setdefault(target_id, {"name": display_name, "jobs": {}})
+        entry["name"] = display_name
+        entry.setdefault("jobs", {})
+        entry["jobs"][canonical] = level_value
+        job_cog.save_data_local()
+        await job_cog.dump_data_to_console(guild)
+        return self._format_command_summary(
+            ["[IA] job.set"],
+            f"**{display_name}** possède désormais **{canonical}** niveau **{level_value}**.",
+        )
+
+    async def _remove_member_job(self, ctx: commands.Context, member_raw: str, job_name: str) -> str:
+        job_cog = self._get_job_cog()
+        guild = getattr(ctx, "guild", None)
+        if job_cog is None or guild is None:
+            raise RuntimeError("Module métiers indisponible.")
+        if not getattr(job_cog, "initialized", True):
+            await job_cog.initialize_data()
+        await job_cog.load_from_console(guild)
+        target_id, display_name = self._resolve_job_target(job_cog, ctx, member_raw)
+        entry = job_cog.jobs_data.get(target_id)
+        if not entry or "jobs" not in entry:
+            raise RuntimeError(f"Aucun métier enregistré pour {display_name}.")
+        canonical = job_cog.resolve_job_name(job_name) if hasattr(job_cog, "resolve_job_name") else None
+        if canonical is None:
+            canonical = job_name.strip()
+        if canonical not in entry["jobs"]:
+            raise RuntimeError(f"{display_name} n'a pas {canonical}.")
+        del entry["jobs"][canonical]
+        job_cog.save_data_local()
+        await job_cog.dump_data_to_console(guild)
+        return self._format_command_summary(
+            ["[IA] job.remove"],
+            f"Le métier **{canonical}** a été retiré pour **{display_name}**.",
+        )
+
+    async def _add_member_mule(self, ctx: commands.Context, member_raw: str, mule_name: str) -> str:
+        players_cog = self._get_players_cog()
+        if players_cog is None:
+            raise RuntimeError("Module membres indisponible.")
+        await players_cog._ensure_initialized()
+        await self._refresh_players_data(players_cog, ctx)
+        target_id, display_name = self._resolve_players_target(players_cog, ctx, member_raw)
+        entry = players_cog.persos_data.setdefault(
+            target_id,
+            {"discord_name": display_name or target_id, "main": "", "mules": []},
+        )
+        entry["discord_name"] = display_name or entry.get("discord_name") or target_id
+        mules = entry.setdefault("mules", [])
+        if any(isinstance(mule, str) and mule.lower() == mule_name.lower() for mule in mules):
+            return self._format_command_summary(
+                ["[IA] membre.addmule"],
+                f"La mule **{mule_name}** est déjà enregistrée pour **{display_name}**.",
+            )
+        mules.append(mule_name)
+        await players_cog.dump_data_to_console(ctx)
+        return self._format_command_summary(
+            ["[IA] membre.addmule"],
+            f"Mule **{mule_name}** ajoutée pour **{display_name}**.",
+        )
+
+    async def _remove_member_mule(self, ctx: commands.Context, member_raw: str, mule_name: str) -> str:
+        players_cog = self._get_players_cog()
+        if players_cog is None:
+            raise RuntimeError("Module membres indisponible.")
+        await players_cog._ensure_initialized()
+        await self._refresh_players_data(players_cog, ctx)
+        target_id, display_name = self._resolve_players_target(players_cog, ctx, member_raw)
+        entry = players_cog.persos_data.get(target_id)
+        if not entry:
+            raise RuntimeError(f"Aucune fiche trouvée pour {display_name}.")
+        mules = entry.get("mules", [])
+        idx = None
+        for i, mule in enumerate(mules):
+            if isinstance(mule, str) and mule.lower() == mule_name.lower():
+                idx = i
+                break
+        if idx is None:
+            raise RuntimeError(f"La mule {mule_name} n'est pas enregistrée pour {display_name}.")
+        removed = mules.pop(idx)
+        entry["mules"] = mules
+        await players_cog.dump_data_to_console(ctx)
+        return self._format_command_summary(
+            ["[IA] membre.delmule"],
+            f"Mule **{removed}** retirée pour **{display_name}**.",
+        )
+
+    async def _grant_role(self, ctx: commands.Context, member_raw: str, role_raw: str) -> str:
+        member = self._resolve_member_argument(ctx, member_raw)
+        if member is None:
+            raise RuntimeError("Membre introuvable pour l'ajout de rôle.")
+        role = self._resolve_role(ctx, role_raw)
+        if role is None:
+            raise RuntimeError("Rôle introuvable.")
+        if role in getattr(member, "roles", []):
+            return self._format_command_summary(
+                ["[IA] roles.add"],
+                f"{member.display_name} possède déjà le rôle **{role.name}**.",
+            )
+        try:
+            await member.add_roles(role, reason="IA Staff role grant")
+        except Exception as exc:
+            raise RuntimeError(f"Impossible d'ajouter le rôle {role.name}: {exc}")
+        return self._format_command_summary(
+            ["[IA] roles.add"],
+            f"Rôle **{role.name}** ajouté à **{member.display_name}**.",
+        )
+
+    async def _revoke_role(self, ctx: commands.Context, member_raw: str, role_raw: str) -> str:
+        member = self._resolve_member_argument(ctx, member_raw)
+        if member is None:
+            raise RuntimeError("Membre introuvable pour le retrait de rôle.")
+        role = self._resolve_role(ctx, role_raw)
+        if role is None:
+            raise RuntimeError("Rôle introuvable.")
+        if role not in getattr(member, "roles", []):
+            return self._format_command_summary(
+                ["[IA] roles.remove"],
+                f"{member.display_name} n'a pas le rôle **{role.name}**.",
+            )
+        try:
+            await member.remove_roles(role, reason="IA Staff role revoke")
+        except Exception as exc:
+            raise RuntimeError(f"Impossible de retirer le rôle {role.name}: {exc}")
+        return self._format_command_summary(
+            ["[IA] roles.remove"],
+            f"Rôle **{role.name}** retiré de **{member.display_name}**.",
+        )
 
     async def _dispatch_command_tool(self, ctx: commands.Context, name: str, args_json: dict) -> str:
         """Route a tool call to the matching Discord command."""
@@ -1170,6 +1523,69 @@ class IAStaff(commands.Cog):
             await invoke("job", profession)
             summary = await self._summarize_job_profession(ctx, profession)
             return self._format_command_summary([f"!job {profession}"], summary or f"Recherche lancée pour le métier **{profession}**.")
+        if normalized == "set_member_job":
+            member_ref = (payload.get("member") or "").strip()
+            job_name = (payload.get("job") or "").strip()
+            level_raw = payload.get("level")
+            if not member_ref or not job_name:
+                raise RuntimeError("Informations manquantes pour set_member_job")
+            try:
+                level_value = int(level_raw)
+            except (TypeError, ValueError):
+                raise RuntimeError("Niveau invalide pour set_member_job")
+            if not (1 <= level_value <= 200):
+                raise RuntimeError("Le niveau doit être compris entre 1 et 200.")
+            return await self._set_member_job(ctx, member_ref, job_name, level_value)
+        if normalized == "remove_member_job":
+            member_ref = (payload.get("member") or "").strip()
+            job_name = (payload.get("job") or "").strip()
+            if not member_ref or not job_name:
+                raise RuntimeError("Informations manquantes pour remove_member_job")
+            return await self._remove_member_job(ctx, member_ref, job_name)
+        if normalized == "add_member_mule":
+            member_ref = (payload.get("member") or "").strip()
+            mule_name = (payload.get("mule") or "").strip()
+            if not member_ref or not mule_name:
+                raise RuntimeError("Informations manquantes pour add_member_mule")
+            return await self._add_member_mule(ctx, member_ref, mule_name)
+        if normalized == "remove_member_mule":
+            member_ref = (payload.get("member") or "").strip()
+            mule_name = (payload.get("mule") or "").strip()
+            if not member_ref or not mule_name:
+                raise RuntimeError("Informations manquantes pour remove_member_mule")
+            return await self._remove_member_mule(ctx, member_ref, mule_name)
+        if normalized == "run_bot_command":
+            command_name = (payload.get("command") or "").strip()
+            if not command_name:
+                raise RuntimeError("Commande manquante pour run_bot_command")
+            pos_args = payload.get("positional_args") or []
+            kw_args = payload.get("keyword_args") or {}
+            if not isinstance(pos_args, list):
+                raise RuntimeError("`positional_args` doit être une liste.")
+            if not isinstance(kw_args, dict):
+                raise RuntimeError("`keyword_args` doit être un objet.")
+            pos_list = [str(arg) for arg in pos_args]
+            kw_map = {str(k): str(v) for k, v in kw_args.items()}
+            await invoke(command_name, *pos_list, **kw_map)
+            summary = f"Commande `{command_name}` exécutée."
+            if pos_list:
+                summary += f"\nArgs: {', '.join(pos_list)}"
+            if kw_map:
+                mapped = ", ".join(f"{k}={v}" for k, v in kw_map.items())
+                summary += f"\nOptions: {mapped}"
+            return self._format_command_summary([f"!{command_name}"], summary)
+        if normalized == "grant_role":
+            member_ref = (payload.get("member") or "").strip()
+            role_ref = (payload.get("role") or "").strip()
+            if not member_ref or not role_ref:
+                raise RuntimeError("Informations manquantes pour grant_role")
+            return await self._grant_role(ctx, member_ref, role_ref)
+        if normalized == "revoke_role":
+            member_ref = (payload.get("member") or "").strip()
+            role_ref = (payload.get("role") or "").strip()
+            if not member_ref or not role_ref:
+                raise RuntimeError("Informations manquantes pour revoke_role")
+            return await self._revoke_role(ctx, member_ref, role_ref)
         raise RuntimeError(f"Tool inconnu: {name}")
 
     async def _try_chat_with_tools(self, ctx: commands.Context, messages: list[dict]) -> str | None:
@@ -1185,10 +1601,15 @@ class IAStaff(commands.Cog):
             {
                 "role": "system",
                 "content": (
-                    "Lorsque l'utilisateur demande une action concrète, utilise les outils disponibles "
-                    "create_activity, list_activities, join_activity, cancel_activity, open_ticket, "
-                    "start_organisation et start_announce. Pose une question courte si certains détails "
-                    "manquent, puis exécute l'outil dès que les informations sont complètes."
+                    "Tu dois orchestrer les commandes Staff en plusieurs étapes si besoin. Utilise les outils "
+                    "(create_activity, list_activities, join_activity, cancel_activity, open_ticket, "
+                    "start_organisation, start_announce (annonces officielles via `!annonce`), start_event, "
+                    "clear_console, warnings/resetwarnings, recrutement, membre del/mules, stats, jobs, rôles, etc.). "
+                    "Lorsque l'utilisateur mentionne un canal (#annonces, #organisation, etc.), choisis l'outil "
+                    "approprié (ex: `start_announce` pour une annonce officielle, `start_organisation` pour "
+                    "préparer un événement interne). Quand aucune action dédiée n'existe, emploie `run_bot_command` "
+                    "avec le nom de la commande et ses arguments. Pose des questions courtes pour obtenir les infos "
+                    "manquantes et n'hésite pas à chaîner plusieurs outils pour atteindre l'objectif."
                 ),
             },
         )
@@ -1303,7 +1724,13 @@ class IAStaff(commands.Cog):
         return ""
 
     def _make_embed(self, page_text: str, idx: int, total: int) -> tuple[discord.Embed, list[discord.File]]:
-        emb = discord.Embed(description=page_text, color=discord.Color.teal())
+        palette = [
+            discord.Color.from_rgb(47, 128, 237),
+            discord.Color.from_rgb(52, 199, 89),
+            discord.Color.from_rgb(255, 159, 64),
+        ]
+        color = palette[(idx - 1) % len(palette)]
+        emb = discord.Embed(description=page_text, color=color)
         title = "IA Staff" + (f" • {idx}/{total}" if total > 1 else "")
         files: list[discord.File] = []
         if self.has_logo:
@@ -1311,7 +1738,7 @@ class IAStaff(commands.Cog):
             emb.set_author(name=title, icon_url="attachment://iastaff.png")
         else:
             emb.set_author(name=title)
-        emb.set_footer(text=f"Modèle: {self.model}")
+        emb.timestamp = datetime.utcnow()
         return emb, files
 
     async def _send_long_reply(

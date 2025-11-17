@@ -121,15 +121,24 @@ class PlayersCog(commands.Cog):
             return
         self.console_channel = console_channel
         data_str = json.dumps(self.persos_data, indent=4, ensure_ascii=False)
+        async def ensure_pinned(message: discord.Message):
+            try:
+                if not message.pinned:
+                    await message.pin()
+            except Exception as exc:
+                print(f"[DEBUG] Impossible d'épingler le snapshot console : {exc}")
+
         if len(data_str) < 1900:
             message_content = f"{PLAYERS_MARKER}\n```json\n{data_str}\n```"
             existing_message = await self._get_console_snapshot(console_channel)
             if existing_message:
                 await existing_message.edit(content=message_content)
                 self.console_message_id = existing_message.id
+                await ensure_pinned(existing_message)
             else:
                 sent_message = await console_channel.send(message_content)
                 self.console_message_id = sent_message.id
+                await ensure_pinned(sent_message)
         else:
             temp_file_path = self._as_temp_file(data_str)
             existing_message = await self._get_console_snapshot(console_channel)
@@ -143,6 +152,7 @@ class PlayersCog(commands.Cog):
                 file=discord.File(fp=temp_file_path, filename=DATA_FILE_NAME)
             )
             self.console_message_id = sent_message.id
+            await ensure_pinned(sent_message)
 
     def _as_temp_file(self, data_str: str) -> str:
         temp_filename = "temp_players_data.json"
@@ -192,6 +202,8 @@ class PlayersCog(commands.Cog):
             if message.id not in seen_ids:
                 candidates.append(message)
                 seen_ids.add(message.id)
+        best_data: Optional[Dict[str, dict]] = None
+        best_message: Optional[discord.Message] = None
         for message in candidates:
             if message.author != self.bot.user:
                 continue
@@ -200,6 +212,7 @@ class PlayersCog(commands.Cog):
             has_file = any(att.filename == DATA_FILE_NAME for att in message.attachments)
             if not (has_marker or has_file):
                 continue
+            parsed: Optional[Dict[str, dict]] = None
             for attachment in message.attachments:
                 if attachment.filename != DATA_FILE_NAME:
                     continue
@@ -210,17 +223,24 @@ class PlayersCog(commands.Cog):
                     print(f"[DEBUG] Erreur lors du parsing JSON joint depuis {CONSOLE_CHANNEL_NAME}: {exc}")
                     continue
                 if self._looks_like_players_data(data):
-                    self.persos_data = data
-                    self.console_message_id = message.id
-                    print(f"[DEBUG] Données récupérées depuis le fichier joint dans #{CONSOLE_CHANNEL_NAME}.")
-                    return True
-            if "```json" in content:
+                    parsed = data
+                    break
+            if parsed is None and "```json" in content:
                 data = self._extract_json_from_message(content)
                 if data is not None and self._looks_like_players_data(data):
-                    self.persos_data = data
-                    self.console_message_id = message.id
-                    print(f"[DEBUG] Données récupérées depuis le salon #{CONSOLE_CHANNEL_NAME}.")
-                    return True
+                    parsed = data
+            if parsed is None:
+                continue
+            if not best_data or len(parsed) > len(best_data):
+                best_data = parsed
+                best_message = message
+        if best_data and best_message:
+            self.persos_data = best_data
+            self.console_message_id = best_message.id
+            print(
+                f"[DEBUG] Données récupérées depuis #{CONSOLE_CHANNEL_NAME} (message {best_message.id}, {len(best_data)} entrées)."
+            )
+            return True
         return False
 
     def _extract_json_from_message(self, content: str) -> Optional[Dict[str, dict]]:
@@ -259,16 +279,34 @@ class PlayersCog(commands.Cog):
                 return True
         return False
 
+    def _is_console_snapshot(self, message: discord.Message) -> bool:
+        if message.author != self.bot.user:
+            return False
+        content = message.content or ""
+        if PLAYERS_MARKER in content:
+            return True
+        if any(att.filename == DATA_FILE_NAME for att in getattr(message, "attachments", []) or []):
+            return True
+        return False
+
     async def _get_console_snapshot(self, console_channel: discord.TextChannel) -> Optional[discord.Message]:
         if self.console_message_id:
             try:
                 message = await console_channel.fetch_message(self.console_message_id)
-                if message.author == self.bot.user and PLAYERS_MARKER in message.content:
+                if self._is_console_snapshot(message):
                     return message
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 self.console_message_id = None
-        async for msg in console_channel.history(limit=50):
-            if msg.author == self.bot.user and PLAYERS_MARKER in msg.content:
+        try:
+            pinned = await console_channel.pins()
+        except Exception:
+            pinned = []
+        for msg in pinned:
+            if self._is_console_snapshot(msg):
+                self.console_message_id = msg.id
+                return msg
+        async for msg in console_channel.history(limit=200):
+            if self._is_console_snapshot(msg):
                 self.console_message_id = msg.id
                 return msg
         return None
@@ -568,24 +606,53 @@ class PlayersCog(commands.Cog):
             embed.add_field(name="Mules", value="(Aucune)", inline=False)
         await ctx.send(embed=embed)
 
+    def _normalize_token(self, value: str) -> str:
+        return "".join(ch for ch in value.lower() if ch.isalnum())
+
     def _find_member_by_name(self, search: str) -> List[Tuple[str, str]]:
-        search_lower = search.lower()
-        results: List[Tuple[str, str]] = []
-        exact_match: Optional[Tuple[str, str]] = None
+        query = (search or "").strip()
+        if not query:
+            return []
+        if query.startswith("<@") and query.endswith(">"):
+            payload = query[2:-1]
+            if payload.startswith("!"):
+                payload = payload[1:]
+            if payload.isdigit():
+                user_id = payload
+                data = self.persos_data.get(user_id)
+                if data:
+                    label = data.get("discord_name") or data.get("main") or user_id
+                    return [(user_id, label)]
+        if query.isdigit() and query in self.persos_data:
+            data = self.persos_data[query]
+            label = data.get("discord_name") or data.get("main") or query
+            return [(query, label)]
+        search_lower = query.lower()
+        search_slug = self._normalize_token(query)
+        results: List[Tuple[str, str, int]] = []
         for uid, data in self.persos_data.items():
             stored_name = data.get("discord_name", "")
             main_name = data.get("main", "")
-            if stored_name.lower() == search_lower or main_name.lower() == search_lower:
-                exact_match = (uid, stored_name or main_name or uid)
-                break
-            if search_lower in stored_name.lower():
-                results.append((uid, stored_name))
-            elif main_name and search_lower in main_name.lower():
-                display = stored_name if stored_name else f"(principal {main_name})"
-                results.append((uid, display))
-        if exact_match:
-            return [exact_match]
-        return results
+            candidates = [stored_name, main_name]
+            for name in candidates:
+                if not name:
+                    continue
+                norm = self._normalize_token(name)
+                score = 0
+                if name.lower() == search_lower or norm == search_slug:
+                    return [(uid, stored_name or main_name or uid)]
+                if norm and search_slug and norm.startswith(search_slug):
+                    score = 1
+                elif search_lower in name.lower():
+                    score = 2
+                elif search_slug and norm and search_slug in norm:
+                    score = 3
+                if score:
+                    display = stored_name or main_name or uid
+                    results.append((uid, display, score))
+                    break
+        results.sort(key=lambda item: item[2])
+        return [(uid, label) for uid, label, _ in results]
 
     def _verifier_et_fusionner_id(self, vrai_id: str, *aliases: str):
         if vrai_id in self.persos_data:
