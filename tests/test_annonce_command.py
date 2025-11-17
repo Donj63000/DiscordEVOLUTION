@@ -2,6 +2,8 @@ from pathlib import Path
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -24,6 +26,14 @@ class DummyGuild:
             if channel.id == channel_id:
                 return channel
         return None
+
+
+class DummyContext:
+    def __init__(self) -> None:
+        self.replies: list[str] = []
+
+    async def reply(self, content, *, mention_author=False):
+        self.replies.append(content)
 
 
 def make_cog(monkeypatch) -> annonce.AnnonceCog:
@@ -84,3 +94,24 @@ def test_find_channel_from_plain_digits(monkeypatch):
     found = cog._find_announcement_channel(guild)
 
     assert found is guild.text_channels[1]
+
+
+@pytest.mark.asyncio
+async def test_annonce_model_switches_runtime_choice(monkeypatch):
+    cog = make_cog(monkeypatch)
+    ctx = DummyContext()
+
+    await annonce.AnnonceCog.annonce_model(cog, ctx, model="GPT5 mini")
+
+    assert cog.model == "gpt-5-mini"
+    assert ctx.replies and "gpt-5-mini" in ctx.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_annonce_model_requires_identifier(monkeypatch):
+    cog = make_cog(monkeypatch)
+    ctx = DummyContext()
+
+    await annonce.AnnonceCog.annonce_model(cog, ctx, model=" ")
+
+    assert ctx.replies and "Précise un identifiant" in ctx.replies[-1]

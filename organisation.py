@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Tuple
 
 import discord
-from utils.openai_config import resolve_staff_model, build_async_openai_client
+from utils.openai_config import resolve_staff_model, build_async_openai_client, resolve_reasoning_effort
 
 
 def _ensure_utils() -> None:
@@ -278,12 +278,16 @@ class OrganisationCog(commands.Cog):
         payload = self._normalise_responses_input(messages)
         if not payload:
             raise RuntimeError("Prompt vide pour OpenAI.")
-        resp = await self._client.responses.create(
-            model=self.model,
-            input=payload,
-            response_format={"type": "json_schema", "json_schema": schema},
-            temperature=temperature,
-        )
+        request = {
+            "model": self.model,
+            "input": payload,
+            "response_format": {"type": "json_schema", "json_schema": schema},
+            "temperature": temperature,
+        }
+        reasoning = resolve_reasoning_effort(self.model)
+        if reasoning:
+            request["reasoning"] = reasoning
+        resp = await self._client.responses.create(**request)
         text = _extract_response_text(resp)
         if not text:
             raise RuntimeError("Reponse OpenAI vide.")

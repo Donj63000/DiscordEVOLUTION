@@ -11,6 +11,20 @@ from typing import Any, Mapping
 log = logging.getLogger(__name__)
 
 
+STAFF_MODEL_ALIASES: dict[str, str] = {
+    "gpt5": "gpt-5",
+    "gpt-5.0": "gpt-5",
+    "gpt-5": "gpt-5",
+    "gpt5-mini": "gpt-5-mini",
+    "gpt-5-mini": "gpt-5-mini",
+    "gpt-5m": "gpt-5-mini",
+    "gpt5m": "gpt-5-mini",
+    "mini-5": "gpt-5-mini",
+}
+
+ALLOWED_REASONING_EFFORTS = {"minimal", "low", "medium", "high"}
+
+
 def _clean_env(value: str, prefixes: tuple[str, ...] | None = None) -> str:
     raw = (value or "").strip()
     if not raw:
@@ -47,17 +61,20 @@ def resolve_openai_model(env_var: str, default: str, aliases: Mapping[str, str] 
 
 
 def resolve_staff_model(default: str = "gpt-4o-mini") -> str:
-    aliases = {
-        "gpt5": "gpt-5",
-        "gpt-5.0": "gpt-5",
-        "gpt-5": "gpt-5",
-        "gpt5-mini": "gpt-5-mini",
-        "gpt-5-mini": "gpt-5-mini",
-        "gpt-5m": "gpt-5-mini",
-        "gpt5m": "gpt-5-mini",
-        "mini-5": "gpt-5-mini",
-    }
-    return resolve_openai_model("OPENAI_STAFF_MODEL", default, aliases)
+    raw = (os.getenv("OPENAI_STAFF_MODEL") or "").strip()
+    if not raw:
+        return default
+    resolved = normalise_staff_model(raw, default=default)
+    return resolved or default
+
+
+def normalise_staff_model(value: str, default: str | None = None) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return default or ""
+    key = _normalise_model_name(raw)
+    resolved = STAFF_MODEL_ALIASES.get(key, key)
+    return resolved or (default or "")
 
 
 def build_async_openai_client(client_cls: Any, *, timeout: float | None = None) -> Any:
@@ -100,3 +117,19 @@ def build_async_openai_client(client_cls: Any, *, timeout: float | None = None) 
     finally:
         for key, value in removed_org_env:
             os.environ[key] = value
+
+
+def resolve_reasoning_effort(model: str) -> dict[str, str] | None:
+    effort = (os.getenv("OPENAI_REASONING_EFFORT") or "").strip().lower()
+    if not effort or not model:
+        return None
+    if not model.strip().lower().startswith("gpt-5"):
+        return None
+    if effort not in ALLOWED_REASONING_EFFORTS:
+        log.warning(
+            "OPENAI_REASONING_EFFORT=%s ignoré. Valeurs acceptées: %s",
+            effort,
+            ", ".join(sorted(ALLOWED_REASONING_EFFORTS)),
+        )
+        return None
+    return {"effort": effort}

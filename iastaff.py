@@ -8,7 +8,12 @@ import asyncio
 from datetime import datetime, time as datetime_time
 import discord
 from discord.ext import commands, tasks
-from utils.openai_config import build_async_openai_client, resolve_openai_model, resolve_staff_model
+from utils.openai_config import (
+    build_async_openai_client,
+    resolve_openai_model,
+    resolve_staff_model,
+    resolve_reasoning_effort,
+)
 
 try:
     from zoneinfo import ZoneInfo
@@ -465,6 +470,7 @@ class IAStaff(commands.Cog):
             "store": False,
             "temperature": self.morning_temperature,
         }
+        self._maybe_attach_reasoning(req, model=self.morning_model)
         for attempt in range(3):
             try:
                 resp = await self.client.responses.create(**req)
@@ -597,7 +603,16 @@ class IAStaff(commands.Cog):
             base["tool_resources"] = {"file_search": {"vector_store_ids": [VECTOR_STORE_ID]}}
         if tools:
             base["tools"] = tools
+        self._maybe_attach_reasoning(base)
         return base
+
+    def _maybe_attach_reasoning(self, request: dict, *, model: str | None = None):
+        target = model or request.get("model") or self.model
+        if not target:
+            return
+        options = resolve_reasoning_effort(target)
+        if options:
+            request["reasoning"] = options
 
     def _command_tools(self) -> list[dict]:
         """Describe the Discord commands that can be invoked via OpenAI tool-calling."""

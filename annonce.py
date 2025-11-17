@@ -6,7 +6,12 @@ import asyncio
 import discord
 from discord.ext import commands
 from utils.channel_resolver import resolve_text_channel
-from utils.openai_config import resolve_staff_model, build_async_openai_client
+from utils.openai_config import (
+    resolve_staff_model,
+    build_async_openai_client,
+    normalise_staff_model,
+    resolve_reasoning_effort,
+)
 
 try:
     from openai import AsyncOpenAI
@@ -165,6 +170,32 @@ class AnnonceCog(commands.Cog):
                 return channel
         return None
 
+    @commands.command(name="annonce-model", aliases=["annoncemodel"])
+    @commands.has_role(STAFF_ROLE_NAME)
+    async def annonce_model(self, ctx: commands.Context, *, model: str | None = None):
+        candidate = (model or "").strip()
+        if not candidate:
+            await ctx.reply(
+                "Précise un identifiant de modèle, par exemple `!annonce-model gpt-5-mini`.",
+                mention_author=False,
+            )
+            return
+        resolved = normalise_staff_model(candidate)
+        if not resolved:
+            await ctx.reply(
+                "Modèle non reconnu. Exemple valide : `gpt-5-mini`.",
+                mention_author=False,
+            )
+            return
+        self.model = resolved
+        await ctx.reply(
+            (
+                f"Modèle Annonce (runtime) : `{self.model}`.\n"
+                "Pour conserver ce choix, définis `OPENAI_STAFF_MODEL` sur ton hébergeur."
+            ),
+            mention_author=False,
+        )
+
     @commands.command(name="annonce", aliases=["annoncestaff", "*annonce", "annonces"])
     @commands.has_role(STAFF_ROLE_NAME)
     async def annonce_cmd(self, ctx: commands.Context):
@@ -205,11 +236,15 @@ class AnnonceCog(commands.Cog):
         messages = self._build_prompt(answers, ctx.author)
 
         try:
-            response = await self.client.responses.create(
-                model=self.model,
-                input=messages,
-                max_output_tokens=MAX_OUTPUT_TOKENS,
-            )
+            request = {
+                "model": self.model,
+                "input": messages,
+                "max_output_tokens": MAX_OUTPUT_TOKENS,
+            }
+            reasoning = resolve_reasoning_effort(self.model)
+            if reasoning:
+                request["reasoning"] = reasoning
+            response = await self.client.responses.create(**request)
         except Exception as e:
             await dm.send(f"❌ Erreur lors de la génération de l'annonce : {e}")
             return

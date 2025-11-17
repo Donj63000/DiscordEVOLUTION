@@ -11,7 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from utils.channel_resolver import resolve_text_channel
-from utils.openai_config import resolve_staff_model, build_async_openai_client
+from utils.openai_config import resolve_staff_model, build_async_openai_client, resolve_reasoning_effort
 
 try:
     from openai import AsyncOpenAI  # SDK officiel
@@ -193,6 +193,9 @@ class AnnounceAICog(commands.Cog):
             "input": input_text,
             "max_output_tokens": max_tokens,
         }
+        reasoning = resolve_reasoning_effort(request_kwargs["model"])
+        if reasoning:
+            request_kwargs["reasoning"] = reasoning
         if self._supports_temperature:
             if self._temperature_mode == "inference_config":
                 request_kwargs["inference_config"] = {"temperature": temperature_value}
