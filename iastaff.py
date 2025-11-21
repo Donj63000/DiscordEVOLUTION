@@ -135,56 +135,62 @@ if MORNING_TIMEZONE is not None:
 else:
     MORNING_TRIGGER_TIME = datetime_time(hour=MORNING_HOUR, minute=MORNING_MINUTE)
 
-GUILD_RULES = """Règlement Officiel de la Guilde Evolution – Édition du 19/02/2025
+GUILD_RULES = """Synthese Officielle du Reglement - Guilde Evolution
 
-“Ensemble, nous évoluerons plus vite que seuls.”
+1. Valeurs & Principes Generaux
+Convivialite et partage : ambiance chaleureuse, entraide (conseils, farm, donjons, metiers).
+Progression collective : chacun contribue selon ses moyens.
+Communication transparente : annonces sur Discord, ouvre un ticket (!ticket) en cas de souci.
 
-Bienvenue au sein de la guilde Evolution ! Ce règlement assure une ambiance conviviale, respectueuse et motivante.
+2. Regles de Comportement
+Respect absolu : aucun harcelement/insulte/discrimination, sanctions possibles.
+Politesse et bienveillance : dire bonjour, rester courtois, eviter les reactions a chaud.
+Gestion des conflits : privilegier prive ou mediation staff, pas de dispute publique.
 
-Nos Valeurs & Notre Vision
-Convivialité & Partage
-Respecte tes camarades, valorise leurs progrès et encourage-les.
-Progression Collective
-L’évolution de la guilde passe par la réussite de chaque membre.
-Transparence & Communication
-Les annonces et décisions importantes sont expliquées sur Discord (#📣 annonces 📣). Ouvre un ticket (!ticket) en cas de souci.
+3. Discord & Salons
+Discord obligatoire pour suivre la vie de guilde.
+Salons cles : #general (discussions), #annonces (officiel), #organisation (sorties), !ticket (prive staff), question-au-staff ou !avis (anonyme).
 
-Respect & Convivialité
-Aucun harcèlement, insulte, diffamation ou discrimination. Sanctions possibles. Politesse et bienveillance attendues. Gestion des conflits par dialogue privé ou médiation Staff.
+4. Participation & Vie de Guilde
+Passage regulier recommande. Activites annoncees sur Discord. Chacun peut proposer via !activite creer.
+Entraide encouragee (donjons, metiers, farm, builds).
 
-Discord Obligatoire & Communication
-Discord indispensable. Paramètre tes notifications. #📄 Général 📄 pour discuter, #📣 annonces 📣 pour infos officielles, #👌 astuce 👌 pour questions, #🌈 organisation 🌈 pour planifier. !ticket ouvre un salon privé avec le Staff.
+5. Percepteurs & Ressources (charte)
+Tableau des zones fait foi. Deco interdite sur zones 2 h / 4 h ; toleree sur 6 h+ (prevenir).
+Zones non listees : 48 h max + 48 h de cooldown avant de reposer.
+Conditions : droit de pose a partir de 4 000 000 XP guilde + periode d'essai validee ; 1 perco par personne avec perso de la guilde.
+Cooldowns : 1 h entre recolte et nouvelle pose (sauf perco tue en defense, mais pas de repose immediate meme zone).
+Perco full depuis >= 2 h : recolte pour banque Evolution + avertissement.
+Abus interdits : poser puis se deconnecter longtemps, partager une zone, ignorer cooldowns, monopoliser.
+Defense : toute la guilde est invitee a defendre.
+Echelle avertissements perco : 1 rappel, 2 perte 1 sem, 3 perte 2 sem, 4 perte jusqu'a nouvel ordre.
 
-Participation & Vie de Guilde
-Présence régulière appréciée. Propose/participe aux événements. Entraide encouragée.
+6. Contribution d'XP
+Taux libre 1 % a 90 %. 0 % interdit sauf demande via !ticket (rush 200, cas particuliers).
 
-Percepteurs & Ressources
-Droit de pose après 500 000 XP guilde. Rotation en cas de demande forte, éviter monopolisation. Défense collective encouragée. Communique pour éviter de gêner d’autres percepteurs.
+7. Recrutement & Nouveaux Membres
+Reserve staff/veterans. Discord obligatoire. Periode d'essai possible 2-3 jours. Adhesion aux valeurs requise.
 
-Contribution d’XP à la Guilde
-Taux flexible 1% à 99%. 0% interdit sauf accord temporaire via !ticket. 1% minimum pour l’élan collectif.
+8. Organisation Interne
+Staff (roles fusionnes) gere recrutement, moderation, organisation, cohesion. Meneurs : Thalata et Coca-Cola. Decisions importantes avec le Staff. Discord/bot geres par Coca-Cola.
 
-Recrutement & Nouveaux Membres
-Recrutement par Staff et vétérans. Proposition via Staff. Période d’essai possible 2–3 jours.
+9. Sanctions & Discipline
+Rappel bienveillant -> sanctions progressives selon gravite (avertissements, retrait de droits, exclusions). Urgence (haine/harcelement) : sanction immediate avec explications.
 
-Organisation Interne & Staff
-Anciens rôles fusionnés sous “Staff”. Meneurs: Thalata et Coca-Coca. Décisions collégiales. Identifiables sur Discord.
+10. Multi-guilde
+Joueurs : autorise si aucun tort a Evolution ; conflit (defense perco) regle par discussion.
+Staff : doit rester fidele a Evolution et pas actif dans une guilde concurrente.
 
-Sanctions & Discipline
-Rappels progressifs, sanctions collégiales si nécessaire. Transparence avec la personne concernée.
+11. Evenements, Sondages & Activites
+Sondages reguliers, avis anonymes via !avis. Activites sur #organisation. Concours/recompenses/loteries (Clody). Interdit : multi-compte, achat/vente de compte, achat de kamas, violations CGU Ankama.
 
-Multi-Guilde
-Second personnage ailleurs toléré si engagement chez Evolution intact. Staff fidèle à Evolution.
+12. Charte (resume obligatoire)
+En rejoignant Evolution, tu t'engages a : respecter le reglement ; rester respectueux et courtois ; contribuer a l'esprit d'equipe ; communiquer de facon constructive ; participer positivement et respecter le Staff ; reconnaitre les mises a jour internes. Signature par emoji check = acceptation.
 
-Événements, Sondages & Animations
-Sondages via !sondage. Activités via !activite creer. Concours et récompenses ponctuels.
-
-Conclusion & Avenir
-Respect, soutien mutuel et plaisir de jeu au centre des interactions. Règlement en vigueur 21/02/2025.
-
-Rappels
-Droit perco: 2 percepteurs par personne et pas sur la même zone.
-"""
+Resume final (10 points)
+Respect obligatoire, aucune toxicite. Discord obligatoire. Participation reguliere. Entraide et convivialite centrales.
+Percepteurs strictement encadres (zones, cooldowns, abus). XP libre 1-90 %, 0 % sur demande.
+Recrutement controle (essai possible). Staff + Meneurs = gestion. Sanctions progressives. Multi-guilde tolere sous conditions."""
 
 SYSTEM_PROMPT_DEFAULT = (
     """Tu es EvolutionPRO, assistant du Staff de la guilde Évolution (Dofus Rétro 1.29).
