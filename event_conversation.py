@@ -291,117 +291,137 @@ class EventConversationCog(commands.Cog):
         transcript: List[str] = []
         self._conversations[ctx.author.id] = transcript
 
-        def check(m: discord.Message) -> bool:
-            return m.author == ctx.author and isinstance(m.channel, discord.DMChannel)
+        try:
+            def check(m: discord.Message) -> bool:
+                return m.author == ctx.author and isinstance(m.channel, discord.DMChannel)
 
-        while True:
+            while True:
+                try:
+                    msg = await self.bot.wait_for(
+                        "message", timeout=DM_TIMEOUT, check=check
+                    )
+                except asyncio.TimeoutError:
+                    await dm.send("⏱️ Temps écoulé, conversation annulée.")
+                    self._conversations.pop(ctx.author.id, None)
+                    return
+
+                if msg.content.lower().startswith("terminé"):
+                    break
+                transcript.append(msg.content.strip())
+
+            # ----- appel IA -----
+            ia_cog = self.bot.get_cog("IACog")
+            if ia_cog is None:
+                return await dm.send("❌ Le module IA n’est pas disponible.")
+
+            prompt = f"{SYSTEM_PROMPT}\n\nTRANSCRIPT:\n" + "\n".join(transcript)
             try:
-                msg = await self.bot.wait_for("message", timeout=DM_TIMEOUT, check=check)
-            except asyncio.TimeoutError:
-                await dm.send("⏱️ Temps écoulé, conversation annulée.")
-                self._conversations.pop(ctx.author.id, None)
+                resp, _ = await ia_cog.generate_content_with_fallback_async(prompt)
+                raw_json = self._extract_json(
+                    resp.text if hasattr(resp, "text") else str(resp)
+                )
+                ai_payload = json.loads(raw_json)
+                draft = EventDraft.from_json(ai_payload)
+
+                # -------- Fallback date si IA renvoie un passé / trop proche --------
+                now = discord.utils.utcnow()
+                if draft.start_time <= now + MIN_DELTA:
+                    alt = parse_french_datetime(" ".join(transcript))
+                    if alt and alt > now + MIN_DELTA:
+                        delta = draft.end_time - draft.start_time
+                        draft.start_time = alt
+                        draft.end_time = alt + delta
+            except Exception as exc:
+                self.log.exception("Erreur IA/parsing : %s", exc)
+                return await dm.send(
+                    f"Impossible d’analyser la réponse IA :\n```\n{exc}\n```")
+
+            # ----- preview -----
+            view_confirm = ConfirmView()
+            preview_msg = await dm.send(
+                embed=draft.to_preview_embed(), view=view_confirm
+            )
+            await view_confirm.wait()
+            await preview_msg.edit(view=None)
+
+            if view_confirm.value is not True:
+                await dm.send("Événement annulé. 👍")
                 return
 
-            if msg.content.lower().startswith("terminé"):
-                break
-            transcript.append(msg.content.strip())
-
-        # ----- appel IA -----
-        ia_cog = self.bot.get_cog("IACog")
-        if ia_cog is None:
-            return await dm.send("❌ Le module IA n’est pas disponible.")
-
-        prompt = f"{SYSTEM_PROMPT}\n\nTRANSCRIPT:\n" + "\n".join(transcript)
-        try:
-            resp, _ = await ia_cog.generate_content_with_fallback_async(prompt)
-            raw_json = self._extract_json(resp.text if hasattr(resp, "text") else str(resp))
-            ai_payload = json.loads(raw_json)
-            draft = EventDraft.from_json(ai_payload)
-
-            # -------- Fallback date si IA renvoie un passé / trop proche --------
+            # ----- vérifs -----
             now = discord.utils.utcnow()
-            if draft.start_time <= now + MIN_DELTA:
-                alt = parse_french_datetime(" ".join(transcript))
-                if alt and alt > now + MIN_DELTA:
-                    delta = draft.end_time - draft.start_time
-                    draft.start_time = alt
-                    draft.end_time = alt + delta
-        except Exception as exc:
-            self.log.exception("Erreur IA/parsing : %s", exc)
-            return await dm.send(f"Impossible d’analyser la réponse IA :\n```\n{exc}\n```")
+            if draft.start_time < now + MIN_DELTA:
+                return await dm.send(
+                    "⚠️ La date de début doit être au moins 5 minutes dans le futur."
+                )
+            if draft.end_time <= draft.start_time:
+                return await dm.send("⚠️ L’heure de fin doit être après l’heure de début.")
 
-        # ----- preview -----
-        view_confirm = ConfirmView()
-        preview_msg = await dm.send(embed=draft.to_preview_embed(), view=view_confirm)
-        await view_confirm.wait()
-        await preview_msg.edit(view=None)
+            guild: discord.Guild = ctx.guild  # type: ignore[assignment]
 
-        if view_confirm.value is not True:
-            await dm.send("Événement annulé. 👍")
-            return
+            # --- création rôle + salon privés -------------------------------- #
+            role = await self._create_event_role(guild, draft)
+            private_channel = await self._create_event_channel(guild, draft, role)
 
-        # ----- vérifs -----
-        now = discord.utils.utcnow()
-        if draft.start_time < now + MIN_DELTA:
-            return await dm.send("⚠️ La date de début doit être au moins 5 minutes dans le futur.")
-        if draft.end_time <= draft.start_time:
-            return await dm.send("⚠️ L’heure de fin doit être après l’heure de début.")
+            # --- Guild Scheduled Event --------------------------------------- #
+            try:
+                scheduled_event = await guild.create_scheduled_event(
+                    name=draft.name,
+                    description=draft.description,
+                    start_time=draft.start_time,
+                    end_time=draft.end_time,
+                    entity_type=discord.EntityType.external,
+                    location=draft.location or private_channel.jump_url,  # lien du salon
+                    privacy_level=discord.PrivacyLevel.guild_only,
+                )
+            except discord.HTTPException as exc:
+                self.log.error("create_scheduled_event: %s", exc.text)
+                return await dm.send(f"❌ Impossible de créer l’événement : {exc.text}")
 
-        guild: discord.Guild = ctx.guild  # type: ignore[assignment]
-
-        # --- création rôle + salon privés -------------------------------- #
-        role = await self._create_event_role(guild, draft)
-        private_channel = await self._create_event_channel(guild, draft, role)
-
-        # --- Guild Scheduled Event --------------------------------------- #
-        try:
-            scheduled_event = await guild.create_scheduled_event(
-                name=draft.name,
-                description=draft.description,
-                start_time=draft.start_time,
-                end_time=draft.end_time,
-                entity_type=discord.EntityType.external,
-                location=draft.location or private_channel.jump_url,  # lien du salon
-                privacy_level=discord.PrivacyLevel.guild_only,
+            # --- annonce publique ------------------------------------------- #
+            announce_channel = resolve_text_channel(
+                guild,
+                id_env="ORGANISATION_CHANNEL_ID",
+                name_env="ORGANISATION_CHANNEL_NAME",
+                default_name=self.announce_channel_name,
             )
-        except discord.HTTPException as exc:
-            self.log.error("create_scheduled_event: %s", exc.text)
-            return await dm.send(f"❌ Impossible de créer l’événement : {exc.text}")
+            if announce_channel is None:
+                return await dm.send(
+                    f"❌ Canal #{self.announce_channel_name} introuvable."
+                )
 
-        # --- annonce publique ------------------------------------------- #
-        announce_channel = resolve_text_channel(
-            guild,
-            id_env="ORGANISATION_CHANNEL_ID",
-            name_env="ORGANISATION_CHANNEL_NAME",
-            default_name=self.announce_channel_name,
-        )
-        if announce_channel is None:
-            return await dm.send(f"❌ Canal #{self.announce_channel_name} introuvable.")
+            store_data = {
+                "event_id": scheduled_event.id,
+                "message_id": None,  # rempli après send
+                "channel_id": announce_channel.id,
+                "role_id": role.id,
+                "event_channel_id": private_channel.id,
+                "max_slots": draft.max_slots,
+                "dungeon": draft.dungeon_name,
+                "going": [],
+                "ends_at": draft.end_time.isoformat(),
+            }
+            view_rsvp = RSVPView(
+                role, draft.max_slots, parent_cog=self, store_data=store_data
+            )
 
-        store_data = {
-            "event_id": scheduled_event.id,
-            "message_id": None,              # rempli après send
-            "channel_id": announce_channel.id,
-            "role_id": role.id,
-            "event_channel_id": private_channel.id,
-            "max_slots": draft.max_slots,
-            "dungeon": draft.dungeon_name,
-            "going": [],
-            "ends_at": draft.end_time.isoformat(),
-        }
-        view_rsvp = RSVPView(role, draft.max_slots, parent_cog=self, store_data=store_data)
+            announce_msg = await announce_channel.send(
+                embed=draft.to_announce_embed(), view=view_rsvp
+            )
+            store_data["message_id"] = announce_msg.id
+            if self.console:
+                await self.console.upsert(store_data)
 
-        announce_msg = await announce_channel.send(embed=draft.to_announce_embed(), view=view_rsvp)
-        store_data["message_id"] = announce_msg.id
-        if self.console:
-            await self.console.upsert(store_data)
+            await dm.send("✅ Événement créé, salon privé ouvert et annoncé !")
 
-        await dm.send("✅ Événement créé, salon privé ouvert et annoncé !")
-
-        # --- planifie la suppression rôle + salon ------------------------ #
-        self.bot.loop.create_task(
-            self._schedule_cleanup(role, private_channel, draft.end_time, scheduled_event.id)
-        )
+            # --- planifie la suppression rôle + salon ------------------------ #
+            self.bot.loop.create_task(
+                self._schedule_cleanup(
+                    role, private_channel, draft.end_time, scheduled_event.id
+                )
+            )
+        finally:
+            self._conversations.pop(ctx.author.id, None)
 
     # ------------------------------------------------------------------ #
     # Helpers create role / channel                                      #
