@@ -159,10 +159,22 @@ class EventStore:
             await channel.send(f"{self.MARKER}\n```json\n{data_str}\n```")
         else:
             temp_path = "temp_event_store.json"
-            with open(temp_path, "w", encoding="utf-8") as f:
-                f.write(data_str)
-            await channel.send(
-                f"{self.MARKER} (fichier)",
-                file=discord.File(fp=temp_path, filename="event_store.json"),
-            )
+            try:
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    f.write(data_str)
+                await channel.send(
+                    f"{self.MARKER} (fichier)",
+                    file=discord.File(fp=temp_path, filename="event_store.json"),
+                )
+            finally:
+                try:
+                    os.remove(temp_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    logger.warning(
+                        "Failed to remove temporary event store file %s: %s",
+                        temp_path,
+                        exc,
+                    )
 
