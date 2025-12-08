@@ -27,6 +27,12 @@ if _HAS_PYDANTIC:
         temp_role_id: Optional[int] = None
         banner_url: Optional[str] = None
         author_id: Optional[int] = None
+        location: Optional[str] = None
+        dungeon_name: Optional[str] = None
+        event_channel_id: Optional[int] = None
+        announce_message_id: Optional[int] = None
+        scheduled_event_id: Optional[int] = None
+        going: Optional[list[int]] = None
 
         def model_dump_json(self, **kwargs) -> str:  # type: ignore[override]
             data = self.model_dump(mode="json", exclude_none=True)
@@ -39,6 +45,8 @@ if _HAS_PYDANTIC:
                     data["max_participants"] = min(int(mp), 8)
                 except (TypeError, ValueError):
                     data["max_participants"] = None
+            if data.get("going") is not None:
+                data["going"] = [int(uid) for uid in data.get("going", [])]
             if hasattr(cls, "model_validate"):
                 return cls.model_validate(data)
             return cls.parse_obj(data)
@@ -61,6 +69,12 @@ else:
         temp_role_id: Optional[int] = None
         banner_url: Optional[str] = None
         author_id: Optional[int] = None
+        location: Optional[str] = None
+        dungeon_name: Optional[str] = None
+        event_channel_id: Optional[int] = None
+        announce_message_id: Optional[int] = None
+        scheduled_event_id: Optional[int] = None
+        going: Optional[list[int]] = None
 
         def __post_init__(self) -> None:  # pragma: no cover - simple coercion
             if self.max_participants is not None:
@@ -68,6 +82,11 @@ else:
                     self.max_participants = min(int(self.max_participants), 8)
                 except (TypeError, ValueError):
                     self.max_participants = None
+            if self.going is not None:
+                try:
+                    self.going = [int(uid) for uid in self.going]
+                except (TypeError, ValueError):
+                    self.going = None
 
         def model_dump(self, mode: str = "python", *, exclude_none: bool = False):
             data = asdict(self)

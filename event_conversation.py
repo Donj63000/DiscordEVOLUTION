@@ -215,6 +215,7 @@ class RSVPView(discord.ui.View):
         self.store_data["going"] = list(self._going)
         if self.parent.console:
             await self.parent.console.upsert(self.store_data)
+        await self.parent._persist_store_data(self.store_data)
 
         await itx.response.send_message("✅ Inscription enregistrée !", ephemeral=True)
 
@@ -229,6 +230,7 @@ class RSVPView(discord.ui.View):
         self.store_data["going"] = list(self._going)
         if self.parent.console:
             await self.parent.console.upsert(self.store_data)
+        await self.parent._persist_store_data(self.store_data)
 
         await itx.response.send_message("Désinscription effectuée.", ephemeral=True)
 
@@ -258,6 +260,20 @@ class EventConversationCog(commands.Cog):
     # ---------- lifecycle ------------------------------------------------- #
     async def cog_load(self) -> None:
         self.console = ConsoleStore(self.bot, channel_name=os.getenv("CHANNEL_CONSOLE", "console"))
+        await self.store.connect()
+        data = await self.store.load()
+        self._conversations = {int(k): v for k, v in data.get("conversations", {}).items()}
+
+        restored = False
+        for event_id, event_data in data.get("events", {}).items():
+            rec = self._event_data_to_store_data(event_id, event_data)
+            if rec:
+                await self._restore_view(rec)
+                restored = True
+
+        if restored:
+            return
+
         chan = await self.console._channel()
         if chan is None:
             return
@@ -290,6 +306,7 @@ class EventConversationCog(commands.Cog):
         # ----- collecte DM -----
         transcript: List[str] = []
         self._conversations[ctx.author.id] = transcript
+        await self.store.save_conversation(str(ctx.author.id), transcript)
 
         try:
             def check(m: discord.Message) -> bool:
@@ -308,6 +325,7 @@ class EventConversationCog(commands.Cog):
                 if msg.content.lower().startswith("terminé"):
                     break
                 transcript.append(msg.content.strip())
+                await self.store.save_conversation(str(ctx.author.id), transcript)
 
             # ----- appel IA -----
             ia_cog = self.bot.get_cog("IACog")
@@ -400,6 +418,13 @@ class EventConversationCog(commands.Cog):
                 "dungeon": draft.dungeon_name,
                 "going": [],
                 "ends_at": draft.end_time.isoformat(),
+                "guild_id": guild.id,
+                "title": draft.name,
+                "description": draft.description,
+                "starts_at": draft.start_time.isoformat(),
+                "author_id": ctx.author.id,
+                "timezone": str(LOCAL_TZ),
+                "location": draft.location,
             }
             view_rsvp = RSVPView(
                 role, draft.max_slots, parent_cog=self, store_data=store_data
@@ -411,6 +436,7 @@ class EventConversationCog(commands.Cog):
             store_data["message_id"] = announce_msg.id
             if self.console:
                 await self.console.upsert(store_data)
+            await self._persist_store_data(store_data)
 
             await dm.send("✅ Événement créé, salon privé ouvert et annoncé !")
 
@@ -422,6 +448,7 @@ class EventConversationCog(commands.Cog):
             )
         finally:
             self._conversations.pop(ctx.author.id, None)
+            await self.store.save_conversation(str(ctx.author.id), None)
 
     # ------------------------------------------------------------------ #
     # Helpers create role / channel                                      #
@@ -473,9 +500,78 @@ class EventConversationCog(commands.Cog):
             await self.console.delete(event_id)
 
     # ------------------------------------------------------------------ #
+    # Persistence                                                        #
+    # ------------------------------------------------------------------ #
+    def _event_data_to_store_data(self, event_id: str | int, event: EventData) -> Optional[dict]:
+        try:
+            starts_at = event.starts_at.isoformat()
+        except AttributeError:
+            return None
+        try:
+            eid_int = int(event_id)
+        except (TypeError, ValueError):
+            eid_int = event.scheduled_event_id or event_id
+
+        return {
+            "event_id": eid_int,
+            "message_id": event.announce_message_id,
+            "channel_id": event.channel_id,
+            "role_id": event.temp_role_id,
+            "event_channel_id": event.event_channel_id,
+            "max_slots": event.max_participants,
+            "dungeon": event.dungeon_name,
+            "going": event.going or [],
+            "ends_at": event.ends_at.isoformat() if event.ends_at else None,
+            "guild_id": event.guild_id,
+            "title": event.title,
+            "description": event.description,
+            "starts_at": starts_at,
+            "author_id": event.author_id,
+            "timezone": event.timezone,
+            "location": event.location,
+        }
+
+    def _store_data_to_event(self, store_data: dict) -> EventData:
+        def _parse_dt(val: datetime | str | None) -> Optional[datetime]:
+            if val is None:
+                return None
+            return val if isinstance(val, datetime) else datetime.fromisoformat(val)
+
+        return EventData(
+            guild_id=store_data.get("guild_id") or 0,
+            channel_id=store_data.get("channel_id") or 0,
+            title=store_data.get("title") or "Événement",
+            description=store_data.get("description") or "",
+            starts_at=_parse_dt(store_data.get("starts_at")) or discord.utils.utcnow(),
+            ends_at=_parse_dt(store_data.get("ends_at")),
+            max_participants=store_data.get("max_slots"),
+            timezone=store_data.get("timezone"),
+            temp_role_id=store_data.get("role_id"),
+            author_id=store_data.get("author_id"),
+            location=store_data.get("location"),
+            dungeon_name=store_data.get("dungeon"),
+            event_channel_id=store_data.get("event_channel_id"),
+            announce_message_id=store_data.get("message_id"),
+            scheduled_event_id=store_data.get("event_id"),
+            going=store_data.get("going"),
+        )
+
+    async def _persist_store_data(self, store_data: dict) -> None:
+        try:
+            event_data = self._store_data_to_event(store_data)
+        except Exception:
+            self.log.exception("Failed to serialize event %s for persistence", store_data.get("event_id"))
+            return
+        await self.store.save_event(str(store_data.get("event_id")), event_data)
+
+    # ------------------------------------------------------------------ #
     # Restaurer les views après reboot                                   #
     # ------------------------------------------------------------------ #
     async def _restore_view(self, rec: dict):
+        try:
+            rec["event_id"] = int(rec.get("event_id"))
+        except (TypeError, ValueError):
+            pass
         try:
             chan = await self.bot.fetch_channel(rec["channel_id"])
             msg: discord.Message = await chan.fetch_message(rec["message_id"])
@@ -485,6 +581,20 @@ class EventConversationCog(commands.Cog):
         role = guild.get_role(rec["role_id"])
         if role is None:
             return
+        guild_id = getattr(guild, "id", None)
+        if guild_id is not None:
+            rec.setdefault("guild_id", guild_id)
+        embeds = getattr(msg, "embeds", None) or []
+        first_embed = embeds[0] if embeds else None
+        rec.setdefault("title", first_embed.title if first_embed else "Événement")
+        rec.setdefault(
+            "description", first_embed.description if first_embed else ""
+        )
+        rec.setdefault("starts_at", None)
+        author_id = getattr(msg, "author", None)
+        if author_id is not None and getattr(author_id, "id", None) is not None:
+            rec.setdefault("author_id", author_id.id)
+        rec.setdefault("timezone", str(LOCAL_TZ))
         view = RSVPView(role, rec.get("max_slots"), parent_cog=self, store_data=rec)
         view._going.update(rec.get("going", []))
         self.bot.add_view(view, message_id=msg.id)
@@ -495,6 +605,10 @@ class EventConversationCog(commands.Cog):
             ends_at = datetime.fromisoformat(ends_iso)
             chan_priv = guild.get_channel(channel_id)
             now = discord.utils.utcnow()
+            if ends_at.tzinfo and now.tzinfo is None:
+                now = now.replace(tzinfo=ends_at.tzinfo)
+            elif ends_at.tzinfo is None and now.tzinfo:
+                ends_at = ends_at.replace(tzinfo=now.tzinfo)
             if chan_priv and role:
                 if ends_at <= now:
                     self.bot.loop.create_task(
