@@ -93,3 +93,47 @@ async def test_generate_announcement_payload(monkeypatch):
     assert mentions == "@here"
     assert embed.title == "Sortie Donjon"
     assert "Rendez-vous" in embed.description
+
+
+@pytest.mark.asyncio
+async def test_turn_limit_preserves_valid_response(monkeypatch):
+    monkeypatch.setattr(organisation, "AsyncOpenAI", None)
+    monkeypatch.setattr(organisation, "ORGANISATION_MAX_TURNS", 2)
+    cog = organisation.OrganisationCog(bot=MagicMock())
+
+    async def fake_call(messages, schema, temperature):
+        non_system = [m for m in messages if str(m.get("role") or "").lower() != "system"]
+        assert len(non_system) <= organisation.ORGANISATION_MAX_TURNS
+        assert any(
+            m.get("role") == "assistant" and "Contexte precedent compresse" in str(m.get("content"))
+            for m in messages
+        )
+        return {
+            "status": "ready",
+            "next_question": None,
+            "collected": {"event_type": "Donjon"},
+            "summary": "Sortie prevue samedi",
+        }
+
+    cog._call_openai_json = fake_call  # type: ignore[assignment]
+
+    session = organisation.OrganisationSession(
+        user_id=1,
+        guild_id=1,
+        channel_id=123,
+        context={"guild": "Evolution", "organiser": "Staff"},
+        messages=[
+            {"role": "system", "content": "prompt"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+        ],
+        collected={"event_type": "Donjon"},
+        summary="Donjon deja prevu",
+    )
+
+    payload = await cog._planner_step(session, user_message="Dernier tour")
+
+    assert payload["status"] == "ready"
+    assert session.collected["event_type"] == "Donjon"
