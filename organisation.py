@@ -6,6 +6,7 @@ import json
 import asyncio
 import sys
 import types
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -75,6 +76,7 @@ DEFAULT_MODEL = resolve_staff_model()
 SESSION_TIMEOUT = int(os.getenv("ORGANISATION_TIMEOUT", "240"))
 PLANNER_TEMPERATURE = float(os.getenv("ORGANISATION_PLANNER_TEMP", "0.25"))
 ANNOUNCE_TEMPERATURE = float(os.getenv("ORGANISATION_ANNOUNCE_TEMP", "0.5"))
+ORGANISATION_MAX_TURNS = int(os.getenv("ORGANISATION_MAX_TURNS", "12"))
 
 # Backend IA : "auto" (défaut), "responses" ou "chat"
 BACKEND_MODE = os.getenv("ORGANISATION_BACKEND", "auto").strip().lower()
@@ -205,6 +207,7 @@ class OrganisationCog(commands.Cog):
         self.model = DEFAULT_MODEL
         self._sessions: Dict[Tuple[int, int], OrganisationSession] = {}
         self._client: Optional[AsyncOpenAI] = build_async_openai_client(AsyncOpenAI)
+        self._logger = logging.getLogger(__name__)
 
     # ------------------------------------------------------------------
     # Prompts
@@ -226,6 +229,47 @@ class OrganisationCog(commands.Cog):
             "L'annonce doit etre concise, dynamique et facile a publier telle quelle. "
             "Format: un titre accrocheur, un corps structure (listes si besoin), un appel a l'action si utile. "
             "Propose un champ mentions (par exemple '@here') et un resume tres court pour le staff."
+        )
+
+    # ------------------------------------------------------------------
+    # Gestion de l'historique
+    # ------------------------------------------------------------------
+
+    def _enforce_turn_limit(self, session: OrganisationSession) -> None:
+        max_turns = max(ORGANISATION_MAX_TURNS, 0)
+        if max_turns == 0:
+            return
+
+        system_messages: List[Dict[str, Any]] = []
+        dialogue: List[Dict[str, Any]] = []
+        for message in session.messages:
+            role = str(message.get("role") or "").lower()
+            if role == "system":
+                system_messages.append(message)
+            else:
+                dialogue.append(message)
+
+        if len(dialogue) <= max_turns:
+            return
+
+        keep_count = max(max_turns - 1, 0)
+        trimmed_dialogue = dialogue[-keep_count:] if keep_count else []
+
+        summary_chunks: List[str] = []
+        if session.summary:
+            summary_chunks.append(session.summary)
+        if session.collected:
+            collected_blob = json.dumps(session.collected, ensure_ascii=False)
+            summary_chunks.append(f"Elements collectes: {collected_blob}")
+        if not summary_chunks:
+            summary_chunks.append("Historique compresse pour respecter la limite de contexte.")
+        summary = "Contexte precedent compresse. " + " ".join(summary_chunks)
+
+        session.messages = system_messages + [{"role": "assistant", "content": summary}] + trimmed_dialogue
+        self._logger.debug(
+            "Organisation session trimmed to %s turns (kept %s non-system messages)",
+            max_turns,
+            len(trimmed_dialogue) + 1,
         )
 
     # ------------------------------------------------------------------
@@ -421,6 +465,7 @@ class OrganisationCog(commands.Cog):
         elif user_message is not None:
             session.messages.append({"role": "user", "content": user_message})
 
+        self._enforce_turn_limit(session)
         payload = await self._call_openai_json(session.messages, PLANNER_SCHEMA, temperature=PLANNER_TEMPERATURE)
 
         collected = payload.get("collected") or {}
