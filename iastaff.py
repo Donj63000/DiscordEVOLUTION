@@ -3,6 +3,7 @@
 
 import os
 import json
+import re
 import logging
 import asyncio
 from datetime import datetime, time as datetime_time
@@ -40,6 +41,33 @@ EMBED_SAFE_CHUNK = 3800
 OPENAI_TIMEOUT = float(os.getenv("IASTAFF_TIMEOUT", "120"))
 MAX_OUTPUT_TOKENS = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
 INPUT_MAX_CHARS = int(os.getenv("IASTAFF_INPUT_MAX_CHARS", "12000"))
+
+
+def _parse_float_env(var_name: str, default: float) -> float:
+    raw = (os.getenv(var_name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except Exception:
+        return default
+
+
+IASTAFF_TEMPERATURE = max(0.0, min(2.0, _parse_float_env("IASTAFF_TEMPERATURE", 0.4)))
+IASTAFF_SAFE_MENTIONS = os.getenv("IASTAFF_SAFE_MENTIONS", "1") != "0"
+IASTAFF_RULES_MODE = (os.getenv("IASTAFF_RULES_MODE") or "always").strip().lower()
+
+
+def _sanitize_discord_mentions(text: str) -> str:
+    if not text or not IASTAFF_SAFE_MENTIONS:
+        return text
+    text = re.sub(r"@(?=everyone\b|here\b)", "@\u200b", text, flags=re.IGNORECASE)
+    text = text.replace("<@", "<@\u200b")
+    return text
+
+
+def _allowed_mentions():
+    return discord.AllowedMentions.none() if IASTAFF_SAFE_MENTIONS else None
 
 ENABLE_WEB_SEARCH = os.getenv("IASTAFF_ENABLE_WEB", "1") != "0"
 VECTOR_STORE_ID = os.getenv("IASTAFF_VECTOR_STORE_ID", "").strip()
@@ -541,66 +569,169 @@ class IAStaff(commands.Cog):
         cached = self.channel_ctx_cache.get(channel_id)
         if cached and cached[0] == last_id:
             return cached[1]
-        lines = ["Contexte du canal (jusqu’aux 40 derniers messages) :"]
-        gathered_chars = 0
-        msgs = []
         history = getattr(ch, "history", None)
         if history is None:
             return ""
-        async for m in history(limit=CONTEXT_MESSAGES, before=before, oldest_first=True):
-            msgs.append(m)
-        for m in msgs:
-            txt = (m.clean_content or "").strip()
-            if not txt:
+
+        def extract_text(message: discord.Message) -> str:
+            text = (message.clean_content or "").strip()
+            if not text:
+                embeds = getattr(message, "embeds", None) or []
+                segments: list[str] = []
+                for embed in embeds:
+                    title = getattr(embed, "title", None)
+                    description = getattr(embed, "description", None)
+                    if title:
+                        segments.append(str(title))
+                    if description:
+                        segments.append(str(description))
+                text = "\n".join(segments).strip()
+            if not text:
+                attachments = getattr(message, "attachments", None) or []
+                filenames = [
+                    getattr(attachment, "filename", "")
+                    for attachment in attachments
+                    if getattr(attachment, "filename", "")
+                ]
+                if filenames:
+                    text = "Pièces jointes: " + ", ".join(filenames)
+            if text:
+                text = " ".join(text.split())
+            return text
+
+        messages: list[discord.Message] = []
+        async for item in history(limit=CONTEXT_MESSAGES, before=before, oldest_first=False):
+            messages.append(item)
+
+        gathered_chars = 0
+        collected: list[str] = []
+        truncated = False
+        for message in messages:
+            text = extract_text(message)
+            if not text:
                 continue
-            if len(txt) > PER_MSG_TRUNC:
-                txt = txt[:PER_MSG_TRUNC] + "…"
-            line = f"- {txt}"
+            if len(text) > PER_MSG_TRUNC:
+                text = text[:PER_MSG_TRUNC] + "…"
+            author = (
+                getattr(getattr(message, "author", None), "display_name", None)
+                or getattr(getattr(message, "author", None), "name", None)
+                or "?"
+            )
+            line = f"- {author} : {text}"
             if gathered_chars + len(line) + 1 > CONTEXT_MAX_CHARS:
-                lines.append("…")
+                truncated = True
                 break
-            lines.append(line)
+            collected.append(line)
             gathered_chars += len(line) + 1
-        block = "\n".join(lines)
+
+        collected.reverse()
+        lines = ["Contexte du canal (messages récents, max 40) :"]
+        if truncated:
+            lines.append("… (messages plus anciens omis)")
+        lines.extend(collected)
+        block = "\n".join(lines).strip()
         self.channel_ctx_cache[channel_id] = (last_id, block)
         return block
 
     def _make_messages(self, channel_ctx: str, channel_id: int, user_msg: str) -> list[dict]:
-        messages: list[dict] = []
-        messages.append({"role": "system", "content": [{"type": "input_text", "text": self.system_prompt}]})
-        messages.append({"role": "developer", "content": [{"type": "input_text", "text": MODERATION_PROMPT}]})
-        messages.append({"role": "developer", "content": [{"type": "input_text", "text": GUILD_RULES}]})
-        if channel_ctx:
-            messages.append({"role": "developer", "content": [{"type": "input_text", "text": channel_ctx}]})
-        hist = self.history.get(channel_id, [])
-        for item in hist:
-            if item["role"] == "user":
-                messages.append({"role": "user", "content": [{"type": "input_text", "text": item["text"]}]} )
-            else:
-                messages.append({"role": "assistant", "content": [{"type": "output_text", "text": item["text"]}]} )
-        messages.append({"role": "user", "content": [{"type": "input_text", "text": user_msg}]})
-        approx_chars = 0
-        for m in messages:
-            for c in m.get("content", []):
-                t = c.get("text")
-                if isinstance(t, str):
-                    approx_chars += len(t)
-        if approx_chars > INPUT_MAX_CHARS and channel_ctx:
-            overflow = approx_chars - INPUT_MAX_CHARS
-            trimmed = channel_ctx[:-min(overflow + 500, len(channel_ctx))]
-            channel_ctx = trimmed + "\n…"
-            messages = [messages[0], messages[1], messages[2]]
-            messages.append({"role": "developer", "content": [{"type": "input_text", "text": channel_ctx}]})
-            for item in hist:
-                if item["role"] == "user":
-                    messages.append({"role": "user", "content": [{"type": "input_text", "text": item["text"]}]} )
+        history_items = list(self.history.get(channel_id, []))
+
+        rules_mode = (IASTAFF_RULES_MODE or "always").strip().lower()
+        include_rules = True
+        if rules_mode == "never":
+            include_rules = False
+        elif rules_mode == "auto":
+            blob = f"{user_msg}\n{channel_ctx}".lower()
+            keywords = (
+                "règlement",
+                "reglement",
+                "perco",
+                "percepteur",
+                "avert",
+                "warn",
+                "ban",
+                "kick",
+                "mute",
+                "insult",
+                "harcel",
+                "dox",
+                "arnaque",
+                "racis",
+                "discri",
+                "haine",
+                "spam",
+            )
+            include_rules = any(keyword in blob for keyword in keywords)
+
+        def build(ctx_text: str, hist_items: list[dict]) -> list[dict]:
+            messages: list[dict] = []
+            messages.append({"role": "system", "content": [{"type": "input_text", "text": self.system_prompt}]})
+            messages.append({"role": "developer", "content": [{"type": "input_text", "text": MODERATION_PROMPT}]})
+            if include_rules:
+                messages.append({"role": "developer", "content": [{"type": "input_text", "text": GUILD_RULES}]})
+            if ctx_text:
+                messages.append({"role": "developer", "content": [{"type": "input_text", "text": ctx_text}]})
+            for item in hist_items:
+                role = item.get("role")
+                text = item.get("text") or ""
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                if role == "user":
+                    messages.append({"role": "user", "content": [{"type": "input_text", "text": text}]})
                 else:
-                    messages.append({"role": "assistant", "content": [{"type": "output_text", "text": item["text"]}]} )
+                    messages.append({"role": "assistant", "content": [{"type": "output_text", "text": text}]})
             messages.append({"role": "user", "content": [{"type": "input_text", "text": user_msg}]})
+            return messages
+
+        def approx_chars(payload: list[dict]) -> int:
+            total = 0
+            for message in payload:
+                for content in message.get("content", []):
+                    text = content.get("text")
+                    if isinstance(text, str):
+                        total += len(text)
+            return total
+
+        def trim_channel_ctx(ctx_text: str, overflow: int) -> str:
+            if not ctx_text or overflow <= 0:
+                return ctx_text
+            header, separator, body = ctx_text.partition("\n")
+            if not separator:
+                header = ""
+                body = ctx_text
+            cut = min(len(body), overflow + 500)
+            body = body[cut:].lstrip()
+            if not body:
+                return ""
+            if header:
+                return f"{header}\n…\n{body}"
+            return f"…\n{body}"
+
+        messages = build(channel_ctx, history_items)
+        approx = approx_chars(messages)
+        if approx > INPUT_MAX_CHARS:
+            overflow = approx - INPUT_MAX_CHARS
+            if channel_ctx:
+                channel_ctx = trim_channel_ctx(channel_ctx, overflow)
+                messages = build(channel_ctx, history_items)
+                approx = approx_chars(messages)
+            while approx > INPUT_MAX_CHARS and history_items:
+                history_items = history_items[2:] if len(history_items) >= 2 else history_items[1:]
+                messages = build(channel_ctx, history_items)
+                approx = approx_chars(messages)
+            if approx > INPUT_MAX_CHARS and channel_ctx:
+                channel_ctx = ""
+                messages = build(channel_ctx, history_items)
         return messages
 
     def _build_request(self, messages: list[dict]) -> dict:
-        base = {"model": self.model, "input": messages, "max_output_tokens": MAX_OUTPUT_TOKENS, "store": False}
+        base = {
+            "model": self.model,
+            "input": messages,
+            "max_output_tokens": MAX_OUTPUT_TOKENS,
+            "store": False,
+            "temperature": IASTAFF_TEMPERATURE,
+        }
         tools = []
         if ENABLE_WEB_SEARCH:
             tools.append({"type": "web_search"})
@@ -1779,16 +1910,23 @@ class IAStaff(commands.Cog):
             else:
                 await channel.send("Je n’ai rien reçu de l’API.")
             return
-        parts = chunk_text(text, EMBED_SAFE_CHUNK)
+        safe_text = _sanitize_discord_mentions(text)
+        parts = chunk_text(safe_text, EMBED_SAFE_CHUNK)
         total = len(parts)
+        allowed_mentions = _allowed_mentions()
         for i, part in enumerate(parts, start=1):
             emb, files = self._make_embed(part, i, total)
             if ctx is not None:
-                await ctx.send(embed=emb, files=files or None)
+                await ctx.send(embed=emb, files=files or None, allowed_mentions=allowed_mentions)
             elif origin_message is not None and i == 1:
-                await origin_message.reply(embed=emb, files=files or None, mention_author=False)
+                await origin_message.reply(
+                    embed=emb,
+                    files=files or None,
+                    mention_author=False,
+                    allowed_mentions=allowed_mentions,
+                )
             else:
-                await channel.send(embed=emb, files=files or None)
+                await channel.send(embed=emb, files=files or None, allowed_mentions=allowed_mentions)
 
     async def handle_staff_message(
         self,
@@ -1818,7 +1956,10 @@ class IAStaff(commands.Cog):
                 await channel.send("Message vide ignoré.")
             return
         if isinstance(author, discord.Member):
-            has_role = any(role.name == STAFF_ROLE_NAME for role in author.roles)
+            has_role = any(
+                (role.name or "").lower() == (STAFF_ROLE_NAME or "").lower()
+                for role in author.roles
+            )
             if not has_role:
                 if ctx is not None:
                     await ctx.reply("Accès réservé au Staff.", mention_author=False)
@@ -1887,6 +2028,7 @@ class IAStaff(commands.Cog):
             details = (
                 f"Model: `{self.model}`\n"
                 f"Timeout: {OPENAI_TIMEOUT}s | Max output tokens: {MAX_OUTPUT_TOKENS}\n"
+                f"Température: {IASTAFF_TEMPERATURE} | Mentions: {'bloquées' if IASTAFF_SAFE_MENTIONS else 'autorisées'} | Règles: {IASTAFF_RULES_MODE}\n"
                 f"Contexte canal: {CONTEXT_MESSAGES} msgs (≤{CONTEXT_MAX_CHARS} chars, {PER_MSG_TRUNC}/msg)\n"
                 f"Mémoire IA (salon): {len(self.history.get(channel_id, []))} items (max {HISTORY_TURNS*2})\n"
                 f"Web Search: {'activé' if ENABLE_WEB_SEARCH else 'désactivé'} | File Search: {'activé' if VECTOR_STORE_ID else 'désactivé'}"
