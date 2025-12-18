@@ -4,6 +4,7 @@
 import os
 import json
 import re
+import secrets
 import logging
 import asyncio
 from datetime import datetime, time as datetime_time
@@ -56,6 +57,30 @@ def _parse_float_env(var_name: str, default: float) -> float:
 IASTAFF_TEMPERATURE = max(0.0, min(2.0, _parse_float_env("IASTAFF_TEMPERATURE", 0.4)))
 IASTAFF_SAFE_MENTIONS = os.getenv("IASTAFF_SAFE_MENTIONS", "1") != "0"
 IASTAFF_RULES_MODE = (os.getenv("IASTAFF_RULES_MODE") or "always").strip().lower()
+IASTAFF_CONFIRM_DESTRUCTIVE = (os.getenv("IASTAFF_CONFIRM_DESTRUCTIVE") or "0").strip().lower() not in {"0", "false", "off"}
+
+
+def _parse_ttl_env(var_name: str, default: int) -> int:
+    raw = (os.getenv(var_name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except Exception:
+        return default
+    return value if value > 0 else default
+
+
+IASTAFF_CONFIRM_TTL = _parse_ttl_env("IASTAFF_CONFIRM_TTL", 300)
+SENSITIVE_TOOL_NAMES = {
+    "clear_console",
+    "reset_warnings",
+    "delete_member_record",
+    "stats_reset",
+    "stats_disable",
+    "revoke_role",
+    "run_bot_command",
+}
 
 
 def _sanitize_discord_mentions(text: str) -> str:
@@ -402,6 +427,7 @@ class IAStaff(commands.Cog):
         self._last_morning_date: str | None = None
         flag_value = (os.getenv("IASTAFF_ENABLE_TOOLS") or "1").strip().lower()
         self.enable_tools = flag_value not in {"0", "false", "off"}
+        self.pending_confirmations: dict[str, dict] = {}
 
     def _ensure_client(self) -> bool:
         if self.client is not None:
@@ -1517,12 +1543,82 @@ class IAStaff(commands.Cog):
             f"Rôle **{role.name}** retiré de **{member.display_name}**.",
         )
 
-    async def _dispatch_command_tool(self, ctx: commands.Context, name: str, args_json: dict) -> str:
+    def _requires_confirmation(self, tool_name: str) -> bool:
+        return tool_name in SENSITIVE_TOOL_NAMES
+
+    def _prune_expired_confirmations(self):
+        if not self.pending_confirmations:
+            return
+        now = datetime.utcnow()
+        expired = [
+            nonce
+            for nonce, entry in self.pending_confirmations.items()
+            if (now - entry.get("created_at", now)).total_seconds() > IASTAFF_CONFIRM_TTL
+        ]
+        for nonce in expired:
+            self.pending_confirmations.pop(nonce, None)
+
+    def _register_confirmation_request(
+        self, ctx: commands.Context, tool_name: str, payload: dict
+    ) -> str:
+        self._prune_expired_confirmations()
+        nonce = secrets.token_hex(8)
+        entry = {
+            "created_at": datetime.utcnow(),
+            "channel_id": getattr(ctx.channel, "id", None),
+            "user_id": getattr(ctx.author, "id", None),
+            "tool": tool_name,
+            "payload": payload,
+        }
+        self.pending_confirmations[nonce] = entry
+        minutes = max(1, int(round(IASTAFF_CONFIRM_TTL / 60)))
+        return (
+            "Action sensible détectée. Confirme avec `!iastaff confirm "
+            f"{nonce}` dans les {minutes} minute(s)."
+        )
+
+    async def _confirm_pending_action(self, ctx: commands.Context, nonce: str) -> str:
+        self._prune_expired_confirmations()
+        entry = self.pending_confirmations.get(nonce)
+        if not entry:
+            return "Nonce introuvable ou expiré. Relance la commande initiale."
+        now = datetime.utcnow()
+        if (now - entry.get("created_at", now)).total_seconds() > IASTAFF_CONFIRM_TTL:
+            self.pending_confirmations.pop(nonce, None)
+            return "Nonce expiré. Relance la commande initiale."
+        channel_id = getattr(ctx.channel, "id", None)
+        user_id = getattr(ctx.author, "id", None)
+        if channel_id != entry.get("channel_id"):
+            return "Confirmation refusée : utilise le même salon que la demande initiale."
+        if user_id != entry.get("user_id"):
+            return "Confirmation refusée : seul l'auteur de la demande peut valider."
+        self.pending_confirmations.pop(nonce, None)
+        try:
+            return await self._dispatch_command_tool(
+                ctx,
+                entry.get("tool", ""),
+                entry.get("payload") or {},
+                skip_confirmation=True,
+            )
+        except Exception as exc:
+            log.warning("IAStaff: échec lors de la confirmation tool=%s nonce=%s: %s", entry.get("tool"), nonce, exc)
+            return f"❌ Erreur pendant l'exécution confirmée : {exc}"
+
+    async def _dispatch_command_tool(
+        self, ctx: commands.Context, name: str, args_json: dict, *, skip_confirmation: bool = False
+    ) -> str:
         """Route a tool call to the matching Discord command."""
         normalized = (name or "").strip().lower()
         payload = args_json or {}
         channel_id = getattr(ctx.channel, "id", None)
         user_id = getattr(ctx.author, "id", None)
+
+        if (
+            IASTAFF_CONFIRM_DESTRUCTIVE
+            and not skip_confirmation
+            and self._requires_confirmation(normalized)
+        ):
+            return self._register_confirmation_request(ctx, normalized, payload)
 
         async def invoke(cmd_name: str, /, *pos_args, **kwargs):
             command = self.bot.get_command(cmd_name)
@@ -2024,6 +2120,14 @@ class IAStaff(commands.Cog):
             self.history.pop(channel_id, None)
             await ctx.reply("Historique du salon effacé ✅", mention_author=False)
             return
+        if low.startswith("confirm"):
+            parts = msg.split(None, 1)
+            if len(parts) < 2 or not parts[1].strip():
+                await ctx.reply("Précise le nonce à confirmer : `!iastaff confirm <nonce>`.", mention_author=False)
+                return
+            ack = await self._confirm_pending_action(ctx, parts[1].strip())
+            await ctx.reply(ack, mention_author=False)
+            return
         if low in {"info", "config"}:
             details = (
                 f"Model: `{self.model}`\n"
@@ -2031,7 +2135,8 @@ class IAStaff(commands.Cog):
                 f"Température: {IASTAFF_TEMPERATURE} | Mentions: {'bloquées' if IASTAFF_SAFE_MENTIONS else 'autorisées'} | Règles: {IASTAFF_RULES_MODE}\n"
                 f"Contexte canal: {CONTEXT_MESSAGES} msgs (≤{CONTEXT_MAX_CHARS} chars, {PER_MSG_TRUNC}/msg)\n"
                 f"Mémoire IA (salon): {len(self.history.get(channel_id, []))} items (max {HISTORY_TURNS*2})\n"
-                f"Web Search: {'activé' if ENABLE_WEB_SEARCH else 'désactivé'} | File Search: {'activé' if VECTOR_STORE_ID else 'désactivé'}"
+                f"Web Search: {'activé' if ENABLE_WEB_SEARCH else 'désactivé'} | File Search: {'activé' if VECTOR_STORE_ID else 'désactivé'}\n"
+                f"Confirmation actions sensibles: {'activée' if IASTAFF_CONFIRM_DESTRUCTIVE else 'désactivée'} (TTL {IASTAFF_CONFIRM_TTL}s, `!iastaff confirm <nonce>`)
             )
             await ctx.reply(details, mention_author=False)
             return
