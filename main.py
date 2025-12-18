@@ -123,7 +123,6 @@ class EvoBot(commands.Bot):
             "entree",
             "calcul",
             "defender",
-            "moderation",
             "annonce",
             "perco",
             "avis",
