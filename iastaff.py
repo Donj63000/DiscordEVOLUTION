@@ -2129,15 +2129,16 @@ class IAStaff(commands.Cog):
             await ctx.reply(ack, mention_author=False)
             return
         if low in {"info", "config"}:
-            details = (
-                f"Model: `{self.model}`\n"
-                f"Timeout: {OPENAI_TIMEOUT}s | Max output tokens: {MAX_OUTPUT_TOKENS}\n"
-                f"Température: {IASTAFF_TEMPERATURE} | Mentions: {'bloquées' if IASTAFF_SAFE_MENTIONS else 'autorisées'} | Règles: {IASTAFF_RULES_MODE}\n"
-                f"Contexte canal: {CONTEXT_MESSAGES} msgs (≤{CONTEXT_MAX_CHARS} chars, {PER_MSG_TRUNC}/msg)\n"
-                f"Mémoire IA (salon): {len(self.history.get(channel_id, []))} items (max {HISTORY_TURNS*2})\n"
-                f"Web Search: {'activé' if ENABLE_WEB_SEARCH else 'désactivé'} | File Search: {'activé' if VECTOR_STORE_ID else 'désactivé'}\n"
-                f"Confirmation actions sensibles: {'activée' if IASTAFF_CONFIRM_DESTRUCTIVE else 'désactivée'} (TTL {IASTAFF_CONFIRM_TTL}s, `!iastaff confirm <nonce>`)
-            )
+            details_lines = [
+                f"Model: `{self.model}`",
+                f"Timeout: {OPENAI_TIMEOUT}s | Max output tokens: {MAX_OUTPUT_TOKENS}",
+                f"Température: {IASTAFF_TEMPERATURE} | Mentions: {'bloquées' if IASTAFF_SAFE_MENTIONS else 'autorisées'} | Règles: {IASTAFF_RULES_MODE}",
+                f"Contexte canal: {CONTEXT_MESSAGES} msgs (≤{CONTEXT_MAX_CHARS} chars, {PER_MSG_TRUNC}/msg)",
+                f"Mémoire IA (salon): {len(self.history.get(channel_id, []))} items (max {HISTORY_TURNS*2})",
+                f"Web Search: {'activé' if ENABLE_WEB_SEARCH else 'désactivé'} | File Search: {'activé' if VECTOR_STORE_ID else 'désactivé'}",
+                f"Confirmation actions sensibles: {'activée' if IASTAFF_CONFIRM_DESTRUCTIVE else 'désactivée'} (TTL {IASTAFF_CONFIRM_TTL}s, `!iastaff confirm <nonce>`)",
+            ]
+            details = "\n".join(details_lines)
             await ctx.reply(details, mention_author=False)
             return
         # Nouveau : !iastaff model <id> → switch du modèle à chaud (runtime)
