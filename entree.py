@@ -8,7 +8,7 @@ from datetime import datetime
 
 from utils.channel_resolver import resolve_text_channel
 
-WELCOME_CHANNEL_FALLBACK = os.getenv("WELCOME_CHANNEL_NAME") or "🛫 Bienvenue 🛫"
+WELCOME_CHANNEL_FALLBACK = os.getenv("WELCOME_CHANNEL_NAME") or "𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞"
 
 class EntreeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
