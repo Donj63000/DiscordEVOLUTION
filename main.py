@@ -121,6 +121,7 @@ class EvoBot(commands.Bot):
             "help",
             "welcome",
             "entree",
+            "member_guard",
             "calcul",
             "defender",
             "annonce",
