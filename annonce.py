@@ -19,7 +19,7 @@ except Exception:
     AsyncOpenAI = None
 
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-DEFAULT_ANNOUNCE_NAME = "📣 annonces 📣"
+DEFAULT_ANNOUNCE_NAME = "annonces"
 
 DEFAULT_MODEL = resolve_staff_model()
 
@@ -159,7 +159,7 @@ class AnnonceCog(commands.Cog):
         )
         if channel:
             return channel
-        legacy = os.getenv("ANNONCE_CHANNEL") or "organisation"
+        legacy = os.getenv("ANNONCE_CHANNEL") or "annonces"
         if legacy and legacy != primary:
             channel = resolve_text_channel(guild, default_name=legacy)
             if channel:

@@ -13,7 +13,7 @@ ALPHABET_EMOJIS = [
 ]
 
 POLL_STORAGE = {}
-ANNONCE_CHANNEL_FALLBACK = os.getenv("ANNONCE_CHANNEL_NAME") or "📣 annonces 📣"
+ANNONCE_CHANNEL_FALLBACK = os.getenv("ANNONCE_CHANNEL_NAME") or "annonces"
 
 
 def random_pastel_color() -> int:

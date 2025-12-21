@@ -14,7 +14,7 @@ from utils.channel_resolver import resolve_text_channel
 INVITES_ROLE_NAME = "Invités"
 VALIDATED_ROLE_NAME = "Membre validé d'Evolution"
 GENERAL_CHANNEL_NAME = "📄 Général 📄"
-RECRUITMENT_CHANNEL_NAME = "📥 Recrutement 📥"
+RECRUITMENT_CHANNEL_NAME = "📌 Recrutement 📌"
 WELCOME_CHANNEL_NAME = "𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞"
 TIMEOUT_RESPONSE = 300.0
 DATA_FILE = os.path.join(os.path.dirname(__file__), "welcome_data.json")

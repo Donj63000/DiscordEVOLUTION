@@ -248,7 +248,7 @@ class EventConversationCog(commands.Cog):
         self,
         bot: commands.Bot,
         *,
-        announce_channel_name: str = "🌈 organisation 🌈",
+        announce_channel_name: str = "organisation",
     ):
         self.bot = bot
         self.announce_channel_name = announce_channel_name

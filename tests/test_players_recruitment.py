@@ -31,7 +31,7 @@ async def test_on_member_remove_persists_and_notifies(monkeypatch):
     }
     cog.dump_data_to_console = AsyncMock()
 
-    channel = DummyChannel("📥 Recrutement 📥")
+    channel = DummyChannel("📌 Recrutement 📌")
     guild = SimpleNamespace(text_channels=[channel])
     member = SimpleNamespace(id=123, guild=guild, display_name="TestRecruit")
 

@@ -21,7 +21,7 @@ from utils.channel_resolver import resolve_text_channel
 log = logging.getLogger(__name__)
 
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-ANNOUNCE_CHANNEL_FALLBACK = os.getenv("ANNONCE_CHANNEL_NAME") or "📣 annonces 📣"
+ANNOUNCE_CHANNEL_FALLBACK = os.getenv("ANNONCE_CHANNEL_NAME") or "annonces"
 CONSOLE_CHANNEL_FALLBACK = os.getenv("CHANNEL_CONSOLE") or "console"
 PERCO_TAG = "===PERCO==="
 

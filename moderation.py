@@ -11,7 +11,7 @@ from discord.ext import commands
 import ia
 
 WARNINGS_FILE = os.path.join(os.path.dirname(__file__), "warnings_data.json")
-STAFF_CHANNEL_NAME = "📊 Général-staff 📊"
+STAFF_CHANNEL_NAME = "📚 Général-staff 📚"
 STAFF_ROLE_NAME = "Staff"
 SAVE_INTERVAL = 60
 

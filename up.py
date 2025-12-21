@@ -14,7 +14,7 @@ STAFF_ROLE_NAME = "Staff"
 VALID_MEMBER_ROLE_NAME = "Membre validé d'Evolution"
 INVITE_ROLE_NAME = "Invité"
 VETERAN_ROLE_NAME = "Vétéran"
-STAFF_CHANNEL_NAME = os.getenv("STAFF_CHANNEL_NAME", "📊 Général-staff 📊")
+STAFF_CHANNEL_NAME = os.getenv("STAFF_CHANNEL_NAME", "📚 Général-staff 📚")
 CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 BOTUP_TAG = "===BOTUP==="         # <-- marqueur spécial pour retrouver le JSON
 MESSAGE_THRESHOLD = 20

@@ -128,7 +128,7 @@ class HelpCog(commands.Cog):
             name=":bar_chart: Commandes Sondage",
             value=(
                 "__**!sondage <Titre> ; <Choix1> ; ... ; temps=JJ:HH:MM>**__\n"
-                "> Crée un sondage dans #📣 annonces 📣 (mention @everyone). Se ferme au bout du délai (jours:heures:minutes) "
+                "> Crée un sondage dans #annonces (mention @everyone). Se ferme au bout du délai (jours:heures:minutes) "
                 "ou manuellement.\n\n"
                 "__**!close_sondage <message_id>**__\n"
                 "> Clôture manuellement le sondage (affiche résultats et édite l'embed d'origine en [Clôturé]).\n"
@@ -140,7 +140,7 @@ class HelpCog(commands.Cog):
             name=":calendar_spiral: Commandes Activités",
             value=(
                 "__**!activite creer <Titre> <JJ/MM/AAAA HH:MM> [desc]**__\n"
-                "> Crée une activité (donjon/sortie) + rôle éphémère + annonce dans #🌈 organisation 🌈.\n\n"
+                "> Crée une activité (donjon/sortie) + rôle éphémère + annonce dans #organisation.\n\n"
                 "__**!activite liste**__\n"
                 "> Montre les activités à venir (limite 8 participants). Inscriptions par réactions.\n\n"
                 "__**!activite info <id>**__\n"
@@ -159,12 +159,12 @@ class HelpCog(commands.Cog):
                 "__**!staff**__\n"
                 "> Liste des membres Staff enregistrés/mentionnés.\n\n"
                 "__**!annonce <texte>**__\n"
-                "> Publie une annonce stylée dans #📣 annonces 📣 (mention @everyone).\n\n"
+                "> Publie une annonce stylée dans #annonces (mention @everyone).\n\n"
                 "__**!annoncestaff**__\n"
-                "> L'IA pose 7 questions puis publie une annonce dans #📣 annonces 📣.\n\n"
+                "> L'IA pose 7 questions puis publie une annonce dans #annonces.\n\n"
                 "__**!event**__\n"
                 "> Lance une discussion privée pour planifier un événement.\n"
-                "> Après validation, un événement Discord programmé est créé et annoncé dans #🌈 organisation 🌈 (mention Membre validé).\n\n"
+                "> Après validation, un événement Discord programmé est créé et annoncé dans #organisation (mention Membre validé).\n\n"
                 "__**!recrutement <pseudo>**__\n"
                 "> Ajoute un nouveau joueur dans la base.\n\n"
                 "__**!membre del <pseudo>**__\n"

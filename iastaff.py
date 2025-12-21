@@ -98,7 +98,7 @@ ENABLE_WEB_SEARCH = os.getenv("IASTAFF_ENABLE_WEB", "1") != "0"
 VECTOR_STORE_ID = os.getenv("IASTAFF_VECTOR_STORE_ID", "").strip()
 
 LOGO_FILENAME = os.getenv("IASTAFF_LOGO", "iastaff.png")
-DEFAULT_GENERAL_CHANNEL_NAME = "📑𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥📑"
+DEFAULT_GENERAL_CHANNEL_NAME = "📄 Général 📄"
 
 FRENCH_WEEKDAYS = [
     "lundi",
@@ -399,7 +399,7 @@ class IAStaff(commands.Cog):
         self.morning_channel_ids = _parse_id_list(raw_ids)
         raw_names = os.getenv(
             "IASTAFF_MORNING_CHANNEL_NAMES",
-            f"{DEFAULT_GENERAL_CHANNEL_NAME},📄 Général 📄,général,general",
+            f"{DEFAULT_GENERAL_CHANNEL_NAME},général,general",
         )
         self.morning_channel_names = [name.strip() for name in raw_names.split(",") if name.strip()]
         self._morning_name_tokens = {

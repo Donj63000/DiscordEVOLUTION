@@ -120,8 +120,8 @@ class IACog(commands.Cog):
         self.quota_block_duration = 3600
         self.quota_exceeded_until = 0
         self.debug_mode = True
-        self.annonce_channel_name = os.getenv("ANNONCE_CHANNEL_NAME") or "📣 annonces 📣"
-        self.event_channel_name = "🌈 organisation 🌈"
+        self.annonce_channel_name = os.getenv("ANNONCE_CHANNEL_NAME") or "annonces"
+        self.event_channel_name = "organisation"
         self.pl_channel_name = "📍 xplock-rondesasa-ronde 📍"
         self.last_reglement_reminder = 0
         self.reglement_cooldown = 600

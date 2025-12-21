@@ -17,7 +17,7 @@ DATA_FILE_NAME = "players_data.json"
 CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 CONSOLE_CHANNEL_ID = os.getenv("CHANNEL_CONSOLE_ID")
 PLAYERS_MARKER = "===PLAYERSDATA==="
-RECRUITMENT_CHANNEL_FALLBACK = os.getenv("RECRUTEMENT_CHANNEL_NAME") or "📋 Recrutement 📋"
+RECRUITMENT_CHANNEL_FALLBACK = os.getenv("RECRUTEMENT_CHANNEL_NAME") or "📌 Recrutement 📌"
 NOT_REGISTERED_MESSAGE = "Vous n'êtes pas encore enregistré. Faites `!membre principal <NomPerso>` d'abord."
 
 def _load_json_candidate(path: str) -> Optional[Dict[str, dict]]:

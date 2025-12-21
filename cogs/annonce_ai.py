@@ -26,7 +26,7 @@ except Exception:
 ANNOUNCE_DB_BLOCK = os.getenv("ANNOUNCE_DB_BLOCK", "announce")  # tag du code-fence en #console
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
 DEFAULT_MODEL = resolve_staff_model()
-ANNONCE_CHANNEL_NAME = os.getenv("ANNONCE_CHANNEL_NAME", "📣 annonces 📣")
+ANNONCE_CHANNEL_NAME = os.getenv("ANNONCE_CHANNEL_NAME", "annonces")
 CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", os.getenv("CONSOLE_CHANNEL_NAME", "console"))
 
 
