@@ -41,6 +41,10 @@ class FormerMemberGuardCog(commands.Cog):
         self._init_lock = asyncio.Lock()
 
     async def cog_load(self) -> None:
+        self.bot.loop.create_task(self._post_ready_setup())
+
+    async def _post_ready_setup(self) -> None:
+        await self.bot.wait_until_ready()
         await self._ensure_initialized()
         await self._warm_invite_cache()
 

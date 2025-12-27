@@ -3,8 +3,7 @@
         "discord_name": "coca-cola",
         "main": "Coca-cola",
         "mules": [
-            "Senseiosa",
-            "Mouton"
+            "Senseiosa"
         ]
     },
     "520571060878442506": {
@@ -162,6 +161,16 @@
             "Rooxy"
         ]
     },
+    "544619572473364500": {
+        "discord_name": "Rogne",
+        "main": "Rogne",
+        "mules": [
+            "Rogne(frères)",
+            "Hyloss",
+            "hapit",
+            "Sil"
+        ]
+    },
     "544619572473364502": {
         "discord_name": "Sacre-Sang",
         "main": "Sacre-Sang",
@@ -223,11 +232,9 @@
             "Viollence-lock"
         ]
     },
-    "287297343764824076": {
-        "discord_name": "swaa",
-        "main": "",
-        "mules": [
-            "swaa-fourbe"
-        ]
+    "217360897633419264": {
+        "discord_name": "Nobs",
+        "main": "Nobs",
+        "mules": []
     }
 }

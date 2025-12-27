@@ -24,11 +24,21 @@ def _take_digits(value: str | None) -> int | None:
 def _normalize(value: str | None) -> str:
     if not value:
         return ""
+    normalized = unicodedata.normalize("NFKD", value)
     filtered = []
-    for char in value:
-        if unicodedata.category(char).startswith("So"):
+    for char in normalized:
+        if unicodedata.combining(char):
             continue
-        filtered.append(char)
+        category = unicodedata.category(char)
+        if category.startswith("So"):
+            continue
+        if char.isalnum():
+            filtered.append(char)
+            continue
+        if char in {"-", "_", " "}:
+            filtered.append(" ")
+            continue
+        filtered.append(" ")
     text = "".join(filtered).strip().lower()
     text = text.replace("’", "'")
     text = re.sub(r"\s+", "-", text)
