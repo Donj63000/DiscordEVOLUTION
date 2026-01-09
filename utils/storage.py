@@ -146,6 +146,16 @@ class EventStore:
         else:
             await self._dump_console()
 
+    async def delete_event(self, event_id: str) -> bool:
+        existed = self.events.pop(event_id, None) is not None
+        if self.backend == "postgres" and self.db:
+            await self.db.execute("DELETE FROM events WHERE id=$1", event_id)
+        else:
+            await self._dump_console()
+        if existed:
+            logger.debug("EventStore: deleted event %s.", event_id)
+        return existed
+
     async def _dump_console(self):
         channel = self.console_channel
         if not channel:
@@ -177,4 +187,3 @@ class EventStore:
                         temp_path,
                         exc,
                     )
-
