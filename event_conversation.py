@@ -545,6 +545,7 @@ class EventConversationCog(commands.Cog):
             pass
         if self.console:
             await self.console.delete(event_id)
+        await self.store.delete_event(str(event_id))
 
     # ------------------------------------------------------------------ #
     # Persistence                                                        #
