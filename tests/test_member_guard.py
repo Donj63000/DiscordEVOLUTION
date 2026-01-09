@@ -110,6 +110,39 @@ class DummyPayload:
         self.emoji = DummyEmoji(emoji)
 
 
+class DummyRateLimitError(Exception):
+    def __init__(self, status=429) -> None:
+        super().__init__("rate limited")
+        self.status = status
+
+
+class DummyHistory:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.error:
+            raise self.error
+        raise StopAsyncIteration
+
+
+class DummyConsoleChannel:
+    def __init__(self, pins=None, history_error: Exception | None = None) -> None:
+        self._pins = list(pins or [])
+        self.history_error = history_error
+        self.history_calls = 0
+
+    async def pins(self):
+        return list(self._pins)
+
+    def history(self, limit=200):
+        self.history_calls += 1
+        return DummyHistory(self.history_error)
+
+
 @pytest.mark.asyncio
 async def test_on_member_remove_records_former_member():
     default_role = DummyRole(1, "@everyone")
@@ -196,3 +229,19 @@ async def test_reaction_cross_kicks_member():
     assert alert_message_id not in cog.pending_alerts
     record = cog._get_member_record(guild.id, target_member.id)
     assert record["decision"] == "kicked"
+
+
+@pytest.mark.asyncio
+async def test_load_from_console_handles_rate_limit(monkeypatch):
+    monkeypatch.setenv("FORMER_MEMBERS_HISTORY_LIMIT", "10")
+    monkeypatch.setenv("FORMER_MEMBERS_HISTORY_RETRIES", "0")
+    monkeypatch.setenv("FORMER_MEMBERS_HISTORY_BACKOFF", "0")
+
+    bot_user = object()
+    bot = SimpleNamespace(user=bot_user)
+    cog = member_guard.FormerMemberGuardCog(bot)
+    console = DummyConsoleChannel(history_error=DummyRateLimitError())
+
+    result = await cog._load_from_console(console)
+
+    assert result is None

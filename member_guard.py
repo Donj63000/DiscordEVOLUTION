@@ -28,6 +28,20 @@ CROSS_EMOJI = "\N{CROSS MARK}"
 KICK_REASON = "Non respect de la regle de depart definitif"
 
 
+def _read_int(value: Optional[str], default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _read_float(value: Optional[str], default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class FormerMemberGuardCog(commands.Cog):
     """Tracks former members and alerts staff when they return."""
 
@@ -39,6 +53,18 @@ class FormerMemberGuardCog(commands.Cog):
         self.invite_cache: Dict[int, Dict[str, Dict[str, Any]]] = {}
         self.initialized = False
         self._init_lock = asyncio.Lock()
+        self.history_limit = max(
+            _read_int(
+                os.getenv("FORMER_MEMBERS_HISTORY_LIMIT"),
+                _read_int(os.getenv("CONSOLE_HISTORY_LIMIT"), 200),
+            ),
+            0,
+        )
+        self.history_retries = max(_read_int(os.getenv("FORMER_MEMBERS_HISTORY_RETRIES"), 2), 0)
+        self.history_backoff = max(
+            _read_float(os.getenv("FORMER_MEMBERS_HISTORY_BACKOFF"), 1.5),
+            0.0,
+        )
 
     async def cog_load(self) -> None:
         self.bot.loop.create_task(self._post_ready_setup())
@@ -101,6 +127,52 @@ class FormerMemberGuardCog(commands.Cog):
                 return True
         return False
 
+    def _is_rate_limited(self, exc: Exception) -> bool:
+        status = getattr(exc, "status", None)
+        if status == 429:
+            return True
+        response = getattr(exc, "response", None)
+        if response and getattr(response, "status", None) == 429:
+            return True
+        code = getattr(exc, "code", None)
+        if code == 429:
+            return True
+        return False
+
+    async def _fetch_console_history(
+        self, console_channel: discord.TextChannel
+    ) -> list[discord.Message]:
+        limit = self.history_limit
+        if limit <= 0:
+            log.debug("Former member guard history scan disabled.")
+            return []
+        messages: list[discord.Message] = []
+        seen_ids: set[int] = set()
+        attempt = 0
+        while True:
+            try:
+                async for msg in console_channel.history(limit=limit):
+                    msg_id = getattr(msg, "id", None)
+                    if msg_id is not None:
+                        if msg_id in seen_ids:
+                            continue
+                        seen_ids.add(msg_id)
+                    messages.append(msg)
+                return messages
+            except Exception as exc:
+                if self._is_rate_limited(exc) and attempt < self.history_retries:
+                    delay = self.history_backoff * (2**attempt)
+                    log.debug(
+                        "Former member guard history rate limited. attempt=%s delay=%.2f",
+                        attempt + 1,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    attempt += 1
+                    continue
+                log.warning("Former member guard history scan failed: %s", exc)
+                return messages
+
     async def _get_console_snapshot(
         self, console_channel: discord.TextChannel
     ) -> Optional[discord.Message]:
@@ -119,7 +191,8 @@ class FormerMemberGuardCog(commands.Cog):
             if self._is_console_snapshot(msg):
                 self.console_message_id = msg.id
                 return msg
-        async for msg in console_channel.history(limit=200):
+        history_messages = await self._fetch_console_history(console_channel)
+        for msg in history_messages:
             if self._is_console_snapshot(msg):
                 self.console_message_id = msg.id
                 return msg
@@ -131,8 +204,6 @@ class FormerMemberGuardCog(commands.Cog):
             candidates.extend(await console_channel.pins())
         except Exception:
             pass
-        async for msg in console_channel.history(limit=200):
-            candidates.append(msg)
         best = None
         best_size = -1
         for msg in candidates:
@@ -148,7 +219,23 @@ class FormerMemberGuardCog(commands.Cog):
                 best_size = size
                 self.console_message_id = msg.id
         if best:
-            log.debug("Former member guard loaded %s entries from console.", best_size)
+            log.debug("Former member guard loaded %s entries from pinned snapshot.", best_size)
+            return best
+        history_messages = await self._fetch_console_history(console_channel)
+        for msg in history_messages:
+            if not self._is_console_snapshot(msg):
+                continue
+            data = await self._extract_payload(msg)
+            if data is None:
+                continue
+            guilds = data.get("guilds", {})
+            size = sum(len(bucket.get("members", {})) for bucket in guilds.values())
+            if size > best_size:
+                best = data
+                best_size = size
+                self.console_message_id = msg.id
+        if best:
+            log.debug("Former member guard loaded %s entries from console history.", best_size)
         return best
 
     async def _extract_payload(self, message: discord.Message) -> Optional[Dict[str, Any]]:
