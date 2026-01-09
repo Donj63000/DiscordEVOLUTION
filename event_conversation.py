@@ -377,36 +377,83 @@ class EventConversationCog(commands.Cog):
 
             guild: discord.Guild = ctx.guild  # type: ignore[assignment]
 
-            # --- création rôle + salon privés -------------------------------- #
-            role = await self._create_event_role(guild, draft)
-            private_channel = await self._create_event_channel(guild, draft, role)
-
-            # --- Guild Scheduled Event --------------------------------------- #
+            role = None
+            private_channel = None
+            scheduled_event = None
+            announce_channel = None
+            cleanup_needed = False
             try:
-                scheduled_event = await guild.create_scheduled_event(
-                    name=draft.name,
-                    description=draft.description,
-                    start_time=draft.start_time,
-                    end_time=draft.end_time,
-                    entity_type=discord.EntityType.external,
-                    location=draft.location or private_channel.jump_url,  # lien du salon
-                    privacy_level=discord.PrivacyLevel.guild_only,
-                )
-            except discord.HTTPException as exc:
-                self.log.error("create_scheduled_event: %s", exc.text)
-                return await dm.send(f"❌ Impossible de créer l’événement : {exc.text}")
+                # --- création rôle + salon privés ---------------------------- #
+                role = await self._create_event_role(guild, draft)
+                private_channel = await self._create_event_channel(guild, draft, role)
 
-            # --- annonce publique ------------------------------------------- #
-            announce_channel = resolve_text_channel(
-                guild,
-                id_env="ORGANISATION_CHANNEL_ID",
-                name_env="ORGANISATION_CHANNEL_NAME",
-                default_name=self.announce_channel_name,
-            )
-            if announce_channel is None:
-                return await dm.send(
-                    f"❌ Canal #{self.announce_channel_name} introuvable."
+                # --- Guild Scheduled Event ----------------------------------- #
+                try:
+                    scheduled_event = await guild.create_scheduled_event(
+                        name=draft.name,
+                        description=draft.description,
+                        start_time=draft.start_time,
+                        end_time=draft.end_time,
+                        entity_type=discord.EntityType.external,
+                        location=draft.location or private_channel.jump_url,
+                        privacy_level=discord.PrivacyLevel.guild_only,
+                    )
+                except discord.HTTPException as exc:
+                    cleanup_needed = True
+                    self.log.error("create_scheduled_event: %s", exc.text)
+                    await dm.send(f"❌ Impossible de créer l’événement : {exc.text}")
+                    return
+
+                # --- annonce publique --------------------------------------- #
+                announce_channel = resolve_text_channel(
+                    guild,
+                    id_env="ORGANISATION_CHANNEL_ID",
+                    name_env="ORGANISATION_CHANNEL_NAME",
+                    default_name=self.announce_channel_name,
                 )
+                if announce_channel is None:
+                    cleanup_needed = True
+                    await dm.send(
+                        f"❌ Canal #{self.announce_channel_name} introuvable."
+                    )
+                    return
+            except Exception as exc:
+                cleanup_needed = True
+                self.log.exception("Failed to setup event resources: %s", exc)
+                await dm.send("❌ Impossible de préparer l’événement.")
+                return
+            finally:
+                if cleanup_needed:
+                    self.log.debug("Starting cleanup for event resources.")
+                    if scheduled_event is not None:
+                        try:
+                            await scheduled_event.delete()
+                            self.log.debug("Scheduled event deleted during cleanup.")
+                        except discord.HTTPException as exc:
+                            self.log.error(
+                                "Failed to delete scheduled event during cleanup: %s", exc.text
+                            )
+                    if private_channel is not None:
+                        try:
+                            await private_channel.delete(
+                                reason="Cleanup échec création événement"
+                            )
+                            self.log.debug("Private channel deleted during cleanup.")
+                        except discord.HTTPException as exc:
+                            self.log.error(
+                                "Failed to delete private channel during cleanup: %s", exc.text
+                            )
+                    if role is not None:
+                        try:
+                            await role.delete(
+                                reason="Cleanup échec création événement"
+                            )
+                            self.log.debug("Role deleted during cleanup.")
+                        except discord.HTTPException as exc:
+                            self.log.error(
+                                "Failed to delete role during cleanup: %s", exc.text
+                            )
+                    self.log.debug("Cleanup phase completed.")
 
             store_data = {
                 "event_id": scheduled_event.id,
