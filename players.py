@@ -5,6 +5,7 @@ import os
 import json
 import asyncio
 import discord
+from datetime import datetime
 from discord.ext import commands
 from typing import Dict, List, Optional, Tuple
 
@@ -202,6 +203,10 @@ class PlayersCog(commands.Cog):
             if message.id not in seen_ids:
                 candidates.append(message)
                 seen_ids.add(message.id)
+        candidates.sort(
+            key=lambda message: (message.created_at or datetime.min, message.id),
+            reverse=True,
+        )
         best_data: Optional[Dict[str, dict]] = None
         best_message: Optional[discord.Message] = None
         for message in candidates:
@@ -231,14 +236,17 @@ class PlayersCog(commands.Cog):
                     parsed = data
             if parsed is None:
                 continue
-            if not best_data or len(parsed) > len(best_data):
-                best_data = parsed
-                best_message = message
+            best_data = parsed
+            best_message = message
+            break
         if best_data and best_message:
             self.persos_data = best_data
             self.console_message_id = best_message.id
+            snapshot_date = (
+                best_message.created_at.isoformat() if best_message.created_at else "inconnue"
+            )
             print(
-                f"[DEBUG] Données récupérées depuis #{CONSOLE_CHANNEL_NAME} (message {best_message.id}, {len(best_data)} entrées)."
+                f"[DEBUG] Données récupérées depuis #{CONSOLE_CHANNEL_NAME} (message {best_message.id}, {snapshot_date}, {len(best_data)} entrées)."
             )
             return True
         return False
