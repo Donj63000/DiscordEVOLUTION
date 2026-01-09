@@ -1,9 +1,10 @@
 import os
 import json
 import asyncio
+import logging
 import discord
 from discord.ext import commands, tasks
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 
 from utils.channel_resolver import resolve_text_channel
@@ -21,6 +22,8 @@ MESSAGE_THRESHOLD = 20
 JOINED_THRESHOLD_DAYS = 6 * 30
 PROMOTIONS_FILE = "promotions_data.json"
 
+log = logging.getLogger(__name__)
+
 
 class UpCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -29,21 +32,47 @@ class UpCog(commands.Cog):
 
         # On stocke la data dans self.promotions_data
         self.promotions_data = {}
-
-        # On va charger la data plus tard (au load du cog), via load_promotions_data()
-        # On démarre le loop
-        self.check_up_status.start()
+        self.initialized = False
+        self._init_lock = asyncio.Lock()
+        self._init_task: asyncio.Task | None = None
 
     def cog_unload(self):
-        self.check_up_status.cancel()
+        if self._init_task and not self._init_task.done():
+            self._init_task.cancel()
+        if self.check_up_status.is_running():
+            self.check_up_status.cancel()
 
     # =========================
     #  Chargement / Sauvegarde
     # =========================
 
     async def cog_load(self):
-        """Méthode appelée après l'ajout du cog. On charge nos data depuis le canal console (ou depuis le fichier)."""
-        await self.load_promotions_data()
+        if self._init_task is None or self._init_task.done():
+            self._init_task = asyncio.create_task(self._post_ready_init())
+
+    async def _post_ready_init(self):
+        await self.bot.wait_until_ready()
+        async with self._init_lock:
+            if self.initialized:
+                return
+            log.debug("UpCog: init start")
+            await self.load_promotions_data()
+            self.initialized = True
+            log.debug("UpCog: init complete (entries=%s)", len(self.promotions_data))
+        if not self.check_up_status.is_running():
+            self.check_up_status.start()
+
+    async def _ensure_initialized(self):
+        if self.initialized:
+            return
+        task = self._init_task
+        if task:
+            try:
+                await task
+            except Exception as exc:
+                log.warning("UpCog: init task failed: %s", exc, exc_info=True)
+        if not self.initialized:
+            await self._post_ready_init()
 
     async def load_promotions_data(self):
         """
@@ -164,7 +193,9 @@ class UpCog(commands.Cog):
         Tâche qui se réveille toutes les 168h (une semaine), scanne l'historique,
         puis vérifie les membres éligibles, et lance des votes si nécessaire.
         """
-        await self.bot.wait_until_ready()
+        await self._ensure_initialized()
+        if not self.initialized:
+            return
 
         # On (re)charge la data depuis le console, au cas où un reload a eu lieu
         # (Optionnel si on veut forcer la synchro avant chaque check)
@@ -185,13 +216,27 @@ class UpCog(commands.Cog):
     async def scan_entire_history(self):
         """
         Parcourt tous les channels texte de toutes les guilds, et
-        incrémente un compteur de messages par utilisateur.
+        incr??mente un compteur de messages par utilisateur.
         """
         self.user_message_count.clear()
+        try:
+            scan_days = int(os.getenv("UP_SCAN_DAYS", "180"))
+        except ValueError:
+            scan_days = 180
+        try:
+            scan_limit = int(os.getenv("UP_SCAN_LIMIT_PER_CHANNEL", "5000"))
+        except ValueError:
+            scan_limit = 5000
+        if scan_limit < 0:
+            scan_limit = 0
+        after = None
+        if scan_days > 0:
+            after = discord.utils.utcnow() - timedelta(days=scan_days)
+        log.debug("UpCog: scan history limit=%s after=%s", scan_limit, after)
         for guild in self.bot.guilds:
             for channel in guild.text_channels:
                 try:
-                    async for msg in channel.history(limit=None, oldest_first=True):
+                    async for msg in channel.history(limit=scan_limit, after=after, oldest_first=False):
                         if not msg.author.bot:
                             self.user_message_count[str(msg.author.id)] += 1
                 except (discord.Forbidden, discord.HTTPException):

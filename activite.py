@@ -344,8 +344,12 @@ class ActiviteCog(commands.Cog):
 
     async def cog_load(self):
         """Chargement asynchrone du Cog."""
-        await self.initialize_data()
-        self.check_events_loop.start()
+        if not self.check_events_loop.is_running():
+            self.check_events_loop.start()
+
+    def _mark_initialized(self) -> None:
+        self.initialized = True
+        logger.info("ActiviteCog: données initialisées.")
 
     async def initialize_data(self):
         """
@@ -353,6 +357,8 @@ class ActiviteCog(commands.Cog):
         2) Puis, si on trouve un bloc JSON plus récent dans le channel console, on peut surdéfinir.
         3) On gère aussi la possibilité d’un fichier joint .json dans le channel console.
         """
+        if self.initialized:
+            return
         # 1) Charger d'abord depuis le fichier local, s'il existe
         if os.path.exists(DATA_FILE):
             try:
@@ -387,7 +393,9 @@ class ActiviteCog(commands.Cog):
                                         "Données surchargées depuis un fichier joint JSON dans %s.",
                                         console_channel.name,
                                     )
-                                    raise StopAsyncIteration  # On force la sortie
+                                    logger.debug("ActiviteCog: snapshot console charge via piece jointe.")
+                                    self._mark_initialized()
+                                    return
                                 except Exception as ex:
                                     logger.warning(f"Impossible de parser le fichier JSON joint : {ex}")
                         # Si on n’a pas pu lire d’attachement JSON valide, on check le bloc inline
@@ -403,7 +411,9 @@ class ActiviteCog(commands.Cog):
                                 "Données surchargées depuis %s (bloc texte JSON).",
                                 console_channel.name,
                             )
-                            raise StopAsyncIteration
+                            logger.debug("ActiviteCog: snapshot console charge via bloc json.")
+                            self._mark_initialized()
+                            return
                         except Exception as e:
                             logger.warning(
                                 "Impossible de parser le JSON %s inline: %s",
@@ -416,9 +426,7 @@ class ActiviteCog(commands.Cog):
                 CONSOLE_CHANNEL_FALLBACK,
             )
 
-        # Si on arrive ici sans StopAsyncIteration, c'est qu’on n’a pas trouvé de JSON plus récent
-        self.initialized = True
-        logger.info("ActiviteCog: données initialisées.")
+        self._mark_initialized()
 
     async def save_data_local(self):
         """

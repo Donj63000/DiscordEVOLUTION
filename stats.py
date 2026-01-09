@@ -1,5 +1,7 @@
+import asyncio
 import copy
 import json
+import logging
 import os
 from datetime import datetime
 
@@ -10,6 +12,9 @@ from utils.stats_store import StatsStore
 
 DATA_FILE = os.getenv("STATS_LOCAL_PATH", "stats_data.json")
 STATS_CHANNEL_NAME = os.getenv("STATS_CHANNEL", "console")
+DEFAULT_MAX_LOGS = 2000
+
+log = logging.getLogger(__name__)
 
 DEFAULT_STATS_TEMPLATE = {
     "messages": {
@@ -93,27 +98,51 @@ class StatsCog(commands.Cog):
         self.stats_enabled = True
         self.stats_data = build_stats_state()
         self.store: StatsStore | None = None
-        self.save_loop.start()
+        self.initialized = False
+        self._init_lock = asyncio.Lock()
+        self._init_task: asyncio.Task | None = None
+        try:
+            self.max_logs = max(int(os.getenv("STATS_MAX_LOGS", str(DEFAULT_MAX_LOGS))), 0)
+        except ValueError:
+            self.max_logs = DEFAULT_MAX_LOGS
 
     def cog_unload(self):
-        self.save_loop.cancel()
+        if self._init_task and not self._init_task.done():
+            self._init_task.cancel()
+        if self.save_loop.is_running():
+            self.save_loop.cancel()
 
     async def cog_load(self) -> None:
-        self.store = StatsStore(self.bot, STATS_CHANNEL_NAME)
-        loaded = None
-        try:
-            loaded = await self.store.load()
-        except Exception as exc:
-            print(f"[Stats] Échec du chargement via #{STATS_CHANNEL_NAME} : {exc}")
-        if not loaded and os.path.exists(DATA_FILE):
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-            except Exception as exc:
-                print(f"[Stats] Échec du chargement local {DATA_FILE} : {exc}")
-        if loaded:
-            self.stats_data = build_stats_state(loaded)
+        if self._init_task is None or self._init_task.done():
+            self._init_task = asyncio.create_task(self._post_ready_init())
 
+    async def _post_ready_init(self) -> None:
+        await self.bot.wait_until_ready()
+        async with self._init_lock:
+            if self.initialized:
+                return
+            log.debug("StatsCog: init start for channel %s", STATS_CHANNEL_NAME)
+            self.store = StatsStore(self.bot, STATS_CHANNEL_NAME)
+            loaded = None
+            try:
+                loaded = await self.store.load()
+            except Exception as exc:
+                print(f"[Stats] ?%chec du chargement via #{STATS_CHANNEL_NAME} : {exc}")
+            if not loaded and os.path.exists(DATA_FILE):
+                try:
+                    with open(DATA_FILE, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                except Exception as exc:
+                    print(f"[Stats] ?%chec du chargement local {DATA_FILE} : {exc}")
+            if loaded:
+                self.stats_data = build_stats_state(loaded)
+            self.initialized = True
+            log.debug(
+                "StatsCog: init complete (messages=%s)",
+                self.stats_data["messages"]["total"],
+            )
+        if not self.save_loop.is_running():
+            self.save_loop.start()
 
     async def save_stats_data(self):
         stored = False
@@ -136,6 +165,17 @@ class StatsCog(commands.Cog):
 
     def reset_stats_data(self):
         self.stats_data = build_stats_state()
+
+    def _append_log(self, bucket: str, entry: dict) -> None:
+        logs = self.stats_data.setdefault("logs", {})
+        items = logs.get(bucket)
+        if not isinstance(items, list):
+            items = []
+            logs[bucket] = items
+        items.append(entry)
+        max_logs = self.max_logs
+        if max_logs > 0 and len(items) > max_logs:
+            del items[:-max_logs]
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -172,7 +212,7 @@ class StatsCog(commands.Cog):
             "roles": roles,
             "content": message.content
         }
-        self.stats_data["logs"]["messages_created"].append(msg_log)
+        self._append_log("messages_created", msg_log)
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
@@ -197,7 +237,7 @@ class StatsCog(commands.Cog):
             "old_content": before.content,
             "new_content": after.content
         }
-        self.stats_data["logs"]["messages_edited"].append(edit_log)
+        self._append_log("messages_edited", edit_log)
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
@@ -221,7 +261,7 @@ class StatsCog(commands.Cog):
             "author_name": message.author.name if message.author else None,
             "content": message.content if message.content else None
         }
-        self.stats_data["logs"]["messages_deleted"].append(del_log)
+        self._append_log("messages_deleted", del_log)
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction: discord.Reaction, user: discord.Member):
@@ -246,7 +286,7 @@ class StatsCog(commands.Cog):
             "user_name": user.name,
             "emoji": emoji_str
         }
-        self.stats_data["logs"]["reactions"].append(react_log)
+        self._append_log("reactions", react_log)
 
     @commands.Cog.listener()
     async def on_reaction_remove(self, reaction: discord.Reaction, user: discord.Member):
@@ -271,7 +311,7 @@ class StatsCog(commands.Cog):
             "user_name": user.name,
             "emoji": emoji_str
         }
-        self.stats_data["logs"]["reactions"].append(react_log)
+        self._append_log("reactions", react_log)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -309,7 +349,7 @@ class StatsCog(commands.Cog):
             voice_log_entry["type"] = "MOVE"
         else:
             return
-        self.stats_data["logs"]["voice"].append(voice_log_entry)
+        self._append_log("voice", voice_log_entry)
 
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
@@ -331,7 +371,7 @@ class StatsCog(commands.Cog):
                 "old_status": old_status,
                 "new_status": new_status
             }
-            self.stats_data["logs"]["presence"].append(presence_log)
+            self._append_log("presence", presence_log)
 
     @commands.group(name="stats", invoke_without_command=True)
     async def stats_main(self, ctx: commands.Context):

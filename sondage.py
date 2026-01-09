@@ -14,6 +14,7 @@ ALPHABET_EMOJIS = [
 
 POLL_STORAGE = {}
 ANNONCE_CHANNEL_FALLBACK = os.getenv("ANNONCE_CHANNEL_NAME") or "annonces"
+STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
 
 
 def random_pastel_color() -> int:
@@ -36,6 +37,13 @@ class SondageCog(commands.Cog):
 
     def cog_unload(self):
         self.poll_watcher.cancel()
+
+    def _is_staff(self, member: discord.Member) -> bool:
+        perms = getattr(member, "guild_permissions", None)
+        if perms and (perms.manage_messages or perms.administrator):
+            return True
+        roles = getattr(member, "roles", [])
+        return any(getattr(role, "name", None) == STAFF_ROLE_NAME for role in roles)
 
     @tasks.loop(seconds=20.0)
     async def poll_watcher(self):
@@ -93,7 +101,6 @@ class SondageCog(commands.Cog):
             end_time_val = datetime.utcnow() + timedelta(seconds=delay_seconds)
             end_time_msg = f"Fin prévue : {end_time_val.strftime('%d/%m/%Y %H:%M')}"
         embed.add_field(name="⏳ Fin du sondage", value=end_time_msg, inline=False)
-        embed.set_footer(text=f"ID du message (pour !close_sondage) : {ctx.message.id}")
         annonce_channel = resolve_text_channel(
             ctx.guild,
             id_env="ANNONCE_CHANNEL_ID",
@@ -104,6 +111,8 @@ class SondageCog(commands.Cog):
             await ctx.send("Le canal d'annonces est introuvable. Vérifie ANNONCE_CHANNEL_ID ou ANNONCE_CHANNEL_NAME.")
             return
         sondage_message = await annonce_channel.send("@everyone Nouveau sondage :", embed=embed)
+        embed.set_footer(text=f"ID du message (pour !close_sondage) : {sondage_message.id}")
+        await sondage_message.edit(embed=embed)
         for i in range(len(choices)):
             await sondage_message.add_reaction(ALPHABET_EMOJIS[i])
         try:
@@ -130,8 +139,12 @@ class SondageCog(commands.Cog):
         if not message_id:
             await ctx.send("Veuillez préciser l'ID du message. Ex: `!close_sondage 1234567890`")
             return
-        if message_id not in POLL_STORAGE:
+        poll_data = POLL_STORAGE.get(message_id)
+        if not poll_data:
             await ctx.send("Aucun sondage trouvé pour cet ID.")
+            return
+        if ctx.author.id != poll_data.get("author_id") and not self._is_staff(ctx.author):
+            await ctx.send("Vous n'avez pas l'autorisation de fermer ce sondage.")
             return
         await self.close_poll(message_id)
         POLL_STORAGE.pop(message_id, None)
