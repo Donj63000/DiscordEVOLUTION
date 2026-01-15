@@ -124,7 +124,6 @@ class EvoBot(commands.Bot):
             "member_guard",
             "calcul",
             "defender",
-            "annonce",
             "perco",
             "avis",
         ]
@@ -137,6 +136,7 @@ class EvoBot(commands.Bot):
             logging.error("Extension 'organisation' introuvable ou invalide.")
 
         await self.load_extension("cogs.profil")
+        await self._safe_load("cogs.annonce_ai")
 
         await self._load_iastaff_anywhere()
 
