@@ -107,6 +107,22 @@ async def test_annonce_model_switches_runtime_choice(monkeypatch):
     assert ctx.replies and "gpt-5-mini" in ctx.replies[-1]
 
 
+def test_split_message_for_discord_chunks_long_text():
+    text = "@everyone " + ("a" * 5000)
+    parts = annonce.split_message_for_discord(text)
+    assert parts
+    assert "".join(parts) == text
+    assert all(len(part) <= 2000 for part in parts)
+
+
+def test_split_message_for_discord_prefers_newlines():
+    text = "@everyone\n" + ("a" * 1900) + "\n" + ("b" * 300)
+    parts = annonce.split_message_for_discord(text)
+    assert "".join(parts) == text
+    assert all(len(part) <= 2000 for part in parts)
+    assert parts[0].endswith("\n")
+
+
 @pytest.mark.asyncio
 async def test_annonce_model_requires_identifier(monkeypatch):
     cog = make_cog(monkeypatch)

@@ -3,6 +3,7 @@
 
 import os
 import asyncio
+import logging
 import discord
 from discord.ext import commands
 from utils.channel_resolver import resolve_text_channel
@@ -26,6 +27,8 @@ DEFAULT_MODEL = resolve_staff_model()
 OPENAI_TIMEOUT = float(os.getenv("IASTAFF_TIMEOUT", "120"))
 MAX_OUTPUT_TOKENS = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
 DM_TIMEOUT = int(os.getenv("ANNONCE_DM_TIMEOUT", "300"))
+
+log = logging.getLogger("annonce")
 
 
 def extract_generated_text(resp_obj) -> str:
@@ -101,6 +104,27 @@ def extract_generated_text(resp_obj) -> str:
     if not pieces:
         return ""
     return "".join(pieces).strip()
+
+
+def split_message_for_discord(text: str, limit: int = 2000) -> list[str]:
+    if not text:
+        return []
+    parts: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= limit:
+            parts.append(remaining)
+            break
+        split_at = remaining.rfind("\n", 0, limit)
+        if split_at == -1:
+            split_at = remaining.rfind(" ", 0, limit)
+        if split_at == -1:
+            split_at = limit
+        else:
+            split_at += 1
+        parts.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+    return parts
 
 
 
@@ -265,7 +289,16 @@ class AnnonceCog(commands.Cog):
             )
             return
 
-        await channel.send(final_announce)
+        chunks = split_message_for_discord(final_announce)
+        if len(chunks) > 1:
+            log.debug(
+                "Annonce decoupee: total=%s chunks=%s channel=%s",
+                len(final_announce),
+                len(chunks),
+                channel.id,
+            )
+        for chunk in chunks:
+            await channel.send(chunk)
         await dm.send(f"✅ Annonce publiée dans #{channel.name}.")
 
 
