@@ -537,8 +537,27 @@ class AnnounceAICog(commands.Cog):
             if not isinstance(interaction.user, discord.Member) or not self.parent._is_staff(interaction.user):
                 await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
                 return
+            if interaction.guild is None:
+                await interaction.response.send_message(
+                    "❌ Action disponible uniquement sur le serveur.",
+                    ephemeral=True,
+                )
+                return
             channel = self.parent._find_channel(interaction.guild, ANNONCE_CHANNEL_NAME)
-            await interaction.response.send_modal(self.parent._AnnounceModal(self.parent, channel))
+            try:
+                await interaction.response.send_modal(self.parent._AnnounceModal(self.parent, channel))
+            except discord.HTTPException as exc:
+                log.exception("Impossible d'ouvrir le modal annonce: %s", exc)
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        "❌ Impossible d'ouvrir le formulaire (erreur Discord).",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.response.send_message(
+                        "❌ Impossible d'ouvrir le formulaire (erreur Discord).",
+                        ephemeral=True,
+                    )
 
     class _AnnounceModal(discord.ui.Modal, title="✍️ Rédiger une annonce"):
         def __init__(
@@ -559,11 +578,12 @@ class AnnounceAICog(commands.Cog):
                 default=defaults.get("objectif"),
             )
             self.cible = discord.ui.TextInput(
-                label="👥 Cible (ex: guilde entière / recrues / team donjon)",
+                label="👥 Cible (guilde / recrues / team)",
                 style=discord.TextStyle.short,
                 required=False,
                 max_length=80,
                 default=defaults.get("cible"),
+                placeholder="Ex: guilde entière, recrues, team donjon",
             )
             self.ton = discord.ui.TextInput(
                 label="🎨 Ton (ex: clair, motivant, RP léger…)",
@@ -580,7 +600,7 @@ class AnnounceAICog(commands.Cog):
                 default=defaults.get("mentions") or DEFAULT_MENTIONS,
             )
             self.brut = discord.ui.TextInput(
-                label="📝 Message brut (colle ce que tu veux annoncer)",
+                label="📝 Message brut (texte de base)",
                 style=discord.TextStyle.paragraph,
                 max_length=2000,
                 default=defaults.get("brut"),
@@ -723,7 +743,26 @@ class AnnounceAICog(commands.Cog):
             if not draft:
                 await interaction.response.send_message("Brouillon introuvable.", ephemeral=True)
                 return
-            await interaction.response.send_modal(self.parent._ScheduleModal(self.parent, self.user_id))
+            if interaction.guild is None:
+                await interaction.response.send_message(
+                    "❌ Action disponible uniquement sur le serveur.",
+                    ephemeral=True,
+                )
+                return
+            try:
+                await interaction.response.send_modal(self.parent._ScheduleModal(self.parent, self.user_id))
+            except discord.HTTPException as exc:
+                log.exception("Impossible d'ouvrir le modal planning: %s", exc)
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        "❌ Impossible d'ouvrir le formulaire (erreur Discord).",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.response.send_message(
+                        "❌ Impossible d'ouvrir le formulaire (erreur Discord).",
+                        ephemeral=True,
+                    )
 
         @discord.ui.button(label="🗑️ Annuler", style=discord.ButtonStyle.danger)
         async def cancel(self, interaction: discord.Interaction, _):
@@ -736,14 +775,15 @@ class AnnounceAICog(commands.Cog):
             self.parent = parent
             self.user_id = user_id
             self.when = discord.ui.TextInput(
-                label="Quand ? (ex: demain 20:30, 27/09 21h, 2025-09-27 20:30)",
+                label="Quand ?",
                 style=discord.TextStyle.short,
-                placeholder="27/09 20:30",
+                placeholder="Ex: demain 20:30 ou 27/09 20:30",
                 required=True,
                 max_length=64,
             )
             self.channel = discord.ui.TextInput(
-                label=f"Salon (laisser vide pour #{ANNONCE_CHANNEL_NAME})",
+                label="Salon (optionnel)",
+                placeholder=f"laisser vide = #{ANNONCE_CHANNEL_NAME}",
                 style=discord.TextStyle.short,
                 required=False,
                 max_length=64,
