@@ -161,8 +161,38 @@ class EvoBot(commands.Bot):
             await asyncio.sleep(1)
         return None
 
+    async def _fetch_history(self, channel, limit=50, oldest_first=False):
+        delay = 0.5
+        for attempt in range(1, 4):
+            try:
+                messages = []
+                async for msg in channel.history(limit=limit, oldest_first=oldest_first):
+                    messages.append(msg)
+                return messages
+            except Exception as exc:
+                status = getattr(exc, "status", None)
+                if status == 429:
+                    retry_after = getattr(exc, "retry_after", None)
+                    wait = float(retry_after) if retry_after else delay
+                    channel_label = getattr(channel, "name", None) or getattr(channel, "id", "unknown")
+                    logging.warning(
+                        "Rate limited while reading history for %s. Retrying in %.2fs.",
+                        channel_label,
+                        wait,
+                    )
+                    await asyncio.sleep(wait)
+                    delay = min(delay * 2, 8)
+                    continue
+                channel_label = getattr(channel, "name", None) or getattr(channel, "id", "unknown")
+                logging.warning("History read failed for %s: %s", channel_label, exc)
+                return []
+        channel_label = getattr(channel, "name", None) or getattr(channel, "id", "unknown")
+        logging.warning("History read failed after retries for %s.", channel_label)
+        return []
+
     async def parse_latest_lock(self, ch: discord.TextChannel):
-        async for msg in ch.history(limit=50, oldest_first=False):
+        messages = await self._fetch_history(ch, limit=50, oldest_first=False)
+        for msg in messages:
             if msg.author == self.user and msg.content.startswith(LOCK_TAG):
                 parts = msg.content.split()
                 if len(parts) >= 3:
@@ -185,7 +215,8 @@ class EvoBot(commands.Bot):
         last, inst, ts = await self.parse_latest_lock(ch)
         if last and last.id == my.id:
             logging.info("Lock acquis par %s", self.INSTANCE_ID)
-            async for msg in ch.history(limit=100, oldest_first=False):
+            messages = await self._fetch_history(ch, limit=100, oldest_first=False)
+            for msg in messages:
                 if msg.id != self._lock_message_id and msg.author == self.user and msg.content.startswith(LOCK_TAG):
                     try:
                         await msg.delete()

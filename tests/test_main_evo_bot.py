@@ -59,6 +59,26 @@ class FakeChannel:
         raise LookupError("message not found")
 
 
+class FakeRateLimit(Exception):
+    def __init__(self, retry_after=0.0):
+        super().__init__("rate limited")
+        self.status = 429
+        self.retry_after = retry_after
+
+
+class RateLimitChannel(FakeChannel):
+    def __init__(self, messages=None, channel_id=1, sender=None):
+        super().__init__(messages=messages, channel_id=channel_id, sender=sender)
+        self.calls = 0
+
+    async def history(self, limit=50, oldest_first=False):
+        self.calls += 1
+        if self.calls == 1:
+            raise FakeRateLimit(retry_after=0.01)
+        async for message in super().history(limit=limit, oldest_first=oldest_first):
+            yield message
+
+
 class FakeGuild:
     def __init__(self, channel):
         self.text_channels = [channel]
@@ -179,3 +199,18 @@ async def test_process_commands_only_once_per_message(monkeypatch):
     other = SimpleNamespace(id=456)
     await bot.process_commands(other)
     assert calls == [123, 456]
+
+
+@pytest.mark.asyncio
+async def test_fetch_history_retries_on_rate_limit(bot, monkeypatch):
+    channel = RateLimitChannel([FakeMessage(1, bot.user, "ok")], channel_id=12, sender=bot.user)
+    sleeps = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    messages = await bot._fetch_history(channel, limit=10)
+    assert channel.calls == 2
+    assert messages and messages[0].content == "ok"
+    assert sleeps

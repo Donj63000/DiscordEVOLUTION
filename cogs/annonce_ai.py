@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -66,6 +67,107 @@ def _is_inference_config_error(exc: Exception) -> bool:
         or "not supported" in lowered
         or "unknown" in lowered
     )
+
+
+def _is_response_format_error(exc: Exception) -> bool:
+    msg = getattr(exc, "message", None) or str(exc)
+    lowered = msg.lower()
+    if "response_format" not in lowered:
+        return False
+    return (
+        "not supported" in lowered
+        or "unsupported" in lowered
+        or "unrecognized" in lowered
+        or "invalid" in lowered
+        or "unknown" in lowered
+    )
+
+
+def _extract_json_payload(text: str) -> Any:
+    decoder = json.JSONDecoder()
+    for start in ("{", "["):
+        idx = text.find(start)
+        if idx == -1:
+            continue
+        try:
+            return decoder.raw_decode(text[idx:])[0]
+        except json.JSONDecodeError:
+            continue
+    raise json.JSONDecodeError("No JSON payload found", text, 0)
+
+
+def _extract_response_text(resp: Any) -> str:
+    if not resp:
+        return ""
+    if isinstance(resp, str):
+        return resp.strip()
+
+    direct = getattr(resp, "output_text", None)
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    output = getattr(resp, "output", None)
+    if output is None and isinstance(resp, dict):
+        output = resp.get("output")
+
+    pieces = []
+    for msg in output or []:
+        content_list = getattr(msg, "content", None)
+        if content_list is None and isinstance(msg, dict):
+            content_list = msg.get("content")
+        for content in content_list or []:
+            c_type = getattr(content, "type", None)
+            if c_type is None and isinstance(content, dict):
+                c_type = content.get("type")
+            if c_type in ("output_text", "text"):
+                candidate = getattr(content, "text", None)
+                if candidate is None and isinstance(content, dict):
+                    candidate = content.get("text") or content.get("content")
+                if isinstance(candidate, str):
+                    pieces.append(candidate)
+            elif c_type in ("output_json", "json_schema", "json"):
+                payload = (
+                    getattr(content, "json", None)
+                    or getattr(content, "json_schema", None)
+                    or getattr(content, "content", None)
+                )
+                if payload is None and isinstance(content, dict):
+                    payload = content.get("json") or content.get("json_schema") or content.get("content")
+                if isinstance(payload, (dict, list)):
+                    pieces.append(json.dumps(payload))
+                elif isinstance(payload, str):
+                    pieces.append(payload)
+
+    if not pieces:
+        return ""
+    return "".join(pieces).strip()
+
+
+def _coerce_variants_payload(data: Any) -> List[Dict[str, Any]]:
+    if isinstance(data, dict):
+        if "variants" in data:
+            variants = data["variants"]
+            if isinstance(variants, dict):
+                log.debug("Annonce IA: variants en dictionnaire; conversion en liste.")
+                return list(variants.values())
+            if isinstance(variants, list):
+                return variants
+        if "variant" in data:
+            variants = data["variant"]
+            if isinstance(variants, dict):
+                log.debug("Annonce IA: variant en dictionnaire; conversion en liste.")
+                return list(variants.values())
+            if isinstance(variants, list):
+                log.debug("Annonce IA: clé variant détectée.")
+                return variants
+        for key, value in data.items():
+            if isinstance(value, list):
+                log.debug("Annonce IA: variants absentes, liste détectée sous '%s'.", key)
+                return value
+    if isinstance(data, list):
+        log.debug("Annonce IA: variants absentes, liste au niveau racine.")
+        return data
+    raise ValueError("Réponse IA invalide: variants introuvable.")
 
 
 @dataclass
@@ -281,33 +383,44 @@ class AnnounceAICog(commands.Cog):
                     request_kwargs.pop("temperature", None)
                     request_kwargs.pop("inference_config", None)
                     handled = True
+                elif self._supports_response_format and _is_response_format_error(exc):
+                    self._supports_response_format = False
+                    request_kwargs.pop("response_format", None)
+                    handled = True
                 if handled:
                     continue
                 raise
 
-        text = getattr(resp, "output_text", "") or ""
-        if not text and getattr(resp, "output", None):
-            for msg in resp.output:
-                for content in getattr(msg, "content", []) or []:
-                    c_type = getattr(content, "type", "")
-                    if c_type in ("output_text", "text") and getattr(content, "text", ""):
-                        text += content.text
-                    elif c_type in ("json_schema", "json"):
-                        payload = (
-                            getattr(content, "json_schema", None)
-                            or getattr(content, "json", None)
-                            or getattr(content, "content", None)
-                        )
-                        if isinstance(payload, (dict, list)):
-                            text += json.dumps(payload)
-                        elif isinstance(payload, str):
-                            text += payload
+        text = _extract_response_text(resp)
         if not text:
-            raise RuntimeError("Réponse OpenAI vide.")
+            output = getattr(resp, "output", None)
+            count = None
+            if output is not None:
+                try:
+                    count = len(output)
+                except TypeError:
+                    count = None
+            log.debug("OpenAI annonce: empty response output_count=%s", count)
+            raise RuntimeError("Rゼponse OpenAI vide.")
 
-        data = json.loads(text)
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            log.debug("Annonce IA: JSON invalide, extraction brute: %s", exc)
+            try:
+                data = _extract_json_payload(text)
+            except json.JSONDecodeError as extract_exc:
+                log.debug("Annonce IA: extraction JSON échouée: %s", extract_exc)
+                raise ValueError("Réponse IA invalide (JSON introuvable).")
+
+        variants_payload = _coerce_variants_payload(data)
+        if not variants_payload:
+            raise ValueError("Réponse IA invalide: aucune variante retournée.")
+        if not all(isinstance(item, dict) for item in variants_payload):
+            raise ValueError("Réponse IA invalide: variantes mal formées.")
+
         variants = []
-        for item in data["variants"]:
+        for item in variants_payload:
             variants.append(
                 Variant(
                     style=item.get("style", ""),
@@ -416,12 +529,40 @@ class AnnounceAICog(commands.Cog):
         log.debug("Annonce programmée sauvegardée: %s", sched.id)
         return True
 
+    async def _fetch_console_history(
+        self, channel: discord.TextChannel, limit: int
+    ) -> List[discord.Message]:
+        delay = 0.5
+        for attempt in range(1, 4):
+            try:
+                messages: List[discord.Message] = []
+                async for message in channel.history(limit=limit):
+                    messages.append(message)
+                return messages
+            except Exception as exc:
+                status = getattr(exc, "status", None)
+                if status == 429:
+                    retry_after = getattr(exc, "retry_after", None)
+                    wait = float(retry_after) if retry_after else delay
+                    log.debug(
+                        "Annonce IA: rate limited while reading console history (attempt %s).",
+                        attempt,
+                    )
+                    await asyncio.sleep(wait)
+                    delay = min(delay * 2, 8)
+                    continue
+                log.warning("Annonce IA: console history error: %s", exc)
+                return []
+        log.warning("Annonce IA: console history failed after retries.")
+        return []
+
     async def _load_all_from_console(self, guild: discord.Guild) -> None:
         chan = await self._console_channel(guild)
         if not chan:
             return
         pattern = re.compile(rf"^```{re.escape(ANNOUNCE_DB_BLOCK)}\n(?P<body>.+?)\n```$", re.S)
-        async for message in chan.history(limit=200):
+        messages = await self._fetch_console_history(chan, limit=200)
+        for message in messages:
             match = pattern.match(message.content or "")
             if not match:
                 continue
@@ -553,37 +694,42 @@ class AnnounceAICog(commands.Cog):
             defaults = defaults or {}
 
             self.obj = discord.ui.TextInput(
-                label="🎯 Objectif (obligatoire)",
+                label="Objectif (obligatoire)",
                 style=discord.TextStyle.short,
                 max_length=120,
                 default=defaults.get("objectif"),
+                placeholder="Ex: recruter pour Donjon Bouftou",
             )
             self.cible = discord.ui.TextInput(
-                label="👥 Cible (ex: guilde entière / recrues / team donjon)",
+                label="Cible (optionnel)",
                 style=discord.TextStyle.short,
                 required=False,
                 max_length=80,
                 default=defaults.get("cible"),
+                placeholder="Ex: guilde, recrues, team donjon",
             )
             self.ton = discord.ui.TextInput(
-                label="🎨 Ton (ex: clair, motivant, RP léger…)",
+                label="Ton (optionnel)",
                 style=discord.TextStyle.short,
                 required=False,
                 max_length=60,
                 default=defaults.get("ton") or "clair, motivant",
+                placeholder="Ex: clair, motivant, RP leger",
             )
             self.mentions = discord.ui.TextInput(
-                label="📣 Mentions (ex: @everyone, @here, @Role)",
+                label="Mentions (optionnel)",
                 style=discord.TextStyle.short,
                 required=False,
                 max_length=120,
                 default=defaults.get("mentions") or DEFAULT_MENTIONS,
+                placeholder="Ex: @everyone, @here, @Role",
             )
             self.brut = discord.ui.TextInput(
-                label="📝 Message brut (colle ce que tu veux annoncer)",
+                label="Message brut",
                 style=discord.TextStyle.paragraph,
                 max_length=2000,
                 default=defaults.get("brut"),
+                placeholder="Colle le texte brut ou les infos cles",
             )
 
             for comp in (self.obj, self.cible, self.ton, self.mentions, self.brut):
@@ -736,17 +882,18 @@ class AnnounceAICog(commands.Cog):
             self.parent = parent
             self.user_id = user_id
             self.when = discord.ui.TextInput(
-                label="Quand ? (ex: demain 20:30, 27/09 21h, 2025-09-27 20:30)",
+                label="Quand ?",
                 style=discord.TextStyle.short,
-                placeholder="27/09 20:30",
+                placeholder="Ex: demain 20:30 ou 27/09 21h",
                 required=True,
                 max_length=64,
             )
             self.channel = discord.ui.TextInput(
-                label=f"Salon (laisser vide pour #{ANNONCE_CHANNEL_NAME})",
+                label="Salon (optionnel)",
                 style=discord.TextStyle.short,
                 required=False,
                 max_length=64,
+                placeholder=f"Ex: #{ANNONCE_CHANNEL_NAME}",
             )
             self.add_item(self.when)
             self.add_item(self.channel)
