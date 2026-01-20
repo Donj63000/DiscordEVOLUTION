@@ -206,28 +206,64 @@ class AnnounceAICog(commands.Cog):
         }
 
     def _extract_json_payload(self, text: str) -> Optional[str]:
-        """Extract a JSON payload from a model response."""
-        match = JSON_BLOCK_RE.search(text)
+        """Extract a JSON payload from a model response.
+
+        The model may wrap JSON inside markdown code fences or append extra text.
+        This helper returns the first JSON object found.
+        """
+        match = JSON_BLOCK_RE.search(text or "")
         if match:
             return match.group("body").strip()
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            return text[start : end + 1]
+        start = (text or "").find("{")
+        if start == -1:
+            return None
+
+        candidate = (text or "")[start:]
+        decoder = json.JSONDecoder()
+        try:
+            _, end = decoder.raw_decode(candidate)
+            return candidate[:end].strip()
+        except json.JSONDecodeError:
+            end = (text or "").rfind("}")
+            if end != -1 and end > start:
+                return (text or "")[start : end + 1].strip()
         return None
 
     def _parse_variants_payload(self, text: str) -> Dict[str, Any]:
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            log.debug("Annonce IA JSON brut invalide, tentative d'extraction.", exc_info=True)
-        payload = self._extract_json_payload(text)
-        if payload:
+        def _try_load(candidate: str) -> Optional[Dict[str, Any]]:
+            if not candidate:
+                return None
             try:
-                return json.loads(payload)
+                data = json.loads(candidate)
             except json.JSONDecodeError:
-                log.debug("Annonce IA JSON extrait invalide.", exc_info=True)
-        raise RuntimeError("Réponse IA invalide: JSON illisible.")
+                return None
+            return data if isinstance(data, dict) else None
+
+        raw = (text or "").strip()
+        data = _try_load(raw)
+        if data is not None:
+            return data
+
+        log.debug("Annonce IA JSON brut invalide, tentative d'extraction.", exc_info=True)
+
+        payload = self._extract_json_payload(raw)
+        data = _try_load(payload or "")
+        if data is not None:
+            return data
+
+        for candidate in (payload, raw):
+            if not candidate:
+                continue
+            fixed = re.sub(r",\s*([}\]])", r"\1", candidate)
+            data = _try_load(fixed)
+            if data is not None:
+                return data
+
+        raise RuntimeError(
+            "Réponse IA invalide: JSON illisible. "
+            "(Réponse probablement tronquée ou non conforme; augmente "
+            "ANNONCE_AI_MAX_OUTPUT_TOKENS / IASTAFF_MAX_OUTPUT_TOKENS.)"
+        )
 
     async def _ask_openai(self, fields: Dict[str, str]) -> List[Variant]:
         if not self._client:
@@ -245,7 +281,9 @@ class AnnounceAICog(commands.Cog):
             "- Retourne STRICTEMENT le JSON demandé."
         )
         temperature_value = float(os.getenv("IASTAFF_TEMPERATURE", "0.4"))
-        max_tokens = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1200"))
+        max_tokens = int(
+            os.getenv("ANNONCE_AI_MAX_OUTPUT_TOKENS", os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
+        )
         request_kwargs: Dict[str, Any] = {
             "model": self._model,
             "instructions": self._system_prompt(),
