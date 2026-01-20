@@ -35,6 +35,7 @@ VIEW_TIMEOUT = int(os.getenv("ANNONCE_VIEW_TIMEOUT", "900"))
 STAFF_ROLE_ENV = os.getenv("IASTAFF_ROLE", "Staff")
 
 log = logging.getLogger("annonce_ai")
+JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.+?)```", re.DOTALL)
 
 
 def _hex_to_int(color: str) -> int:
@@ -204,6 +205,30 @@ class AnnounceAICog(commands.Cog):
             "strict": True,
         }
 
+    def _extract_json_payload(self, text: str) -> Optional[str]:
+        """Extract a JSON payload from a model response."""
+        match = JSON_BLOCK_RE.search(text)
+        if match:
+            return match.group("body").strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return text[start : end + 1]
+        return None
+
+    def _parse_variants_payload(self, text: str) -> Dict[str, Any]:
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            log.debug("Annonce IA JSON brut invalide, tentative d'extraction.", exc_info=True)
+        payload = self._extract_json_payload(text)
+        if payload:
+            try:
+                return json.loads(payload)
+            except json.JSONDecodeError:
+                log.debug("Annonce IA JSON extrait invalide.", exc_info=True)
+        raise RuntimeError("Réponse IA invalide: JSON illisible.")
+
     async def _ask_openai(self, fields: Dict[str, str]) -> List[Variant]:
         if not self._client:
             raise RuntimeError("OPENAI_API_KEY manquant ou librairie openai indisponible.")
@@ -305,7 +330,7 @@ class AnnounceAICog(commands.Cog):
         if not text:
             raise RuntimeError("Réponse OpenAI vide.")
 
-        data = json.loads(text)
+        data = self._parse_variants_payload(text)
         variants = []
         for item in data["variants"]:
             variants.append(
