@@ -36,6 +36,7 @@ VIEW_TIMEOUT = int(os.getenv("ANNONCE_VIEW_TIMEOUT", "900"))
 STAFF_ROLE_ENV = os.getenv("IASTAFF_ROLE", "Staff")
 
 log = logging.getLogger("annonce_ai")
+JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.+?)```", re.DOTALL)
 
 
 def _hex_to_int(color: str) -> int:
@@ -81,19 +82,6 @@ def _is_response_format_error(exc: Exception) -> bool:
         or "invalid" in lowered
         or "unknown" in lowered
     )
-
-
-def _extract_json_payload(text: str) -> Any:
-    decoder = json.JSONDecoder()
-    for start in ("{", "["):
-        idx = text.find(start)
-        if idx == -1:
-            continue
-        try:
-            return decoder.raw_decode(text[idx:])[0]
-        except json.JSONDecodeError:
-            continue
-    raise json.JSONDecodeError("No JSON payload found", text, 0)
 
 
 def _extract_response_text(resp: Any) -> str:
@@ -306,6 +294,66 @@ class AnnounceAICog(commands.Cog):
             "strict": True,
         }
 
+    def _extract_json_payload(self, text: str) -> Optional[str]:
+        """Extract a JSON payload from a model response.
+
+        The model may wrap JSON inside markdown code fences or append extra text.
+        This helper returns the first JSON object found.
+        """
+        match = JSON_BLOCK_RE.search(text or "")
+        if match:
+            return match.group("body").strip()
+        start = (text or "").find("{")
+        if start == -1:
+            return None
+
+        candidate = (text or "")[start:]
+        decoder = json.JSONDecoder()
+        try:
+            _, end = decoder.raw_decode(candidate)
+            return candidate[:end].strip()
+        except json.JSONDecodeError:
+            end = (text or "").rfind("}")
+            if end != -1 and end > start:
+                return (text or "")[start : end + 1].strip()
+        return None
+
+    def _parse_variants_payload(self, text: str) -> Any:
+        def _try_load(candidate: str) -> Optional[Any]:
+            if not candidate:
+                return None
+            try:
+                data = json.loads(candidate)
+            except json.JSONDecodeError:
+                return None
+            return data if isinstance(data, (dict, list)) else None
+
+        raw = (text or "").strip()
+        data = _try_load(raw)
+        if data is not None:
+            return data
+
+        log.debug("Annonce IA JSON brut invalide, tentative d'extraction.", exc_info=True)
+
+        payload = self._extract_json_payload(raw)
+        data = _try_load(payload or "")
+        if data is not None:
+            return data
+
+        for candidate in (payload, raw):
+            if not candidate:
+                continue
+            fixed = re.sub(r",\s*([}\]])", r"\1", candidate)
+            data = _try_load(fixed)
+            if data is not None:
+                return data
+
+        raise RuntimeError(
+            "Réponse IA invalide: JSON illisible. "
+            "(Réponse probablement tronquée ou non conforme; augmente "
+            "ANNONCE_AI_MAX_OUTPUT_TOKENS / IASTAFF_MAX_OUTPUT_TOKENS.)"
+        )
+
     async def _ask_openai(self, fields: Dict[str, str]) -> List[Variant]:
         if not self._client:
             raise RuntimeError("OPENAI_API_KEY manquant ou librairie openai indisponible.")
@@ -322,7 +370,9 @@ class AnnounceAICog(commands.Cog):
             "- Retourne STRICTEMENT le JSON demandé."
         )
         temperature_value = float(os.getenv("IASTAFF_TEMPERATURE", "0.4"))
-        max_tokens = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1200"))
+        max_tokens = int(
+            os.getenv("ANNONCE_AI_MAX_OUTPUT_TOKENS", os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
+        )
         request_kwargs: Dict[str, Any] = {
             "model": self._model,
             "instructions": self._system_prompt(),
@@ -403,15 +453,7 @@ class AnnounceAICog(commands.Cog):
             log.debug("OpenAI annonce: empty response output_count=%s", count)
             raise RuntimeError("Rゼponse OpenAI vide.")
 
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError as exc:
-            log.debug("Annonce IA: JSON invalide, extraction brute: %s", exc)
-            try:
-                data = _extract_json_payload(text)
-            except json.JSONDecodeError as extract_exc:
-                log.debug("Annonce IA: extraction JSON échouée: %s", extract_exc)
-                raise ValueError("Réponse IA invalide (JSON introuvable).")
+        data = self._parse_variants_payload(text)
 
         variants_payload = _coerce_variants_payload(data)
         if not variants_payload:
@@ -678,8 +720,27 @@ class AnnounceAICog(commands.Cog):
             if not isinstance(interaction.user, discord.Member) or not self.parent._is_staff(interaction.user):
                 await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
                 return
+            if interaction.guild is None:
+                await interaction.response.send_message(
+                    "❌ Action disponible uniquement sur le serveur.",
+                    ephemeral=True,
+                )
+                return
             channel = self.parent._find_channel(interaction.guild, ANNONCE_CHANNEL_NAME)
-            await interaction.response.send_modal(self.parent._AnnounceModal(self.parent, channel))
+            try:
+                await interaction.response.send_modal(self.parent._AnnounceModal(self.parent, channel))
+            except discord.HTTPException as exc:
+                log.exception("Impossible d'ouvrir le modal annonce: %s", exc)
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        "❌ Impossible d'ouvrir le formulaire (erreur Discord).",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.response.send_message(
+                        "❌ Impossible d'ouvrir le formulaire (erreur Discord).",
+                        ephemeral=True,
+                    )
 
     class _AnnounceModal(discord.ui.Modal, title="✍️ Rédiger une annonce"):
         def __init__(
@@ -869,7 +930,26 @@ class AnnounceAICog(commands.Cog):
             if not draft:
                 await interaction.response.send_message("Brouillon introuvable.", ephemeral=True)
                 return
-            await interaction.response.send_modal(self.parent._ScheduleModal(self.parent, self.user_id))
+            if interaction.guild is None:
+                await interaction.response.send_message(
+                    "❌ Action disponible uniquement sur le serveur.",
+                    ephemeral=True,
+                )
+                return
+            try:
+                await interaction.response.send_modal(self.parent._ScheduleModal(self.parent, self.user_id))
+            except discord.HTTPException as exc:
+                log.exception("Impossible d'ouvrir le modal planning: %s", exc)
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        "❌ Impossible d'ouvrir le formulaire (erreur Discord).",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.response.send_message(
+                        "❌ Impossible d'ouvrir le formulaire (erreur Discord).",
+                        ephemeral=True,
+                    )
 
         @discord.ui.button(label="🗑️ Annuler", style=discord.ButtonStyle.danger)
         async def cancel(self, interaction: discord.Interaction, _):
