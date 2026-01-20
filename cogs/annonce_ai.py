@@ -36,7 +36,7 @@ VIEW_TIMEOUT = int(os.getenv("ANNONCE_VIEW_TIMEOUT", "900"))
 STAFF_ROLE_ENV = os.getenv("IASTAFF_ROLE", "Staff")
 
 log = logging.getLogger("annonce_ai")
-JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.+?)```", re.DOTALL)
+JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.+?)```", re.DOTALL | re.IGNORECASE)
 
 
 def _hex_to_int(color: str) -> int:
@@ -201,6 +201,7 @@ class AnnounceAICog(commands.Cog):
         self._scheduled: Dict[str, ScheduledAnnounce] = {}
         self._client: Optional[AsyncOpenAI] = build_async_openai_client(AsyncOpenAI)
         self._supports_response_format = True
+        self._response_format_mode = "json_schema"
         self._supports_temperature = True
         self._temperature_mode = "inference_config"
         self._model = resolve_staff_model()
@@ -298,24 +299,62 @@ class AnnounceAICog(commands.Cog):
         """Extract a JSON payload from a model response.
 
         The model may wrap JSON inside markdown code fences or append extra text.
-        This helper returns the first JSON object found.
+        This helper returns the first JSON object or array found.
         """
-        match = JSON_BLOCK_RE.search(text or "")
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        match = JSON_BLOCK_RE.search(raw)
         if match:
-            return match.group("body").strip()
-        start = (text or "").find("{")
-        if start == -1:
+            raw = (match.group("body") or "").strip()
+            if not raw:
+                return None
+
+        decoder = json.JSONDecoder()
+        for found in re.finditer(r"[\{\[]", raw):
+            candidate = raw[found.start():].lstrip()
+            try:
+                _, end = decoder.raw_decode(candidate)
+                return candidate[:end].strip()
+            except json.JSONDecodeError:
+                continue
+
+        def _balanced_chunk(candidate: str) -> Optional[str]:
+            if not candidate:
+                return None
+            first = candidate[0]
+            if first not in "{[":
+                return None
+            close = "}" if first == "{" else "]"
+            depth = 0
+            in_str = False
+            escape = False
+            for idx, ch in enumerate(candidate):
+                if in_str:
+                    if escape:
+                        escape = False
+                        continue
+                    if ch == "\\":
+                        escape = True
+                        continue
+                    if ch == '"':
+                        in_str = False
+                    continue
+                if ch == '"':
+                    in_str = True
+                    continue
+                if ch == first:
+                    depth += 1
+                elif ch == close:
+                    depth -= 1
+                    if depth == 0:
+                        return candidate[: idx + 1]
             return None
 
-        candidate = (text or "")[start:]
-        decoder = json.JSONDecoder()
-        try:
-            _, end = decoder.raw_decode(candidate)
-            return candidate[:end].strip()
-        except json.JSONDecodeError:
-            end = (text or "").rfind("}")
-            if end != -1 and end > start:
-                return (text or "")[start : end + 1].strip()
+        for found in re.finditer(r"[\{\[]", raw):
+            chunk = _balanced_chunk(raw[found.start():].lstrip())
+            if chunk:
+                return chunk.strip()
         return None
 
     def _parse_variants_payload(self, text: str) -> Any:
@@ -333,7 +372,7 @@ class AnnounceAICog(commands.Cog):
         if data is not None:
             return data
 
-        log.debug("Annonce IA JSON brut invalide, tentative d'extraction.", exc_info=True)
+        log.debug("Annonce IA JSON brut invalide, tentative d'extraction.")
 
         payload = self._extract_json_payload(raw)
         data = _try_load(payload or "")
@@ -348,6 +387,10 @@ class AnnounceAICog(commands.Cog):
             if data is not None:
                 return data
 
+        snippet = raw
+        if len(snippet) > 800:
+            snippet = snippet[:800] + "..."
+        log.warning("Annonce IA: JSON parsing failed. response_snippet=%s", snippet)
         raise RuntimeError(
             "Réponse IA invalide: JSON illisible. "
             "(Réponse probablement tronquée ou non conforme; augmente "
@@ -367,7 +410,16 @@ class AnnounceAICog(commands.Cog):
             f"{fields.get('brut')}\n\n"
             "Contraintes:\n"
             "- 3 variantes: Bref, Standard, RP léger (thème Dofus).\n"
-            "- Retourne STRICTEMENT le JSON demandé."
+            "- Retourne STRICTEMENT le JSON demandé.\n\n"
+            "Format attendu (JSON):\n"
+            "{\n"
+            "  \"variants\": [\n"
+            "    {\"style\": \"Bref\", \"title\": \"...\", \"description\": \"...\"},\n"
+            "    {\"style\": \"Standard\", \"title\": \"...\", \"description\": \"...\"},\n"
+            "    {\"style\": \"RP leger\", \"title\": \"...\", \"description\": \"...\"}\n"
+            "  ]\n"
+            "}\n"
+            "Ne retourne rien d'autre (pas de markdown, pas d'explications)."
         )
         temperature_value = float(os.getenv("IASTAFF_TEMPERATURE", "0.4"))
         max_tokens = int(
@@ -388,10 +440,13 @@ class AnnounceAICog(commands.Cog):
             elif self._temperature_mode == "legacy":
                 request_kwargs["temperature"] = temperature_value
         if self._supports_response_format:
-            request_kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": self._json_schema(),
-            }
+            if self._response_format_mode == "json_schema":
+                request_kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": self._json_schema(),
+                }
+            elif self._response_format_mode == "json_object":
+                request_kwargs["response_format"] = {"type": "json_object"}
 
         while True:
             try:
@@ -410,8 +465,12 @@ class AnnounceAICog(commands.Cog):
                     request_kwargs["temperature"] = temperature_value
                     handled = True
                 elif self._supports_response_format and "response_format" in str(exc):
-                    self._supports_response_format = False
-                    request_kwargs.pop("response_format", None)
+                    if self._response_format_mode == "json_schema":
+                        self._response_format_mode = "json_object"
+                        request_kwargs["response_format"] = {"type": "json_object"}
+                    else:
+                        self._supports_response_format = False
+                        request_kwargs.pop("response_format", None)
                     handled = True
                 if handled:
                     continue
@@ -434,8 +493,12 @@ class AnnounceAICog(commands.Cog):
                     request_kwargs.pop("inference_config", None)
                     handled = True
                 elif self._supports_response_format and _is_response_format_error(exc):
-                    self._supports_response_format = False
-                    request_kwargs.pop("response_format", None)
+                    if self._response_format_mode == "json_schema":
+                        self._response_format_mode = "json_object"
+                        request_kwargs["response_format"] = {"type": "json_object"}
+                    else:
+                        self._supports_response_format = False
+                        request_kwargs.pop("response_format", None)
                     handled = True
                 if handled:
                     continue
@@ -451,7 +514,7 @@ class AnnounceAICog(commands.Cog):
                 except TypeError:
                     count = None
             log.debug("OpenAI annonce: empty response output_count=%s", count)
-            raise RuntimeError("Rゼponse OpenAI vide.")
+            raise RuntimeError("Réponse OpenAI vide.")
 
         data = self._parse_variants_payload(text)
 
