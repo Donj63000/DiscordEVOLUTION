@@ -1,28 +1,67 @@
 ﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
-import json
+"""organisation.py
+
+Commande préfixée : !organisation
+
+But
+---
+Créer des annonces de sorties guilde (Dofus Retro) dans le salon #organisation,
+avec inscriptions via réactions (✅ / ❔ / ❌) et mise à jour dynamique de l'embed.
+
+Points clés (robustesse Render)
+------------------------------
+- Persistance via le salon #console (comme le reste du projet) :
+  - les sorties publiées sont sauvegardées en JSON dans #console,
+  - au redémarrage Render, le bot recharge les sorties et continue
+    à gérer les réactions / inscriptions.
+
+Workflow utilisateur
+-------------------
+1) Staff tape : !organisation
+2) Le bot envoie un message avec un bouton "Ouvrir le formulaire".
+3) Clic -> Modal (fenêtre) avec champs.
+4) Le bot prépare un brouillon (option IA si OPENAI_API_KEY), puis affiche
+   une prévisualisation (ephemeral) avec boutons : Publier / Ajuster / Options / Annuler.
+5) Publier -> message dans #organisation + réactions ✅ ❔ ❌.
+6) Les membres s'inscrivent en réagissant.
+"""
+
+from __future__ import annotations
+
 import asyncio
-import sys
-import types
+import json
 import logging
-from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Tuple
+import os
+import re
+import uuid
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import discord
-from utils.openai_config import resolve_staff_model, build_async_openai_client, resolve_reasoning_effort
+from discord import app_commands
+from discord.ext import commands
+
+from utils.channel_resolver import resolve_text_channel
+from utils.datetime_utils import parse_fr_datetime
+from utils.openai_config import (
+    build_async_openai_client,
+    normalise_staff_model,
+    resolve_reasoning_effort,
+    resolve_staff_model,
+)
 
 
 def _ensure_utils() -> None:
-    """
-    Renforce prudemment discord.utils SANS remplacer le module
-    ni altérer des symboles critiques utilisés par discord.py.
+    """Patch minimal et conservateur de discord.utils.
 
-    - N'ajoute que des fallbacks *si* ils manquent réellement.
-    - N'opère qu'après l'import de discord.ext.commands.
-    - Ne modifie pas sys.modules["discord.utils"].
+    Historique projet : certains environnements ont déjà rencontré des soucis de
+    symboles manquants lors d'imports (discord.py / typing). Cette fonction n'ajoute
+    que des fallbacks si réellement absents, sans remplacer le module.
     """
+
     try:
         utils = getattr(discord, "utils", None)
     except Exception:
@@ -30,22 +69,25 @@ def _ensure_utils() -> None:
     if utils is None:
         return
 
-    # Fallback très conservateur pour is_inside_class (si absent).
     if not hasattr(utils, "is_inside_class"):
+
         def _is_inside_class(obj: Any) -> bool:
             qn = getattr(obj, "__qualname__", "")
             return "." in qn and "<locals>" not in qn
+
         try:
             setattr(utils, "is_inside_class", _is_inside_class)  # type: ignore[attr-defined]
         except Exception:
             pass
 
-    # Fallback très conservateur pour evaluate_annotation (si absent).
     if not hasattr(utils, "evaluate_annotation"):
-        def _evaluate_annotation(annotation: Any,
-                                 globalns: Optional[Dict[str, Any]] = None,
-                                 localns: Optional[Dict[str, Any]] = None,
-                                 cache: Optional[Dict[str, Any]] = None):
+
+        def _evaluate_annotation(
+            annotation: Any,
+            globalns: Optional[Dict[str, Any]] = None,
+            localns: Optional[Dict[str, Any]] = None,
+            cache: Optional[Dict[str, Any]] = None,
+        ):
             if isinstance(annotation, str):
                 try:
                     return eval(annotation, globalns or {}, localns or {})
@@ -59,61 +101,60 @@ def _ensure_utils() -> None:
             pass
 
 
-from discord.ext import commands  # IMPORTANT : importer avant de patcher
-_ensure_utils()  # Appliquer des fallbacks uniquement après l'import ci-dessus
+_ensure_utils()
 
 try:
     from openai import AsyncOpenAI
-except Exception:  # pragma: no cover - OpenAI SDK absent en tests
+except Exception:  # pragma: no cover
     AsyncOpenAI = None
 
-# ----------------------------------------------------------------------
-# Configuration
-# ----------------------------------------------------------------------
-STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", "Staff")
-ORGANISATION_CHANNEL_NAME = os.getenv("ORGANISATION_CHANNEL_NAME", "organisation")
-DEFAULT_MODEL = resolve_staff_model()
-SESSION_TIMEOUT = int(os.getenv("ORGANISATION_TIMEOUT", "240"))
-PLANNER_TEMPERATURE = float(os.getenv("ORGANISATION_PLANNER_TEMP", "0.25"))
-ANNOUNCE_TEMPERATURE = float(os.getenv("ORGANISATION_ANNOUNCE_TEMP", "0.5"))
-ORGANISATION_MAX_TURNS = int(os.getenv("ORGANISATION_MAX_TURNS", "12"))
 
-# Backend IA : "auto" (défaut), "responses" ou "chat"
-BACKEND_MODE = os.getenv("ORGANISATION_BACKEND", "auto").strip().lower()
+log = logging.getLogger("organisation")
+
+
+# ---------------------------------------------------------------------------
+# Configuration (ENV)
+# ---------------------------------------------------------------------------
+
+STAFF_ROLE_ENV = os.getenv("IASTAFF_ROLE", "Staff")
+
+ORGANISATION_CHANNEL_NAME = os.getenv("ORGANISATION_CHANNEL_NAME", "organisation")
+CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", os.getenv("CONSOLE_CHANNEL_NAME", "console"))
+
+ORGANISATION_DB_BLOCK = os.getenv("ORGANISATION_DB_BLOCK", "organisation")
+
+VIEW_TIMEOUT = int(os.getenv("ORGANISATION_VIEW_TIMEOUT", "900"))  # 15 min
+MODAL_TIMEOUT = int(os.getenv("ORGANISATION_MODAL_TIMEOUT", "300"))
+
+DEFAULT_MODEL = resolve_staff_model()
+OPENAI_TIMEOUT = float(os.getenv("ORGANISATION_OPENAI_TIMEOUT", os.getenv("IASTAFF_TIMEOUT", "120")))
+MAX_OUTPUT_TOKENS = int(os.getenv("ORGANISATION_MAX_OUTPUT_TOKENS", "1200"))
+TEMPERATURE = float(os.getenv("ORGANISATION_TEMPERATURE", "0.35"))
+
+# Backend IA : auto (défaut), responses ou chat.
+BACKEND_MODE = (os.getenv("ORGANISATION_BACKEND", "auto") or "auto").strip().lower()
 if BACKEND_MODE not in {"auto", "responses", "chat"}:
     BACKEND_MODE = "auto"
 
-PLANNER_SCHEMA = {
-    "name": "OrganisationPlanner",
-    "schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["status", "collected"],
-        "properties": {
-            "status": {
-                "type": "string",
-                "enum": ["ask", "ready", "cancel"],
-            },
-            "next_question": {
-                "type": ["string", "null"],
-            },
-            "collected": {
-                "type": "object",
-                "additionalProperties": True,
-                "properties": {
-                    "event_type": {"type": "string"},
-                    "date_time": {"type": "string"},
-                    "duration": {"type": "string"},
-                    "location": {"type": "string"},
-                    "objectives": {"type": "string"},
-                    "requirements": {"type": "string"},
-                    "notes": {"type": "string"},
-                },
-            },
-            "summary": {"type": ["string", "null"]},
-        },
-    },
-}
+# IA optionnelle : si désactivée ou OPENAI_API_KEY absente, on publie un template.
+AI_ENABLED = (os.getenv("ORGANISATION_AI_ENABLED", "1") or "1").strip().lower() not in {"0", "false", "no", "off"}
+
+# Mentions (optionnel) : configurable via options, sinon vide.
+DEFAULT_MENTIONS = (os.getenv("ORGANISATION_DEFAULT_MENTIONS", "") or "").strip()
+
+# Emojis d'inscription
+EMOJI_GOING = "✅"   # inscrit
+EMOJI_MAYBE = "❔"  # peut-être
+EMOJI_NO = "❌"     # se retire
+OUTING_EMOJIS: Tuple[str, str, str] = (EMOJI_GOING, EMOJI_MAYBE, EMOJI_NO)
+
+# Taille max affichage listes (embed field <= 1024)
+MAX_FIELD_CHARS = 1000
+
+
+# ---------------------------------------------------------------------------
+# Schéma JSON (IA) : annonce
+# ---------------------------------------------------------------------------
 
 ANNOUNCE_SCHEMA = {
     "name": "OrganisationAnnouncement",
@@ -125,271 +166,753 @@ ANNOUNCE_SCHEMA = {
             "title": {"type": "string"},
             "body": {"type": "string"},
             "cta": {"type": ["string", "null"]},
-            "mentions": {"type": ["string", "null"]},
             "summary": {"type": ["string", "null"]},
+            "mentions": {"type": ["string", "null"]},
         },
     },
 }
 
-CANCEL_KEYWORDS = {"annule", "annuler", "cancel", "stop", "fin", "abort", "stopper"}
+
+# ---------------------------------------------------------------------------
+# Utilitaires
+# ---------------------------------------------------------------------------
+
+_JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.+?)```", re.DOTALL | re.IGNORECASE)
+_ID_RE = re.compile(r"\d+")
+
+
+def _now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _take_digits(value: str | None) -> Optional[int]:
+    if not value:
+        return None
+    m = _ID_RE.search(value)
+    if not m:
+        return None
+    try:
+        return int(m.group(0))
+    except Exception:
+        return None
+
+
+def _parse_staff_roles(raw: str) -> Tuple[List[int], List[str]]:
+    ids: List[int] = []
+    names: List[str] = []
+    for part in (raw or "").split(","):
+        entry = part.strip()
+        if not entry:
+            continue
+        if entry.isdigit():
+            ids.append(int(entry))
+        else:
+            names.append(entry.lower())
+    return ids, names
 
 
 def _extract_response_text(resp: Any) -> str:
-    """Normalise les réponses de l'API Responses v1 en texte brut."""
-    text = getattr(resp, "output_text", "") or ""
-    if text:
-        return text.strip()
+    """Extraction robuste du texte depuis OpenAI Responses API."""
+
+    if not resp:
+        return ""
+    if isinstance(resp, str):
+        return resp.strip()
+
+    direct = getattr(resp, "output_text", None)
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
     output = getattr(resp, "output", None)
-    if output:
-        for item in output or []:
-            for content in getattr(item, "content", []) or []:
-                if getattr(content, "type", "") in ("text", "output_text"):
-                    value = getattr(content, "text", None) or getattr(content, "content", None)
-                    if isinstance(value, str):
-                        text += value
-    return text.strip()
+    if output is None and isinstance(resp, dict):
+        output = resp.get("output")
+
+    pieces: List[str] = []
+    for msg in output or []:
+        content_list = getattr(msg, "content", None)
+        if content_list is None and isinstance(msg, dict):
+            content_list = msg.get("content")
+        for content in content_list or []:
+            c_type = getattr(content, "type", None)
+            if c_type is None and isinstance(content, dict):
+                c_type = content.get("type")
+            if c_type in ("output_text", "text"):
+                candidate = getattr(content, "text", None)
+                if candidate is None and isinstance(content, dict):
+                    candidate = content.get("text") or content.get("content")
+                if isinstance(candidate, str):
+                    pieces.append(candidate)
+            elif c_type in ("output_json", "json_schema", "json"):
+                payload = (
+                    getattr(content, "json", None)
+                    or getattr(content, "json_schema", None)
+                    or getattr(content, "content", None)
+                )
+                if payload is None and isinstance(content, dict):
+                    payload = content.get("json") or content.get("json_schema") or content.get("content")
+                if isinstance(payload, (dict, list)):
+                    pieces.append(json.dumps(payload, ensure_ascii=False))
+                elif isinstance(payload, str):
+                    pieces.append(payload)
+
+    return "".join(pieces).strip()
 
 
-def _flatten_messages_for_chat(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """
-    Convertit la structure 'responses' (blocs) en messages texte standards
-    pour Chat Completions.
-    """
-    flat: List[Dict[str, str]] = []
-    for m in messages:
-        role = str(m.get("role") or "user").strip().lower()
-        if role not in {"system", "user", "assistant"}:
-            role = "user"
-        content = m.get("content")
-        if isinstance(content, str):
-            text = content.strip()
-        elif isinstance(content, list):
-            parts = []
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    txt = str(item.get("text") or "").strip()
-                    if txt:
-                        parts.append(txt)
-                elif isinstance(item, str):
-                    txt = item.strip()
-                    if txt:
-                        parts.append(txt)
-            text = "\n".join(parts).strip()
-        elif isinstance(content, dict) and content.get("type") == "text":
-            text = str(content.get("text") or "").strip()
-        elif content is not None:
-            text = str(content).strip()
-        else:
-            text = ""
-        if text:
-            flat.append({"role": role, "content": text})
-    return flat
+def _extract_json_payload(text: str) -> Optional[str]:
+    """Récupère le premier JSON valide (objet OU tableau) depuis une sortie modèle."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return None
+
+    m = _JSON_BLOCK_RE.search(raw)
+    if m:
+        raw = (m.group("body") or "").strip()
+        if not raw:
+            return None
+
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"[\{\[]", raw):
+        start = match.start()
+        candidate = raw[start:].lstrip()
+        try:
+            _, end = decoder.raw_decode(candidate)
+            return candidate[:end].strip()
+        except json.JSONDecodeError:
+            continue
+
+    return None
+
+
+def _coerce_int(value: str) -> int:
+    value = (value or "").strip()
+    if not value:
+        return 0
+    # prend le premier nombre
+    m = re.search(r"\d+", value)
+    if not m:
+        return 0
+    try:
+        return max(0, int(m.group(0)))
+    except Exception:
+        return 0
+
+
+def _truncate_list_mentions(user_ids: Set[int], limit_chars: int = MAX_FIELD_CHARS) -> str:
+    """Retourne une liste de mentions <@id> tronquée pour tenir dans un champ embed."""
+
+    if not user_ids:
+        return "*(aucun)*"
+
+    ids_sorted = sorted(user_ids)
+    parts: List[str] = []
+    total = 0
+    for uid in ids_sorted:
+        chunk = f"<@{uid}>"
+        # +2 pour ", " (approx)
+        projected = total + len(chunk) + (2 if parts else 0)
+        if projected > limit_chars:
+            break
+        parts.append(chunk)
+        total = projected
+
+    remaining = len(ids_sorted) - len(parts)
+    s = ", ".join(parts)
+    if remaining > 0:
+        suffix = f" … (+{remaining})"
+        if len(s) + len(suffix) <= 1024:
+            s += suffix
+    return s
+
+
+def _parse_mentions(raw: str, guild: discord.Guild) -> List[str]:
+    """Parse mentions (roles / @everyone / @here) depuis une string."""
+
+    tokens: List[str] = []
+    seen = set()
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+
+    for part in re.split(r"[\s,]+", raw):
+        item = part.strip()
+        if not item:
+            continue
+        lowered = item.lower()
+        if lowered in ("@everyone", "everyone"):
+            if "@everyone" not in seen:
+                tokens.append("@everyone")
+                seen.add("@everyone")
+            continue
+        if lowered in ("@here", "here"):
+            if "@here" not in seen:
+                tokens.append("@here")
+                seen.add("@here")
+            continue
+        if item.startswith("<@&") and item.endswith(">"):
+            if item not in seen:
+                tokens.append(item)
+                seen.add(item)
+            continue
+        # nom de rôle
+        role_name = item.lstrip("@")
+        if role_name:
+            role = discord.utils.find(lambda r: r.name.lower() == role_name.lower(), guild.roles)
+            if role:
+                mention = f"<@&{role.id}>"
+                if mention not in seen:
+                    tokens.append(mention)
+                    seen.add(mention)
+    return tokens
+
+
+def _build_allowed_mentions(guild: discord.Guild, tokens: List[str]) -> discord.AllowedMentions:
+    allow_everyone = any(t in ("@everyone", "@here") for t in tokens)
+    roles: List[discord.Role] = []
+    for t in tokens:
+        if t.startswith("<@&") and t.endswith(">"):
+            rid = _take_digits(t)
+            if rid:
+                role = guild.get_role(rid)
+                if role:
+                    roles.append(role)
+    return discord.AllowedMentions(everyone=allow_everyone, roles=roles, users=False)
+
+
+# ---------------------------------------------------------------------------
+# Données (draft / event)
+# ---------------------------------------------------------------------------
 
 
 @dataclass
-class OrganisationSession:
-    user_id: int
+class OrganisationDraft:
+    id: str
+    author_id: int
+    guild_id: int
+    # Champs du formulaire
+    activity: str
+    date_time: str
+    location: str
+    seats: int
+    details: str
+    # Options
+    mentions_raw: str = ""
+    channel_override: str = ""
+    # Résultat (IA ou template)
+    title: str = ""
+    body: str = ""
+    cta: str = ""
+    summary: str = ""
+    date_ts: Optional[int] = None
+
+    def to_context_dict(self) -> Dict[str, Any]:
+        return {
+            "activity": self.activity,
+            "date_time": self.date_time,
+            "location": self.location,
+            "seats": self.seats,
+            "details": self.details,
+        }
+
+
+@dataclass
+class OrganisationEvent:
+    """Événement publié (persisté dans #console)."""
+
+    id: str
     guild_id: int
     channel_id: int
-    context: Dict[str, Any]
-    messages: List[Dict[str, Any]] = field(default_factory=list)
-    collected: Dict[str, Any] = field(default_factory=dict)
-    summary: Optional[str] = None
-    last_question: Optional[str] = None
+    message_id: int
+    author_id: int
+    created_at_iso: str
+
+    activity: str
+    date_time: str
+    date_ts: Optional[int]
+    location: str
+    seats: int
+    details: str
+
+    title: str
+    body: str
+    cta: str = ""
+    mentions: List[str] = field(default_factory=list)
+
+    going: Set[int] = field(default_factory=set)
+    maybe: Set[int] = field(default_factory=set)
+
+    status: str = "active"
+    schema_version: int = 1
+    console_message_id: Optional[int] = None
+
+    def to_json(self) -> Dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "id": self.id,
+            "guild_id": self.guild_id,
+            "channel_id": self.channel_id,
+            "message_id": self.message_id,
+            "author_id": self.author_id,
+            "created_at_iso": self.created_at_iso,
+            "activity": self.activity,
+            "date_time": self.date_time,
+            "date_ts": self.date_ts,
+            "location": self.location,
+            "seats": self.seats,
+            "details": self.details,
+            "title": self.title,
+            "body": self.body,
+            "cta": self.cta,
+            "mentions": list(self.mentions or []),
+            "going": sorted(self.going),
+            "maybe": sorted(self.maybe),
+            "status": self.status,
+            "console_message_id": self.console_message_id,
+        }
+
+    @classmethod
+    def from_json(cls, data: Dict[str, Any]) -> "OrganisationEvent":
+        return cls(
+            id=str(data.get("id") or ""),
+            guild_id=int(data.get("guild_id") or 0),
+            channel_id=int(data.get("channel_id") or 0),
+            message_id=int(data.get("message_id") or 0),
+            author_id=int(data.get("author_id") or 0),
+            created_at_iso=str(data.get("created_at_iso") or ""),
+            activity=str(data.get("activity") or ""),
+            date_time=str(data.get("date_time") or ""),
+            date_ts=(int(data["date_ts"]) if data.get("date_ts") is not None else None),
+            location=str(data.get("location") or ""),
+            seats=int(data.get("seats") or 0),
+            details=str(data.get("details") or ""),
+            title=str(data.get("title") or ""),
+            body=str(data.get("body") or ""),
+            cta=str(data.get("cta") or "") if data.get("cta") is not None else "",
+            mentions=list(data.get("mentions") or []),
+            going=set(int(x) for x in (data.get("going") or []) if str(x).isdigit()),
+            maybe=set(int(x) for x in (data.get("maybe") or []) if str(x).isdigit()),
+            status=str(data.get("status") or "active"),
+            schema_version=int(data.get("schema_version") or 1),
+            console_message_id=(int(data["console_message_id"]) if data.get("console_message_id") else None),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cog
+# ---------------------------------------------------------------------------
 
 
 class OrganisationCog(commands.Cog):
-    """Assistant IA pour organiser rapidement des événements."""
+    """Organisation de sorties (formulaire + réactions)."""
 
     def __init__(self, bot: commands.Bot) -> None:
         _ensure_utils()
         self.bot = bot
-        self.model = DEFAULT_MODEL
-        self._sessions: Dict[Tuple[int, int], OrganisationSession] = {}
-        self._client: Optional[AsyncOpenAI] = build_async_openai_client(AsyncOpenAI)
-        self._logger = logging.getLogger(__name__)
+        self._client: Optional[AsyncOpenAI] = build_async_openai_client(AsyncOpenAI, timeout=OPENAI_TIMEOUT)
+        self._model: str = DEFAULT_MODEL
 
-    # ------------------------------------------------------------------
-    # Prompts
-    # ------------------------------------------------------------------
+        self._drafts: Dict[int, OrganisationDraft] = {}
+        self._events: Dict[int, OrganisationEvent] = {}  # message_id -> event
 
-    def _planner_system_prompt(self, guild_name: str) -> str:
-        return (
-            "Tu aides le staff de la guilde Evolution a preparer une sortie. "
-            "Tu mènes l'entretien en posant UNE question claire a la fois pour recolter toutes les informations utiles. "
-            "Questions prioritaires : type d'evenement (donjon, drop, PvP, autre), date/heure, point de rendez-vous, objectifs, restrictions (niveau, classes), ressources a prevoir. "
-            "Tu reponds toujours en JSON respectant le schema fourni. "
-            "Quand toutes les donnees sont suffisantes pour rediger l'annonce, renvoie status=\"ready\" et resume l'essentiel. "
-            "Si l'utilisateur veut arreter, renvoie status=\"cancel\"."
+        self._staff_role_ids, self._staff_role_names = _parse_staff_roles(STAFF_ROLE_ENV)
+
+        # Compat / fallback OpenAI
+        self._supports_response_format = True
+        self._supports_temperature = True
+        self._temperature_mode = "inference_config"  # inference_config -> legacy -> disabled
+
+        # Anti-spam edits : debounce par message
+        self._pending_update_tasks: Dict[int, asyncio.Task] = {}
+
+        # Tâche de restauration (console)
+        self._restore_task: Optional[asyncio.Task] = None
+
+    # ---------------- lifecycle ----------------
+
+    async def cog_load(self) -> None:
+        # Restore after bot is ready
+        self._restore_task = asyncio.create_task(self._restore_when_ready())
+
+    def cog_unload(self) -> None:
+        if self._restore_task:
+            self._restore_task.cancel()
+        for t in list(self._pending_update_tasks.values()):
+            try:
+                t.cancel()
+            except Exception:
+                pass
+        self._pending_update_tasks.clear()
+
+    # ---------------- staff gating ----------------
+
+    def _is_staff(self, member: discord.Member) -> bool:
+        try:
+            if member.guild_permissions.administrator:
+                return True
+        except Exception:
+            pass
+
+        for role in getattr(member, "roles", []) or []:
+            try:
+                if role.id in self._staff_role_ids:
+                    return True
+            except Exception:
+                pass
+            try:
+                if role.name and role.name.lower() in self._staff_role_names:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    # ---------------- channels ----------------
+
+    def _find_organisation_channel(self, guild: discord.Guild, override: str = "") -> Optional[discord.TextChannel]:
+        # override peut être #nom, id, nom
+        if override:
+            override = override.strip()
+            cid = _take_digits(override)
+            if cid:
+                ch = guild.get_channel(cid)
+                if isinstance(ch, discord.TextChannel):
+                    return ch
+            if override.startswith("#"):
+                override = override[1:].strip()
+            ch = discord.utils.get(guild.text_channels, name=override)
+            if isinstance(ch, discord.TextChannel):
+                return ch
+            resolved = resolve_text_channel(guild, default_name=override)
+            if resolved:
+                return resolved
+
+        return resolve_text_channel(
+            guild,
+            id_env="ORGANISATION_CHANNEL_ID",
+            name_env="ORGANISATION_CHANNEL_NAME",
+            default_name=ORGANISATION_CHANNEL_NAME,
         )
+
+    async def _console_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
+        return resolve_text_channel(
+            guild,
+            id_env="CHANNEL_CONSOLE_ID",
+            name_env="CHANNEL_CONSOLE",
+            default_name=CONSOLE_CHANNEL_NAME,
+        )
+
+    # ---------------- persistence (#console) ----------------
+
+    async def _fetch_history(self, channel: discord.TextChannel, limit: int = 200) -> List[discord.Message]:
+        delay = 0.5
+        for attempt in range(1, 4):
+            try:
+                messages: List[discord.Message] = []
+                async for msg in channel.history(limit=limit):
+                    messages.append(msg)
+                return messages
+            except Exception as exc:
+                status = getattr(exc, "status", None)
+                if status == 429:
+                    retry_after = getattr(exc, "retry_after", None)
+                    wait = float(retry_after) if retry_after else delay
+                    log.warning("Rate limited while reading console history (attempt %s). wait=%.2fs", attempt, wait)
+                    await asyncio.sleep(wait)
+                    delay = min(delay * 2, 8)
+                    continue
+                log.warning("Console history read failed: %s", exc)
+                return []
+        log.warning("Console history read failed after retries")
+        return []
+
+    async def _save_event_to_console(self, event: OrganisationEvent) -> bool:
+        guild = self.bot.get_guild(event.guild_id)
+        if not guild:
+            return False
+        chan = await self._console_channel(guild)
+        if not chan:
+            return False
+
+        payload = json.dumps(event.to_json(), ensure_ascii=False, indent=2)
+        content = f"```{ORGANISATION_DB_BLOCK}\n{payload}\n```"
+
+        # update si déjà connu
+        if event.console_message_id:
+            try:
+                msg = await chan.fetch_message(event.console_message_id)
+                await msg.edit(content=content)
+                return True
+            except discord.NotFound:
+                event.console_message_id = None
+            except Exception:
+                return False
+
+        try:
+            msg = await chan.send(content)
+            event.console_message_id = msg.id
+            return True
+        except Exception:
+            return False
+
+    async def _load_events_from_console(self, guild: discord.Guild) -> int:
+        chan = await self._console_channel(guild)
+        if not chan:
+            return 0
+
+        pattern = re.compile(rf"^```{re.escape(ORGANISATION_DB_BLOCK)}\n(?P<body>.+?)\n```$", re.S)
+        messages = await self._fetch_history(chan, limit=300)
+
+        loaded = 0
+        for msg in messages:
+            if msg.author != self.bot.user:
+                continue
+            m = pattern.match(msg.content or "")
+            if not m:
+                continue
+            try:
+                data = json.loads(m.group("body"))
+                event = OrganisationEvent.from_json(data)
+                if not event.message_id:
+                    continue
+                # attacher le message console id si absent
+                if not event.console_message_id:
+                    event.console_message_id = msg.id
+                self._events[event.message_id] = event
+                loaded += 1
+            except Exception:
+                continue
+        return loaded
+
+    async def _restore_when_ready(self) -> None:
+        """Recharge les événements depuis #console une fois le bot ready."""
+
+        try:
+            await self.bot.wait_until_ready()
+        except Exception:
+            return
+
+        total = 0
+        for guild in list(getattr(self.bot, "guilds", []) or []):
+            try:
+                total += await self._load_events_from_console(guild)
+            except Exception as exc:
+                log.warning("Organisation restore failed for guild %s: %s", getattr(guild, "id", "?"), exc)
+
+        if total:
+            log.info("Organisation: %s événement(s) restauré(s) depuis #console.", total)
+
+    # ---------------- embed rendering ----------------
+
+    def _build_event_embed(self, event: OrganisationEvent) -> discord.Embed:
+        title = (event.title or "").strip() or f"📅 Sortie guilde — {event.activity}".strip()
+        title = title[:256]
+
+        desc_lines: List[str] = []
+        # Corps "marketing" (IA ou template)
+        body = (event.body or "").strip()
+        if body:
+            desc_lines.append(body)
+            desc_lines.append("")
+
+        # Infos structurées
+        if event.date_ts:
+            ts = int(event.date_ts)
+            desc_lines.append(f"**Quand :** <t:{ts}:F> • <t:{ts}:R>")
+        else:
+            desc_lines.append(f"**Quand :** {event.date_time}")
+
+        if event.location:
+            desc_lines.append(f"**Rendez-vous :** {event.location}")
+        if event.seats:
+            desc_lines.append(f"**Places :** {event.seats}")
+        else:
+            desc_lines.append("**Places :** ∞")
+
+        if event.details:
+            desc_lines.append("")
+            desc_lines.append("**Détails / Pré-requis :**")
+            desc_lines.append(event.details)
+
+        # CTA (IA) + instructions réaction
+        desc_lines.append("")
+        if event.cta:
+            desc_lines.append(event.cta)
+        desc_lines.append(
+            f"Inscription : réagis avec {EMOJI_GOING} (présent), {EMOJI_MAYBE} (peut-être), {EMOJI_NO} (non)."
+        )
+
+        embed = discord.Embed(
+            title=title,
+            description="\n".join(desc_lines)[:4096],
+            color=discord.Color.blurple(),
+        )
+
+        # Participants
+        seats_label = str(event.seats) if event.seats else "∞"
+        embed.add_field(
+            name=f"Inscrits {EMOJI_GOING} ({len(event.going)}/{seats_label})",
+            value=_truncate_list_mentions(event.going),
+            inline=False,
+        )
+        embed.add_field(
+            name=f"Peut-être {EMOJI_MAYBE} ({len(event.maybe)})",
+            value=_truncate_list_mentions(event.maybe),
+            inline=False,
+        )
+
+        embed.set_footer(text=f"Organisateur: {event.author_id} • id: {event.id}")
+        return embed
+
+    # ---------------- OpenAI prompts ----------------
 
     def _announcement_system_prompt(self) -> str:
         return (
-            "Genere une annonce Discord en francais pour la guilde Evolution. "
-            "L'annonce doit etre concise, dynamique et facile a publier telle quelle. "
-            "Format: un titre accrocheur, un corps structure (listes si besoin), un appel a l'action si utile. "
-            "Propose un champ mentions (par exemple '@here') et un resume tres court pour le staff."
+            "Tu es un assistant pour organiser des sorties de guilde sur Dofus Retro (1.29). "
+            "Les sorties typiques: donjons (boss), captures (arène), sessions drop (ressources), XP, "
+            "défense percepteur, PvP alignement, quêtes/guilde. "
+            "Tu aides le staff à produire une annonce Discord claire, concise, motivante et immédiatement publiable. "
+            "Contraintes: français uniquement; pas de mentions Discord (@everyone/@here/@role); pas d'emojis en spam; "
+            "ne pas inventer de date/heure/lieu; ne pas inventer de récompenses. "
+            "Style: 1 accroche courte + puces si pertinent."
         )
 
-    # ------------------------------------------------------------------
-    # Gestion de l'historique
-    # ------------------------------------------------------------------
-
-    def _enforce_turn_limit(self, session: OrganisationSession) -> None:
-        max_turns = max(ORGANISATION_MAX_TURNS, 0)
-        if max_turns == 0:
-            return
-
-        system_messages: List[Dict[str, Any]] = []
-        dialogue: List[Dict[str, Any]] = []
-        for message in session.messages:
-            role = str(message.get("role") or "").lower()
-            if role == "system":
-                system_messages.append(message)
-            else:
-                dialogue.append(message)
-
-        if len(dialogue) <= max_turns:
-            return
-
-        keep_count = max(max_turns - 1, 0)
-        trimmed_dialogue = dialogue[-keep_count:] if keep_count else []
-
-        summary_chunks: List[str] = []
-        if session.summary:
-            summary_chunks.append(session.summary)
-        if session.collected:
-            collected_blob = json.dumps(session.collected, ensure_ascii=False)
-            summary_chunks.append(f"Elements collectes: {collected_blob}")
-        if not summary_chunks:
-            summary_chunks.append("Historique compresse pour respecter la limite de contexte.")
-        summary = "Contexte precedent compresse. " + " ".join(summary_chunks)
-
-        session.messages = system_messages + [{"role": "assistant", "content": summary}] + trimmed_dialogue
-        self._logger.debug(
-            "Organisation session trimmed to %s turns (kept %s non-system messages)",
-            max_turns,
-            len(trimmed_dialogue) + 1,
+    def _announcement_user_prompt(self, draft: OrganisationDraft) -> str:
+        # On fournit les données brutes + instruction d'inscription.
+        data = draft.to_context_dict()
+        blob = json.dumps(data, ensure_ascii=False)
+        return (
+            "Rédige une annonce pour une sortie guilde. "
+            "Tu dois fournir un titre court et un corps structuré. "
+            "Tu peux utiliser des puces, et une formulation Dofus (sobre). "
+            "Les inscriptions se font via réactions: ✅ présent, ❔ peut-être, ❌ non. "
+            "Données brutes: " + blob
         )
 
-    # ------------------------------------------------------------------
-    # Appels OpenAI robustes (Responses -> fallback Chat Completions)
-    # ------------------------------------------------------------------
-
-    def _normalise_responses_input(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Convertit un historique role/content en format Responses v1."""
-        normalised: List[Dict[str, Any]] = []
-        for raw in messages:
-            if not isinstance(raw, dict):
-                continue
-            role = str(raw.get("role") or "user").strip().lower()
-            if role not in {"system", "user", "assistant"}:
-                role = "user"
-            content = raw.get("content")
-            blocks: List[Dict[str, Any]] = []
-            if isinstance(content, str):
-                text = content.strip()
-                if text:
-                    blocks.append({"type": "text", "text": text})
-            elif isinstance(content, list):
-                for item in content:
-                    if isinstance(item, dict) and item.get("type"):
-                        blocks.append(item)
-                    elif isinstance(item, str):
-                        text = item.strip()
-                        if text:
-                            blocks.append({"type": "text", "text": text})
-            elif isinstance(content, dict) and content.get("type"):
-                blocks.append(content)
-            elif content is not None:
-                text = str(content).strip()
-                if text:
-                    blocks.append({"type": "text", "text": text})
-            if blocks:
-                normalised.append({"role": role, "content": blocks})
-        return normalised
-
-    async def _call_openai_json_via_responses(
-        self,
-        messages: List[Dict[str, Any]],
-        schema: Dict[str, Any],
-        *,
-        temperature: float,
-    ) -> Dict[str, Any]:
-        """Chemin principal via Responses API avec JSON Schema."""
+    async def _call_openai_json_via_responses(self, *, system: str, user: str, schema: Dict[str, Any]) -> Dict[str, Any]:
         if not self._client:
-            raise RuntimeError("OPENAI_API_KEY absent - fonctionnalite indisponible.")
-        payload = self._normalise_responses_input(messages)
-        if not payload:
-            raise RuntimeError("Prompt vide pour OpenAI.")
-        request = {
-            "model": self.model,
-            "input": payload,
-            "response_format": {"type": "json_schema", "json_schema": schema},
-            "temperature": temperature,
+            raise RuntimeError("OPENAI_API_KEY manquant ou client OpenAI indisponible.")
+
+        request_kwargs: Dict[str, Any] = {
+            "model": self._model,
+            "instructions": system,
+            "input": user,
+            "max_output_tokens": MAX_OUTPUT_TOKENS,
         }
-        reasoning = resolve_reasoning_effort(self.model)
+
+        # Reasoning effort (gpt-5)
+        reasoning = resolve_reasoning_effort(self._model)
         if reasoning:
-            request["reasoning"] = reasoning
-        resp = await self._client.responses.create(**request)
+            request_kwargs["reasoning"] = reasoning
+
+        # Température (compat)
+        if self._supports_temperature:
+            if self._temperature_mode == "inference_config":
+                request_kwargs["inference_config"] = {"temperature": TEMPERATURE}
+            elif self._temperature_mode == "legacy":
+                request_kwargs["temperature"] = TEMPERATURE
+
+        # JSON schema (si supporté)
+        if self._supports_response_format:
+            request_kwargs["response_format"] = {"type": "json_schema", "json_schema": schema}
+
+        while True:
+            try:
+                resp = await self._client.responses.create(**request_kwargs)
+                break
+            except TypeError as exc:
+                handled = False
+                msg = str(exc).lower()
+                if self._supports_response_format and "response_format" in msg:
+                    self._supports_response_format = False
+                    request_kwargs.pop("response_format", None)
+                    handled = True
+                if (
+                    self._supports_temperature
+                    and self._temperature_mode == "inference_config"
+                    and "inference_config" in msg
+                ):
+                    self._temperature_mode = "legacy"
+                    request_kwargs.pop("inference_config", None)
+                    request_kwargs["temperature"] = TEMPERATURE
+                    handled = True
+                if handled:
+                    continue
+                raise
+            except Exception as exc:
+                msg = str(exc).lower()
+                handled = False
+                if self._supports_temperature and "temperature" in msg and "not supported" in msg:
+                    self._supports_temperature = False
+                    self._temperature_mode = "disabled"
+                    request_kwargs.pop("temperature", None)
+                    request_kwargs.pop("inference_config", None)
+                    handled = True
+                if self._supports_response_format and "response_format" in msg and (
+                    "not supported" in msg or "unsupported" in msg or "unrecognized" in msg
+                ):
+                    self._supports_response_format = False
+                    request_kwargs.pop("response_format", None)
+                    handled = True
+                if handled:
+                    continue
+                raise
+
         text = _extract_response_text(resp)
         if not text:
-            raise RuntimeError("Reponse OpenAI vide.")
+            raise RuntimeError("Réponse OpenAI vide.")
+
+        # Si response_format a été désactivé, le modèle peut renvoyer du texte non-JSON.
+        raw = text.strip()
         try:
-            return json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"JSON invalide retourne par le modele: {exc}\nTexte: {text!r}") from exc
+            return json.loads(raw)
+        except Exception:
+            payload = _extract_json_payload(raw)
+            if payload:
+                return json.loads(payload)
+            raise RuntimeError("Réponse IA invalide: JSON introuvable.")
 
-    async def _call_openai_json_via_chat(
-        self,
-        messages: List[Dict[str, Any]],
-        schema: Dict[str, Any],
-        *,
-        temperature: float,
-    ) -> Dict[str, Any]:
-        """Fallback via Chat Completions + function calling garantissant du JSON valide."""
+    async def _call_openai_json_via_chat(self, *, system: str, user: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """Fallback robuste via Chat Completions + tool calling."""
+
         if not self._client:
-            raise RuntimeError("OPENAI_API_KEY absent - fonctionnalite indisponible.")
+            raise RuntimeError("OPENAI_API_KEY manquant ou client OpenAI indisponible.")
 
-        chat_messages = _flatten_messages_for_chat(messages)
-
-        # Injection minimale pour forcer l'appel d'outil.
-        sys_prompt = (
-            "Tu dois appeler la fonction 'submit' avec un unique argument JSON "
-            "respectant exactement le schema fourni. Ne renvoie aucun autre texte."
-        )
-        chat_messages.insert(0, {"role": "system", "content": sys_prompt})
-
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    system
+                    + "\n\nIMPORTANT: Tu dois appeler la fonction 'submit' et ne renvoyer aucun autre texte."
+                ),
+            },
+            {"role": "user", "content": user},
+        ]
         tools = [
             {
                 "type": "function",
                 "function": {
                     "name": "submit",
-                    "description": "Retourne la sortie finale en respectant le schema impose.",
-                    "parameters": schema["schema"],  # JSON Schema entier passé en paramètres
+                    "description": "Retourne le JSON final.",
+                    "parameters": schema["schema"],
                 },
             }
         ]
 
-        # tool_choice="required" est compatible avec les versions larges du SDK v1.
         resp = await self._client.chat.completions.create(
-            model=self.model,
-            messages=chat_messages,
+            model=self._model,
+            messages=messages,
             tools=tools,
             tool_choice="required",
-            temperature=temperature,
+            temperature=TEMPERATURE,
+            max_tokens=MAX_OUTPUT_TOKENS,
         )
 
-        # Extraction robuste
         try:
             choice = resp.choices[0]
+            msg = choice.message
         except Exception as exc:
-            raise RuntimeError(f"Reponse ChatCompletion invalide: {exc}") from exc
+            raise RuntimeError(f"Réponse ChatCompletion invalide: {exc}") from exc
 
-        message = getattr(choice, "message", None)
-        tool_calls = getattr(message, "tool_calls", None) if message else None
-
-        # Cas attendu : un appel d'outil 'submit' avec des arguments JSON
+        tool_calls = getattr(msg, "tool_calls", None)
         if tool_calls:
             for tc in tool_calls:
                 fn = getattr(tc, "function", None)
@@ -397,239 +920,721 @@ class OrganisationCog(commands.Cog):
                     args = getattr(fn, "arguments", "") or ""
                     try:
                         return json.loads(args)
-                    except json.JSONDecodeError as exc:
-                        raise RuntimeError(f"Arguments d'outil non-JSON: {exc}\nArguments: {args!r}") from exc
+                    except Exception as exc:
+                        raise RuntimeError(f"Arguments tool_call non-JSON: {exc}\nargs={args!r}") from exc
 
-        # Si pas d'appel d'outil, on tente contenu texte JSON strict
-        text_content = (getattr(message, "content", "") or "").strip() if message else ""
-        if text_content:
-            try:
-                return json.loads(text_content)
-            except json.JSONDecodeError:
-                pass
+        content = (getattr(msg, "content", "") or "").strip()
+        if content:
+            payload = _extract_json_payload(content) or content
+            return json.loads(payload)
 
-        raise RuntimeError("Le modele n'a pas renvoye de JSON exploitable (ni tool_call ni contenu JSON).")
+        raise RuntimeError("Le modèle n'a renvoyé aucun JSON exploitable.")
 
-    async def _call_openai_json(
-        self,
-        messages: List[Dict[str, Any]],
-        schema: Dict[str, Any],
-        *,
-        temperature: float,
-    ) -> Dict[str, Any]:
-        """
-        Essaie Responses API puis retombe sur Chat Completions si le paramètre
-        'response_format' n'est pas supporté (TypeError) ou si BACKEND_MODE l'impose.
-        """
+    async def _call_openai_json(self, *, system: str, user: str, schema: Dict[str, Any]) -> Dict[str, Any]:
         if BACKEND_MODE == "chat":
-            return await self._call_openai_json_via_chat(messages, schema, temperature=temperature)
+            return await self._call_openai_json_via_chat(system=system, user=user, schema=schema)
 
         if BACKEND_MODE in {"auto", "responses"}:
             try:
-                return await self._call_openai_json_via_responses(messages, schema, temperature=temperature)
-            except TypeError as exc:
-                # Cas rencontré : "got an unexpected keyword argument 'response_format'"
-                if "response_format" in str(exc):
-                    return await self._call_openai_json_via_chat(messages, schema, temperature=temperature)
-                raise
+                return await self._call_openai_json_via_responses(system=system, user=user, schema=schema)
             except Exception as exc:
-                # En mode auto, si Responses échoue pour d'autres raisons (ex: version serveur),
-                # on tente le fallback chat.
-                if BACKEND_MODE == "auto":
-                    return await self._call_openai_json_via_chat(messages, schema, temperature=temperature)
-                raise
+                if BACKEND_MODE == "responses":
+                    raise
+                log.warning("Organisation: Responses failed, fallback chat. err=%s", exc)
+                return await self._call_openai_json_via_chat(system=system, user=user, schema=schema)
 
-        # Sécurité : fallback final
-        return await self._call_openai_json_via_chat(messages, schema, temperature=temperature)
+        return await self._call_openai_json_via_chat(system=system, user=user, schema=schema)
 
-    # ------------------------------------------------------------------
-    # Logique de session
-    # ------------------------------------------------------------------
+    async def _generate_announcement(self, draft: OrganisationDraft) -> None:
+        """Génère title/body/cta pour un draft.
 
-    async def _planner_step(
-        self,
-        session: OrganisationSession,
-        *,
-        initial: bool = False,
-        user_message: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        if initial and not session.messages:
-            session.messages.append({"role": "system", "content": self._planner_system_prompt(session.context.get("guild", "Evolution"))})
-            session.messages.append({
-                "role": "user",
-                "content": (
-                    "Demarre l'entretien et pose d'abord une question sur le type d'evenement a organiser. "
-                    "Rappelle que l'utilisateur peut taper 'annule' pour arreter."
-                ),
-            })
-        elif user_message is not None:
-            session.messages.append({"role": "user", "content": user_message})
+        - Si IA indisponible -> template.
+        - Si IA OK -> JSON schema (responses puis fallback chat).
+        """
 
-        self._enforce_turn_limit(session)
-        payload = await self._call_openai_json(session.messages, PLANNER_SCHEMA, temperature=PLANNER_TEMPERATURE)
+        # date parsing
+        dt = parse_fr_datetime(draft.date_time) if draft.date_time else None
+        draft.date_ts = int(dt.timestamp()) if dt else None
 
-        collected = payload.get("collected") or {}
-        for key, value in collected.items():
-            if isinstance(value, str) and value.strip():
-                session.collected[key] = value.strip()
-
-        session.summary = payload.get("summary") or session.summary
-        question = payload.get("next_question")
-
-        if question:
-            session.last_question = question.strip()
-            session.messages.append({"role": "assistant", "content": session.last_question})
-
-        return payload
-
-    async def _generate_announcement(
-        self,
-        session: OrganisationSession,
-        *,
-        organiser: str,
-        channel: discord.TextChannel,
-    ) -> Dict[str, Any]:
-        context_blob = json.dumps(
-            {
-                "organiser": organiser,
-                "channel": channel.name,
-                "collected": session.collected,
-                "summary": session.summary,
-            },
-            ensure_ascii=False,
-        )
-        messages = [
-            {"role": "system", "content": self._announcement_system_prompt()},
-            {
-                "role": "user",
-                "content": (
-                    "Redige une annonce parfaitement exploitable pour Discord. "
-                    "Respecte le schema JSON fourni. Voici les informations: " + context_blob
-                ),
-            },
-        ]
-        return await self._call_openai_json(messages, ANNOUNCE_SCHEMA, temperature=ANNOUNCE_TEMPERATURE)
-
-    def _format_announcement(
-        self,
-        ctx: commands.Context,
-        payload: Dict[str, Any],
-    ) -> Tuple[Optional[str], discord.Embed]:
-        title = (payload.get("title") or "Organisation Evolution").strip()
-        body = (payload.get("body") or "").strip()
-        cta = (payload.get("cta") or "").strip()
-        mentions = (payload.get("mentions") or "").strip() or None
-        embed = discord.Embed(title=title, description=body, color=discord.Color.blurple())
-        if cta:
-            embed.add_field(name="Action", value=cta, inline=False)
-        embed.set_footer(text=f"Pilote par {ctx.author.display_name}")
-        return mentions, embed
-
-    # ------------------------------------------------------------------
-    # Commande principale
-    # ------------------------------------------------------------------
-
-    @commands.command(name="organisation")
-    @commands.has_role(STAFF_ROLE_NAME)
-    async def organisation_cmd(self, ctx):
-        if not self._client:
-            await ctx.reply(
-                "[! ] `OPENAI_API_KEY` n'est pas configure. Impossible de lancer l'assistant d'organisation.",
-                mention_author=False,
-            )
-            return
-        if not ctx.guild:
-            await ctx.reply("[! ] Commande uniquement disponible sur un serveur.", mention_author=False)
+        if not AI_ENABLED or not self._client:
+            self._fill_template(draft)
             return
 
-        key = (ctx.guild.id, ctx.author.id)
-        if key in self._sessions:
-            await ctx.reply("[! ] Tu as deja une organisation en cours. Termine-la ou attends son expiration.", mention_author=False)
-            return
-
-        session = OrganisationSession(
-            user_id=ctx.author.id,
-            guild_id=ctx.guild.id,
-            channel_id=ctx.channel.id,
-            context={"guild": ctx.guild.name, "organiser": ctx.author.display_name},
-        )
-        self._sessions[key] = session
-
-        if getattr(ctx.channel, "name", None) != ORGANISATION_CHANNEL_NAME:
-            await ctx.send(
-                f"[info] Session lancee ici, mais pense a partager le resultat dans #{ORGANISATION_CHANNEL_NAME}.",
-                delete_after=20,
-            )
+        system = self._announcement_system_prompt()
+        user = self._announcement_user_prompt(draft)
 
         try:
-            payload = await self._planner_step(session, initial=True)
+            payload = await self._call_openai_json(system=system, user=user, schema=ANNOUNCE_SCHEMA)
         except Exception as exc:
-            self._sessions.pop(key, None)
-            await ctx.reply(f"[! ] Impossible de demarrer la conversation IA : {exc}", mention_author=False)
+            log.warning("Organisation: IA generation failed -> template. err=%s", exc, exc_info=True)
+            self._fill_template(draft)
             return
 
-        await ctx.send(
-            f"[assistant] Assistant organisation pour {ctx.author.mention}. Reponds dans ce salon ou tape `annule` pour stopper.",
+        title = str(payload.get("title") or "").strip()
+        body = str(payload.get("body") or "").strip()
+        cta = str(payload.get("cta") or "").strip()
+        summary = str(payload.get("summary") or "").strip()
+
+        # Sécurité: pas de mentions
+        title = title.replace("@everyone", "everyone").replace("@here", "here")
+        body = body.replace("@everyone", "everyone").replace("@here", "here")
+        cta = cta.replace("@everyone", "everyone").replace("@here", "here")
+
+        draft.title = title[:256] if title else f"Sortie guilde — {draft.activity}"[:256]
+        draft.body = body[:3500] if body else ""
+        draft.cta = cta[:500] if cta else ""
+        draft.summary = summary[:200] if summary else ""
+
+    def _fill_template(self, draft: OrganisationDraft) -> None:
+        """Fallback sans IA: annonce structurée simple."""
+
+        draft.title = f"📅 Sortie guilde — {draft.activity}"[:256]
+
+        lines: List[str] = []
+        lines.append("Sortie proposée, rejoins-nous pour cette session.")
+
+        # Infos principales
+        dt = parse_fr_datetime(draft.date_time) if draft.date_time else None
+        draft.date_ts = int(dt.timestamp()) if dt else None
+
+        if draft.location:
+            lines.append(f"• Rendez-vous: {draft.location}")
+        if draft.seats:
+            lines.append(f"• Places: {draft.seats}")
+        if draft.details:
+            lines.append("")
+            lines.append("Détails / Pré-requis:")
+            lines.append(draft.details)
+
+        draft.body = "\n".join(lines)[:3500]
+        draft.cta = "Réagis pour t'inscrire."  # l'embed ajoutera le rappel emojis
+        draft.summary = ""
+
+    # ---------------- UI : modal / views ----------------
+
+    class _StartView(discord.ui.View):
+        def __init__(self, parent: "OrganisationCog", author_id: int):
+            super().__init__(timeout=VIEW_TIMEOUT)
+            self.parent = parent
+            self.author_id = author_id
+            self.message: Optional[discord.Message] = None
+
+        async def on_timeout(self) -> None:
+            if self.message:
+                try:
+                    await self.message.delete()
+                except Exception:
+                    pass
+
+        @discord.ui.button(label="Ouvrir le formulaire", style=discord.ButtonStyle.primary)
+        async def open_form(self, interaction: discord.Interaction, _):
+            if interaction.user.id != self.author_id:
+                await interaction.response.send_message("❌ Réservé à l'auteur de la commande.", ephemeral=True)
+                return
+            if interaction.guild is None:
+                await interaction.response.send_message("❌ Action disponible uniquement sur le serveur.", ephemeral=True)
+                return
+            if not isinstance(interaction.user, discord.Member) or not self.parent._is_staff(interaction.user):
+                await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
+                return
+
+            org_channel = self.parent._find_organisation_channel(interaction.guild)
+            await interaction.response.send_modal(
+                self.parent._OrganisationModal(self.parent, pref_channel=org_channel)
+            )
+
+    class _OrganisationModal(discord.ui.Modal, title="📅 Organiser une sortie (Dofus Retro)"):
+        def __init__(
+            self,
+            parent: "OrganisationCog",
+            pref_channel: Optional[discord.TextChannel],
+            defaults: Optional[Dict[str, str]] = None,
+        ):
+            super().__init__(timeout=MODAL_TIMEOUT)
+            self.parent = parent
+            self.pref_channel = pref_channel
+            defaults = defaults or {}
+
+            self.activity = discord.ui.TextInput(
+                label="Activité (donjon / captures / drop / perco / xp / pvp)",
+                style=discord.TextStyle.short,
+                required=True,
+                max_length=80,
+                default=defaults.get("activity") or "",
+                placeholder="Ex: Donjon Dragon Cochon / Captures Blop / Drop Gelée",
+            )
+            self.date_time = discord.ui.TextInput(
+                label="Date & heure",
+                style=discord.TextStyle.short,
+                required=True,
+                max_length=64,
+                default=defaults.get("date_time") or "",
+                placeholder="Ex: samedi 21h, demain 20:30, 27/09 19h",
+            )
+            self.location = discord.ui.TextInput(
+                label="Rendez-vous / Lieu",
+                style=discord.TextStyle.short,
+                required=False,
+                max_length=80,
+                default=defaults.get("location") or "",
+                placeholder="Ex: Zaap Astrub (5,-18) / Entrée donjon / Arène Bonta",
+            )
+            self.seats = discord.ui.TextInput(
+                label="Places max (optionnel)",
+                style=discord.TextStyle.short,
+                required=False,
+                max_length=16,
+                default=defaults.get("seats") or "",
+                placeholder="Ex: 8 (laisser vide = illimité)",
+            )
+            self.details = discord.ui.TextInput(
+                label="Détails / objectifs / prérequis",
+                style=discord.TextStyle.paragraph,
+                required=False,
+                max_length=1500,
+                default=defaults.get("details") or "",
+                placeholder="Ex: niveau mini, stuff à prévoir, pierre d'âme, PP, consignes...",
+            )
+
+            for comp in (self.activity, self.date_time, self.location, self.seats, self.details):
+                self.add_item(comp)
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            if interaction.guild is None:
+                await interaction.response.send_message("❌ Serveur requis.", ephemeral=True)
+                return
+            if not isinstance(interaction.user, discord.Member) or not self.parent._is_staff(interaction.user):
+                await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
+                return
+
+            activity = str(self.activity.value).strip()
+            date_time = str(self.date_time.value).strip()
+            location = str(self.location.value).strip()
+            seats = _coerce_int(str(self.seats.value))
+            details = str(self.details.value).strip()
+
+            draft = OrganisationDraft(
+                id=str(uuid.uuid4())[:8],
+                author_id=interaction.user.id,
+                guild_id=interaction.guild_id,
+                activity=activity,
+                date_time=date_time,
+                location=location,
+                seats=seats,
+                details=details,
+                mentions_raw=DEFAULT_MENTIONS,
+                channel_override=self.pref_channel.name if self.pref_channel else "",
+            )
+
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self.parent._generate_announcement(draft)
+
+            self.parent._drafts[interaction.user.id] = draft
+            await self.parent._send_preview(interaction, draft)
+
+    class _OptionsModal(discord.ui.Modal, title="⚙️ Options sortie"):
+        def __init__(
+            self,
+            parent: "OrganisationCog",
+            user_id: int,
+            defaults: Optional[Dict[str, str]] = None,
+        ):
+            super().__init__(timeout=MODAL_TIMEOUT)
+            self.parent = parent
+            self.user_id = user_id
+            defaults = defaults or {}
+
+            self.mentions = discord.ui.TextInput(
+                label="Mentions (optionnel)",
+                style=discord.TextStyle.short,
+                required=False,
+                max_length=120,
+                default=defaults.get("mentions") or DEFAULT_MENTIONS,
+                placeholder="Ex: @here, @everyone, @Sorties, <@&ID>",
+            )
+            self.channel = discord.ui.TextInput(
+                label="Salon de publication (optionnel)",
+                style=discord.TextStyle.short,
+                required=False,
+                max_length=80,
+                default=defaults.get("channel") or ORGANISATION_CHANNEL_NAME,
+                placeholder=f"Ex: #{ORGANISATION_CHANNEL_NAME}",
+            )
+
+            self.add_item(self.mentions)
+            self.add_item(self.channel)
+
+        async def on_submit(self, interaction: discord.Interaction) -> None:
+            draft = self.parent._drafts.get(self.user_id)
+            if not draft:
+                await interaction.response.send_message("Brouillon introuvable/expiré.", ephemeral=True)
+                return
+            draft.mentions_raw = str(self.mentions.value).strip()
+            draft.channel_override = str(self.channel.value).strip()
+            await interaction.response.send_message("✅ Options mises à jour.", ephemeral=True)
+
+    class _PreviewView(discord.ui.View):
+        def __init__(self, parent: "OrganisationCog", user_id: int):
+            super().__init__(timeout=VIEW_TIMEOUT)
+            self.parent = parent
+            self.user_id = user_id
+
+        async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            return interaction.user.id == self.user_id
+
+        @discord.ui.button(label="✏️ Ajuster", style=discord.ButtonStyle.secondary)
+        async def adjust(self, interaction: discord.Interaction, _):
+            draft = self.parent._drafts.get(self.user_id)
+            if not draft:
+                await interaction.response.send_message("Brouillon introuvable.", ephemeral=True)
+                return
+            defaults = {
+                "activity": draft.activity,
+                "date_time": draft.date_time,
+                "location": draft.location,
+                "seats": str(draft.seats) if draft.seats else "",
+                "details": draft.details,
+            }
+            org_channel = None
+            if interaction.guild:
+                org_channel = self.parent._find_organisation_channel(interaction.guild, override=draft.channel_override)
+            await interaction.response.send_modal(
+                self.parent._OrganisationModal(self.parent, pref_channel=org_channel, defaults=defaults)
+            )
+
+        @discord.ui.button(label="⚙️ Options", style=discord.ButtonStyle.secondary)
+        async def options(self, interaction: discord.Interaction, _):
+            draft = self.parent._drafts.get(self.user_id)
+            if not draft:
+                await interaction.response.send_message("Brouillon introuvable.", ephemeral=True)
+                return
+            defaults = {
+                "mentions": draft.mentions_raw,
+                "channel": draft.channel_override or ORGANISATION_CHANNEL_NAME,
+            }
+            await interaction.response.send_modal(self.parent._OptionsModal(self.parent, self.user_id, defaults=defaults))
+
+        @discord.ui.button(label="🔁 Régénérer", style=discord.ButtonStyle.secondary)
+        async def regenerate(self, interaction: discord.Interaction, _):
+            draft = self.parent._drafts.get(self.user_id)
+            if not draft:
+                await interaction.response.send_message("Brouillon introuvable.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self.parent._generate_announcement(draft)
+            await self.parent._send_preview(interaction, draft, replace=True)
+
+        @discord.ui.button(label="📣 Publier", style=discord.ButtonStyle.success)
+        async def publish(self, interaction: discord.Interaction, _):
+            draft = self.parent._drafts.get(self.user_id)
+            if not draft:
+                await interaction.response.send_message("Brouillon introuvable.", ephemeral=True)
+                return
+            if interaction.guild is None:
+                await interaction.response.send_message("❌ Serveur requis.", ephemeral=True)
+                return
+
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            ok, reason = await self.parent._publish_draft(interaction, draft)
+            if not ok:
+                await interaction.followup.send(f"❌ Publication impossible: {reason}", ephemeral=True)
+                return
+            self.parent._drafts.pop(self.user_id, None)
+            await interaction.followup.send("✅ Sortie publiée dans #organisation.", ephemeral=True)
+
+        @discord.ui.button(label="🗑️ Annuler", style=discord.ButtonStyle.danger)
+        async def cancel(self, interaction: discord.Interaction, _):
+            self.parent._drafts.pop(self.user_id, None)
+            await interaction.response.edit_message(content="Brouillon annulé.", embed=None, view=None)
+
+    async def _send_preview(self, interaction: discord.Interaction, draft: OrganisationDraft, *, replace: bool = False) -> None:
+        """Envoie la preview (ephemeral)."""
+
+        fake_event = OrganisationEvent(
+            id=draft.id,
+            guild_id=draft.guild_id,
+            channel_id=0,
+            message_id=0,
+            author_id=draft.author_id,
+            created_at_iso=_now_iso(),
+            activity=draft.activity,
+            date_time=draft.date_time,
+            date_ts=draft.date_ts,
+            location=draft.location,
+            seats=draft.seats,
+            details=draft.details,
+            title=draft.title,
+            body=draft.body,
+            cta=draft.cta,
+            mentions=_parse_mentions(draft.mentions_raw, interaction.guild) if interaction.guild else [],
+            going=set(),
+            maybe=set(),
+        )
+        embed = self._build_event_embed(fake_event)
+        view = self._PreviewView(self, interaction.user.id)
+
+        mention_text = draft.mentions_raw.strip() or "(aucune)"
+        channel_text = draft.channel_override.strip() or ORGANISATION_CHANNEL_NAME
+
+        msg = (
+            f"✅ **Brouillon `{draft.id}` prêt.**\n"
+            f"• Salon: `{channel_text}`\n"
+            f"• Mentions: `{mention_text}`\n"
+            "Tu peux **Publier**, **Ajuster**, **Options**, ou **Régénérer**."
+        )
+
+        # replace=True : on envoie une nouvelle preview (plus simple que d'éditer l'ancienne)
+        await interaction.followup.send(
+            msg,
+            embed=embed,
+            view=view,
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    # ---------------- publish ----------------
+
+    async def _publish_draft(self, interaction: discord.Interaction, draft: OrganisationDraft) -> Tuple[bool, str]:
+        guild = interaction.guild
+        if guild is None:
+            return False, "guild manquant"
+
+        channel = self._find_organisation_channel(guild, override=draft.channel_override)
+        if not channel:
+            return False, f"Salon #{ORGANISATION_CHANNEL_NAME} introuvable (ou override invalide)."
+
+        # permissions minimales
+        me = guild.me or guild.get_member(self.bot.user.id) if self.bot.user else None
+        if me:
+            perms = channel.permissions_for(me)
+            if not perms.send_messages:
+                return False, f"Je n'ai pas la permission d'écrire dans #{channel.name}."
+            if not perms.embed_links:
+                return False, f"Je n'ai pas la permission d'envoyer des embeds dans #{channel.name}."
+
+        # mentions
+        mentions = _parse_mentions(draft.mentions_raw, guild)
+        allowed_mentions = _build_allowed_mentions(guild, mentions)
+        content = " ".join(mentions) if mentions else None
+
+        # construit l'event
+        event = OrganisationEvent(
+            id=draft.id,
+            guild_id=guild.id,
+            channel_id=channel.id,
+            message_id=0,
+            author_id=draft.author_id,
+            created_at_iso=_now_iso(),
+            activity=draft.activity,
+            date_time=draft.date_time,
+            date_ts=draft.date_ts,
+            location=draft.location,
+            seats=draft.seats,
+            details=draft.details,
+            title=draft.title,
+            body=draft.body,
+            cta=draft.cta,
+            mentions=mentions,
+            going=set(),
+            maybe=set(),
+        )
+        embed = self._build_event_embed(event)
+
+        try:
+            msg = await channel.send(content=content, embed=embed, allowed_mentions=allowed_mentions)
+        except Exception as exc:
+            return False, f"Erreur Discord envoi message: {exc}"
+
+        event.message_id = msg.id
+        self._events[msg.id] = event
+
+        # Ajoute les réactions
+        for emoji in OUTING_EMOJIS:
+            try:
+                await msg.add_reaction(emoji)
+            except discord.Forbidden:
+                # Pas grave, on continue
+                pass
+            except discord.HTTPException:
+                pass
+
+        # Persist
+        saved = await self._save_event_to_console(event)
+        if not saved:
+            # On ne bloque pas la publication si #console absent
+            log.warning("Organisation: impossible de sauvegarder l'événement %s dans #console", event.id)
+
+        return True, ""
+
+    # ---------------- reaction listeners ----------------
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        if not self.bot.user or payload.user_id == self.bot.user.id:
+            return
+        event = self._events.get(payload.message_id)
+        if not event or event.status != "active":
+            return
+
+        emoji = str(payload.emoji)
+        uid = payload.user_id
+        if emoji not in OUTING_EMOJIS:
+            return
+
+        changed = self._apply_reaction(event, emoji=emoji, user_id=uid, add=True)
+        if changed:
+            self._schedule_event_update(event)
+
+        # Amélioration UX : essayer de forcer *une seule* réaction active par membre.
+        # On ne bloque pas le listener (task) et on ignore silencieusement si permissions manquantes.
+        asyncio.create_task(self._try_cleanup_member_reactions(event, payload=payload, keep_emoji=emoji))
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent) -> None:
+        if not self.bot.user or payload.user_id == self.bot.user.id:
+            return
+        event = self._events.get(payload.message_id)
+        if not event or event.status != "active":
+            return
+
+        emoji = str(payload.emoji)
+        uid = payload.user_id
+        if emoji not in OUTING_EMOJIS:
+            return
+
+        changed = self._apply_reaction(event, emoji=emoji, user_id=uid, add=False)
+        if changed:
+            self._schedule_event_update(event)
+
+    def _apply_reaction(self, event: OrganisationEvent, *, emoji: str, user_id: int, add: bool) -> bool:
+        """Met à jour les ensembles going/maybe selon la réaction.
+
+        Règles :
+        - ✅ inscrit : ajoute dans going, retire de maybe
+        - ❔ maybe : ajoute dans maybe, retire de going
+        - ❌ : retire de going et maybe (uniquement sur add)
+        - sur remove: retire uniquement du set associé
+        """
+
+        before = (set(event.going), set(event.maybe))
+
+        if emoji == EMOJI_GOING:
+            if add:
+                event.going.add(user_id)
+                event.maybe.discard(user_id)
+            else:
+                event.going.discard(user_id)
+
+        elif emoji == EMOJI_MAYBE:
+            if add:
+                event.maybe.add(user_id)
+                event.going.discard(user_id)
+            else:
+                event.maybe.discard(user_id)
+
+        elif emoji == EMOJI_NO:
+            if add:
+                event.going.discard(user_id)
+                event.maybe.discard(user_id)
+            # remove ❌ ne change rien
+
+        after = (set(event.going), set(event.maybe))
+        return after != before
+
+    async def _try_cleanup_member_reactions(
+        self,
+        event: OrganisationEvent,
+        *,
+        payload: discord.RawReactionActionEvent,
+        keep_emoji: str,
+    ) -> None:
+        """Tentative de nettoyage des réactions d'un utilisateur.
+
+        Objectif : éviter qu'un même joueur mette ✅ et ❔ en même temps.
+        Nécessite la permission "Gérer les messages" pour retirer les réactions des autres.
+        """
+
+        if keep_emoji not in OUTING_EMOJIS:
+            return
+
+        guild = self.bot.get_guild(event.guild_id)
+        if not guild:
+            return
+
+        channel = guild.get_channel(event.channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            try:
+                fetched = await self.bot.fetch_channel(event.channel_id)
+                if isinstance(fetched, discord.TextChannel):
+                    channel = fetched
+            except Exception:
+                return
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        me = guild.me or (guild.get_member(self.bot.user.id) if self.bot.user else None)
+        if me:
+            perms = channel.permissions_for(me)
+            if not perms.manage_messages:
+                return
+
+        try:
+            message = await channel.fetch_message(event.message_id)
+        except Exception:
+            return
+
+        user = getattr(payload, "member", None)
+        if user is None:
+            try:
+                user = await self.bot.fetch_user(payload.user_id)
+            except Exception:
+                return
+
+        for emoji in OUTING_EMOJIS:
+            if emoji == keep_emoji:
+                continue
+            try:
+                await message.remove_reaction(emoji, user)
+            except discord.Forbidden:
+                return
+            except discord.HTTPException:
+                continue
+
+    # ---------------- updates (debounce) ----------------
+
+    def _schedule_event_update(self, event: OrganisationEvent, delay: float = 1.2) -> None:
+        """Déclenche une mise à jour embed + console (debounce)."""
+
+        mid = event.message_id
+        existing = self._pending_update_tasks.get(mid)
+        if existing and not existing.done():
+            return
+
+        async def _runner():
+            try:
+                await asyncio.sleep(delay)
+                await self._update_event_message_and_persist(event)
+            finally:
+                self._pending_update_tasks.pop(mid, None)
+
+        self._pending_update_tasks[mid] = asyncio.create_task(_runner())
+
+    async def _update_event_message_and_persist(self, event: OrganisationEvent) -> None:
+        # Update embed in org channel
+        await self._update_event_message(event)
+
+        # Update console persistence
+        try:
+            await self._save_event_to_console(event)
+        except Exception:
+            pass
+
+    async def _update_event_message(self, event: OrganisationEvent) -> None:
+        guild = self.bot.get_guild(event.guild_id)
+        if not guild:
+            return
+        channel = guild.get_channel(event.channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return
+        try:
+            msg = await channel.fetch_message(event.message_id)
+        except discord.NotFound:
+            event.status = "deleted"
+            await self._save_event_to_console(event)
+            self._events.pop(event.message_id, None)
+            return
+        except Exception:
+            return
+
+        embed = self._build_event_embed(event)
+        try:
+            await msg.edit(embed=embed)
+        except Exception:
+            return
+
+    # ---------------- Commands ----------------
+
+    @commands.command(name="organisation", aliases=["orga", "sortie"])
+    async def organisation_cmd(self, ctx: commands.Context) -> None:
+        """Lance le formulaire de création de sortie (staff uniquement)."""
+
+        if ctx.guild is None:
+            await ctx.reply("❌ Commande utilisable uniquement sur le serveur.", mention_author=False)
+            return
+        if not isinstance(ctx.author, discord.Member) or not self._is_staff(ctx.author):
+            await ctx.reply("❌ Commande réservée au staff.", mention_author=False)
+            return
+
+        view = self._StartView(self, ctx.author.id)
+        msg = await ctx.send(
+            "Clique pour ouvrir le formulaire d'organisation (sortie guilde).",
+            view=view,
+        )
+        view.message = msg
+
+    @commands.command(name="organisation-model", aliases=["organisationmodel", "orga-model"])
+    async def organisation_model(self, ctx: commands.Context, *, model: str | None = None) -> None:
+        """Change le modèle IA (runtime) pour l'organisation."""
+
+        if ctx.guild is None:
+            await ctx.reply("❌ Commande utilisable uniquement sur le serveur.", mention_author=False)
+            return
+        if not isinstance(ctx.author, discord.Member) or not self._is_staff(ctx.author):
+            await ctx.reply("❌ Commande réservée au staff.", mention_author=False)
+            return
+
+        candidate = (model or "").strip()
+        if not candidate:
+            await ctx.reply("Précise un modèle, ex: `!organisation-model gpt-5-mini`.", mention_author=False)
+            return
+        resolved = normalise_staff_model(candidate)
+        if not resolved:
+            await ctx.reply("Modèle non reconnu.", mention_author=False)
+            return
+
+        self._model = resolved
+        await ctx.reply(
+            f"✅ Modèle organisation (runtime) : `{self._model}`.\n"
+            "Pour le rendre permanent: définis `OPENAI_STAFF_MODEL` sur Render.",
             mention_author=False,
         )
 
-        next_question = payload.get("next_question") or session.last_question
-        if next_question:
-            await ctx.send(next_question, mention_author=False)
+    @commands.command(name="organisation-sync", aliases=["orga-sync"])
+    async def organisation_sync(self, ctx: commands.Context) -> None:
+        """Force un reload des événements depuis #console (debug)."""
 
-        try:
-            while True:
-                try:
-                    user_msg = await self.bot.wait_for(
-                        "message",
-                        timeout=SESSION_TIMEOUT,
-                        check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
-                    )
-                except asyncio.TimeoutError:
-                    await ctx.send("[timeout] Temps d'attente depasse, organisation annulee.")
-                    break
+        if ctx.guild is None:
+            await ctx.reply("❌ Serveur requis.", mention_author=False)
+            return
+        if not isinstance(ctx.author, discord.Member) or not self._is_staff(ctx.author):
+            await ctx.reply("❌ Staff uniquement.", mention_author=False)
+            return
 
-                content = (user_msg.content or "").strip()
-                if content.lower() in CANCEL_KEYWORDS:
-                    await ctx.send("[stop] Organisation annulee.")
-                    break
+        before = len(self._events)
+        loaded = await self._load_events_from_console(ctx.guild)
+        after = len(self._events)
+        await ctx.reply(
+            f"✅ Reload terminé. Chargés={loaded}. Tracking avant={before}, après={after}.",
+            mention_author=False,
+        )
 
-                try:
-                    payload = await self._planner_step(session, user_message=content)
-                except Exception as exc:
-                    await ctx.send(f"[! ] Erreur OpenAI : {exc}")
-                    break
-
-                status = payload.get("status")
-                if status == "cancel":
-                    await ctx.send("[stop] L'assistant a mis fin a la session.")
-                    break
-                if status == "ready":
-                    try:
-                        announcement = await self._generate_announcement(
-                            session,
-                            organiser=ctx.author.display_name,
-                            channel=ctx.channel,
-                        )
-                    except Exception as exc:
-                        await ctx.send(f"[! ] Impossible de generer l'annonce : {exc}")
-                        break
-                    mentions, embed = self._format_announcement(ctx, announcement)
-                    await ctx.send(content=mentions, embed=embed)
-                    summary = announcement.get("summary") or session.summary
-                    if summary:
-                        await ctx.send(f"[note] Recap : {summary}", mention_author=False)
-                    await ctx.send("[ok] Organisation prete ! Ajuste l'annonce si besoin puis publie-la.", mention_author=False)
-                    break
-
-                next_question = payload.get("next_question") or session.last_question
-                if next_question:
-                    await ctx.send(next_question, mention_author=False)
-                else:
-                    await ctx.send("[?] Merci de preciser davantage.")
-        finally:
-            self._sessions.pop(key, None)
+    # Optionnel : version slash (cohérence avec annonce_ai)
+    @app_commands.command(name="organisation", description="Créer une sortie guilde (formulaire).")
+    async def organisation_slash(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("❌ Serveur requis.", ephemeral=True)
+            return
+        if not isinstance(interaction.user, discord.Member) or not self._is_staff(interaction.user):
+            await interaction.response.send_message("❌ Staff uniquement.", ephemeral=True)
+            return
+        org_channel = self._find_organisation_channel(interaction.guild)
+        await interaction.response.send_modal(self._OrganisationModal(self, pref_channel=org_channel))
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot: commands.Bot) -> None:
+    # Évite les doubles enregistrements si l'extension est rechargée.
+    try:
+        bot.remove_command("organisation")
+    except Exception:
+        pass
     await bot.add_cog(OrganisationCog(bot))
