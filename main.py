@@ -12,6 +12,8 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from alive import keep_alive
 from collections import deque
+from utils.channel_resolver import resolve_text_channel
+from utils.discord_history import fetch_channel_history
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("main")
@@ -39,6 +41,7 @@ class EvoBot(commands.Bot):
         self._seen_ids = set()
         self._seen_order = deque()
         self._seen_max = 2048
+        self._console_checked = False
 
         orig = self.process_commands
 
@@ -152,43 +155,89 @@ class EvoBot(commands.Bot):
         logging.info("Commandes enregistrées: %s", cmds)
 
     async def wait_console_channel(self, timeout=30):
+        default_name = os.getenv("CHANNEL_CONSOLE", "console")
         start = time.time()
         while time.time() - start < timeout:
             for g in self.guilds:
-                ch = discord.utils.get(g.text_channels, name="console")
+                ch = resolve_text_channel(
+                    g,
+                    id_env="CHANNEL_CONSOLE_ID",
+                    name_env="CHANNEL_CONSOLE",
+                    default_name=default_name,
+                )
                 if ch:
                     return ch
             await asyncio.sleep(1)
         return None
 
-    async def _fetch_history(self, channel, limit=50, oldest_first=False):
-        delay = 0.5
-        for attempt in range(1, 4):
+    async def ensure_console_channel(self) -> None:
+        default_name = os.getenv("CHANNEL_CONSOLE", "console")
+        console_id = os.getenv("CHANNEL_CONSOLE_ID")
+        auto_create = (os.getenv("CONSOLE_AUTO_CREATE", "1") or "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        for guild in list(getattr(self, "guilds", []) or []):
+            ch = resolve_text_channel(
+                guild,
+                id_env="CHANNEL_CONSOLE_ID",
+                name_env="CHANNEL_CONSOLE",
+                default_name=default_name,
+            )
+            if ch:
+                continue
+            if console_id:
+                logging.warning(
+                    "Console channel id %s not found in guild %s.",
+                    console_id,
+                    getattr(guild, "name", guild.id),
+                )
+                continue
+            if not auto_create:
+                logging.warning(
+                    "Console channel missing in guild %s. Set CHANNEL_CONSOLE_ID or create #%s.",
+                    getattr(guild, "name", guild.id),
+                    default_name,
+                )
+                continue
+            me = guild.me or (guild.get_member(self.user.id) if self.user else None)
+            if not me or not getattr(me.guild_permissions, "manage_channels", False):
+                logging.warning(
+                    "Console channel missing in guild %s; bot lacks manage_channels.",
+                    getattr(guild, "name", guild.id),
+                )
+                continue
             try:
-                messages = []
-                async for msg in channel.history(limit=limit, oldest_first=oldest_first):
-                    messages.append(msg)
-                return messages
-            except Exception as exc:
-                status = getattr(exc, "status", None)
-                if status == 429:
-                    retry_after = getattr(exc, "retry_after", None)
-                    wait = float(retry_after) if retry_after else delay
-                    channel_label = getattr(channel, "name", None) or getattr(channel, "id", "unknown")
-                    logging.warning(
-                        "Rate limited while reading history for %s. Retrying in %.2fs.",
-                        channel_label,
-                        wait,
-                    )
-                    await asyncio.sleep(wait)
-                    delay = min(delay * 2, 8)
-                    continue
-                channel_label = getattr(channel, "name", None) or getattr(channel, "id", "unknown")
-                logging.warning("History read failed for %s: %s", channel_label, exc)
-                return []
-        channel_label = getattr(channel, "name", None) or getattr(channel, "id", "unknown")
-        logging.warning("History read failed after retries for %s.", channel_label)
-        return []
+                created = await guild.create_text_channel(
+                    default_name,
+                    reason="Console persistence channel",
+                )
+                logging.info(
+                    "Console channel created in guild %s: #%s",
+                    getattr(guild, "name", guild.id),
+                    created.name,
+                )
+            except discord.Forbidden:
+                logging.warning(
+                    "Console channel missing in guild %s; permission denied to create.",
+                    getattr(guild, "name", guild.id),
+                )
+            except discord.HTTPException as exc:
+                logging.warning(
+                    "Console channel creation failed in guild %s: %s",
+                    getattr(guild, "name", guild.id),
+                    exc,
+                )
+
+    async def _fetch_history(self, channel, limit=50, oldest_first=False):
+        return await fetch_channel_history(
+            channel,
+            limit=limit,
+            oldest_first=oldest_first,
+            reason="main.lock",
+        )
 
     async def parse_latest_lock(self, ch: discord.TextChannel):
         messages = await self._fetch_history(ch, limit=50, oldest_first=False)
@@ -207,7 +256,7 @@ class EvoBot(commands.Bot):
     async def acquire_leadership(self):
         ch = await self.wait_console_channel(timeout=30)
         if not ch:
-            logging.warning("Salon #console introuvable: pas de lock distribué, on continue.")
+            logging.warning("Salon #%s introuvable: pas de lock distribué, on continue.", os.getenv("CHANNEL_CONSOLE", "console"))
             return True
         my = await ch.send(f"{LOCK_TAG} {self.INSTANCE_ID} {int(time.time())}")
         self._lock_channel_id = ch.id
@@ -247,6 +296,9 @@ class EvoBot(commands.Bot):
             await asyncio.sleep(15)
 
     async def on_ready(self):
+        if not self._console_checked:
+            await self.ensure_console_channel()
+            self._console_checked = True
         logging.info("Connecté comme %s (id:%s)", self.user, self.user.id)
         if not self._singleton_ready:
             ok = await self.acquire_leadership()

@@ -13,6 +13,7 @@ from typing import Optional
 import discord
 
 from utils.channel_resolver import resolve_text_channel
+from utils.discord_history import fetch_channel_history
 
 log = logging.getLogger("utils.stats_store")
 
@@ -130,7 +131,8 @@ class StatsStore:
                     yield msg
             except Exception:
                 log.debug("Aucun pin exploitable pour #%s", self.channel_name)
-            async for msg in chan.history(limit=50):
+            messages = await fetch_channel_history(chan, limit=50, reason="stats_store.load")
+            for msg in messages:
                 mid = getattr(msg, "id", id(msg))
                 if mid in checked:
                     continue

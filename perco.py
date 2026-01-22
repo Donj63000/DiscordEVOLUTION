@@ -17,6 +17,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.channel_resolver import resolve_text_channel
+from utils.discord_history import fetch_channel_history
 
 log = logging.getLogger(__name__)
 
@@ -133,7 +134,12 @@ class PercoCog(commands.Cog):
             )
             return state
 
-        async for msg in channel.history(limit=1000, oldest_first=False):
+        limit = max(
+            int(os.getenv("PERCO_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
+            0,
+        )
+        messages = await fetch_channel_history(channel, limit=limit, reason="perco.console")
+        for msg in messages:
             if msg.author == self.bot.user and msg.content.startswith(PERCO_TAG):
                 payload = self._extract_payload(msg.content)
                 if payload:

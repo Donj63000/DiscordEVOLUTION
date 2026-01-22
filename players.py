@@ -10,6 +10,7 @@ from discord.ext import commands
 from typing import Dict, List, Optional, Tuple
 
 from utils.channel_resolver import resolve_text_channel
+from utils.discord_history import fetch_channel_history
 
 DATA_ROOT = os.path.dirname(__file__)
 DATA_FILE = os.path.join(DATA_ROOT, "players_data.json")
@@ -199,7 +200,16 @@ class PlayersCog(commands.Cog):
             if message.id not in seen_ids:
                 candidates.append(message)
                 seen_ids.add(message.id)
-        async for message in console_channel.history(limit=1000, oldest_first=False):
+        limit = max(
+            int(os.getenv("PLAYERS_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
+            0,
+        )
+        messages = await fetch_channel_history(
+            console_channel,
+            limit=limit,
+            reason="players.console",
+        )
+        for message in messages:
             if message.id not in seen_ids:
                 candidates.append(message)
                 seen_ids.add(message.id)
@@ -313,7 +323,16 @@ class PlayersCog(commands.Cog):
             if self._is_console_snapshot(msg):
                 self.console_message_id = msg.id
                 return msg
-        async for msg in console_channel.history(limit=200):
+        limit = max(
+            int(os.getenv("PLAYERS_SNAPSHOT_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
+            0,
+        )
+        messages = await fetch_channel_history(
+            console_channel,
+            limit=limit,
+            reason="players.snapshot",
+        )
+        for msg in messages:
             if self._is_console_snapshot(msg):
                 self.console_message_id = msg.id
                 return msg

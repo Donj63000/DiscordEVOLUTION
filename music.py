@@ -33,6 +33,9 @@ YTDL_OPTS = {
     "source_address": "0.0.0.0",
 }
 
+def _pynacl_available() -> bool:
+    return importlib.util.find_spec("nacl") is not None
+
 
 class MusicCog(commands.Cog):
     """Simple music helper that streams audio from YouTube links for staff."""
@@ -263,4 +266,7 @@ class MusicCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
+    if not _pynacl_available():
+        log.warning("PyNaCl absent - commandes vocales désactivées.")
+        return
     await bot.add_cog(MusicCog(bot))

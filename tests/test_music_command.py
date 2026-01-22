@@ -22,6 +22,14 @@ class DummyBot:
         return None
 
 
+class DummySetupBot:
+    def __init__(self):
+        self.added = []
+
+    async def add_cog(self, cog):
+        self.added.append(cog)
+
+
 class FakeVoiceClient:
     def __init__(self, guild, channel):
         self.guild = guild
@@ -178,3 +186,19 @@ async def test_musique_lazy_imports_ytdlp(monkeypatch):
     assert cog._ytdl is None
     assert cog._ensure_ytdl() is True
     assert cog._ytdl is not None
+
+
+@pytest.mark.asyncio
+async def test_setup_skips_when_pynacl_missing(monkeypatch):
+    monkeypatch.setattr(music, "_pynacl_available", lambda: False)
+    bot = DummySetupBot()
+    await music.setup(bot)
+    assert not bot.added
+
+
+@pytest.mark.asyncio
+async def test_setup_adds_cog_when_pynacl_available(monkeypatch):
+    monkeypatch.setattr(music, "_pynacl_available", lambda: True)
+    bot = DummySetupBot()
+    await music.setup(bot)
+    assert bot.added

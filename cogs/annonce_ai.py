@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from utils.channel_resolver import resolve_text_channel
+from utils.discord_history import fetch_channel_history
 from utils.openai_config import build_async_openai_client, resolve_reasoning_effort, resolve_staff_model
 
 try:
@@ -206,6 +208,15 @@ class AnnounceAICog(commands.Cog):
         self._temperature_mode = "inference_config"
         self._model = resolve_staff_model()
         self._staff_role_ids, self._staff_role_names = self._parse_staff_roles(STAFF_ROLE_ENV)
+        self._console_refresh_ttl = max(
+            float(os.getenv("ANNONCE_CONSOLE_REFRESH_TTL", "300")),
+            0.0,
+        )
+        self._console_history_limit = max(
+            int(os.getenv("ANNONCE_CONSOLE_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
+            0,
+        )
+        self._console_last_refresh: Dict[int, float] = {}
         self.scheduler_loop.start()
 
     def cog_unload(self) -> None:
@@ -637,36 +648,29 @@ class AnnounceAICog(commands.Cog):
     async def _fetch_console_history(
         self, channel: discord.TextChannel, limit: int
     ) -> List[discord.Message]:
-        delay = 0.5
-        for attempt in range(1, 4):
-            try:
-                messages: List[discord.Message] = []
-                async for message in channel.history(limit=limit):
-                    messages.append(message)
-                return messages
-            except Exception as exc:
-                status = getattr(exc, "status", None)
-                if status == 429:
-                    retry_after = getattr(exc, "retry_after", None)
-                    wait = float(retry_after) if retry_after else delay
-                    log.debug(
-                        "Annonce IA: rate limited while reading console history (attempt %s).",
-                        attempt,
-                    )
-                    await asyncio.sleep(wait)
-                    delay = min(delay * 2, 8)
-                    continue
-                log.warning("Annonce IA: console history error: %s", exc)
-                return []
-        log.warning("Annonce IA: console history failed after retries.")
-        return []
+        return await fetch_channel_history(
+            channel,
+            limit=limit,
+            reason="annonce.console",
+        )
 
     async def _load_all_from_console(self, guild: discord.Guild) -> None:
         chan = await self._console_channel(guild)
         if not chan:
             return
+        now = time.monotonic()
+        last = self._console_last_refresh.get(guild.id, 0.0)
+        if self._console_refresh_ttl and (now - last) < self._console_refresh_ttl:
+            log.debug(
+                "Annonce IA: console refresh skipped for guild %s (cooldown %.1fs).",
+                guild.id,
+                self._console_refresh_ttl,
+            )
+            return
+        self._console_last_refresh[guild.id] = now
         pattern = re.compile(rf"^```{re.escape(ANNOUNCE_DB_BLOCK)}\n(?P<body>.+?)\n```$", re.S)
-        messages = await self._fetch_console_history(chan, limit=200)
+        limit = self._console_history_limit or 200
+        messages = await self._fetch_console_history(chan, limit=limit)
         for message in messages:
             match = pattern.match(message.content or "")
             if not match:

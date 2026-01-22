@@ -40,7 +40,12 @@ except Exception:
 
 import discord
 from discord.ext import commands, tasks
-import google.generativeai as genai
+try:
+    from google import genai
+    from google.genai import types as genai_types
+except Exception:
+    genai = None
+    genai_types = None
 from dotenv import load_dotenv
 
 @dataclass
@@ -139,6 +144,7 @@ class IACog(commands.Cog):
         self.model_pro = None
         self.model_flash = None
         self.model_g25 = None
+        self._genai_client = None
         self.knowledge_text = ""
         self.active_chats = {}
         self.SESSION_TTL = 60 * 30
@@ -170,27 +176,23 @@ class IACog(commands.Cog):
         api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError("Clé API Gemini manquante (GOOGLE_API_KEY ou GEMINI_API_KEY)")
-        genai.configure(api_key=api_key)
+        if genai is None:
+            raise RuntimeError("google.genai indisponible")
+        self._genai_client = genai.Client(api_key=api_key)
         self.api_key = api_key
-        try:
-            self.model_pro = genai.GenerativeModel("gemini-2.5-pro")
-        except Exception:
-            try:
-                self.model_pro = genai.GenerativeModel("gemini-1.5-pro")
-            except Exception:
-                self.model_pro = None
-        try:
-            self.model_flash = genai.GenerativeModel("gemini-1.5-flash")
-        except Exception:
-            self.model_flash = None
-        try:
-            self.model_g25 = genai.GenerativeModel("gemini-2.5-pro")
-        except Exception:
-            self.model_g25 = None
+        self.model_pro = "gemini-2.5-pro"
+        self.model_flash = "gemini-1.5-flash"
+        self.model_g25 = "gemini-2.5-pro"
 
     def _new_chat(self, model_name: str, system_prompt: str):
-        model = genai.GenerativeModel(model_name=model_name, system_instruction=system_prompt)
-        return model.start_chat(history=[])
+        if not self._genai_client:
+            raise RuntimeError("Client Gemini non initialisé")
+        config = None
+        if genai_types is not None:
+            config = genai_types.GenerateContentConfig(system_instruction=system_prompt)
+        if config:
+            return self._genai_client.chats.create(model=model_name, config=config)
+        return self._genai_client.chats.create(model=model_name)
 
     async def _ask_gemini(self, chat, prompt: str) -> str:
         loop = asyncio.get_running_loop()
@@ -259,10 +261,12 @@ class IACog(commands.Cog):
                 return "sarcasm"
         return "neutral"
 
-    async def generate_content_async(self, model, prompt: str):
+    async def generate_content_async(self, model_name: str, prompt: str):
+        if not self._genai_client:
+            raise RuntimeError("Client Gemini non initialisé")
         loop = asyncio.get_running_loop()
         def sync_call():
-            return model.generate_content(prompt)
+            return self._genai_client.models.generate_content(model=model_name, contents=prompt)
         return await loop.run_in_executor(None, sync_call)
 
     async def generate_content_with_fallback_async(self, prompt: str):

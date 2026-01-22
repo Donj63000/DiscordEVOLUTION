@@ -7,6 +7,8 @@ from models import EventData
 
 import discord
 from discord.ext import commands
+from utils.channel_resolver import resolve_text_channel
+from utils.discord_history import fetch_channel_history
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,40 @@ class EventStore:
         self.db = None
         self.events: Dict[str, EventData] = {}
         self.conversations: Dict[str, list] = {}
+        self._console_auto_create = (os.getenv("CONSOLE_AUTO_CREATE", "1") or "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+
+    async def _resolve_console_channel(self) -> Optional[discord.TextChannel]:
+        default_name = os.getenv("CHANNEL_CONSOLE", self.console_channel_name or "console")
+        for guild in list(getattr(self.bot, "guilds", []) or []):
+            channel = resolve_text_channel(
+                guild,
+                id_env="CHANNEL_CONSOLE_ID",
+                name_env="CHANNEL_CONSOLE",
+                default_name=default_name,
+            )
+            if channel:
+                return channel
+        if not self._console_auto_create:
+            return None
+        if os.getenv("CHANNEL_CONSOLE_ID"):
+            return None
+        for guild in list(getattr(self.bot, "guilds", []) or []):
+            me = guild.me or (guild.get_member(self.bot.user.id) if self.bot.user else None)
+            if not me or not getattr(me.guild_permissions, "manage_channels", False):
+                continue
+            try:
+                return await guild.create_text_channel(
+                    default_name,
+                    reason="Console persistence channel",
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                continue
+        return None
 
     async def connect(self):
         db_url = os.getenv("DATABASE_URL")
@@ -42,11 +78,12 @@ class EventStore:
             self.backend = "console"
 
         if self.backend == "console":
-            self.console_channel = discord.utils.get(
-                self.bot.get_all_channels(), name=self.console_channel_name
-            )
+            self.console_channel = await self._resolve_console_channel()
             if not self.console_channel:
-                logger.warning("Console channel not found; persistence disabled.")
+                logger.warning(
+                    "Console channel not found; persistence disabled. "
+                    "Set CHANNEL_CONSOLE_ID or create #console."
+                )
 
     async def _init_db(self):
         if not self.db:
@@ -87,8 +124,16 @@ class EventStore:
         self.conversations = {}
         channel = self.console_channel
         if not channel:
+            channel = await self._resolve_console_channel()
+            self.console_channel = channel
+        if not channel:
             return
-        async for msg in channel.history(limit=1000):
+        limit = max(
+            int(os.getenv("EVENTSTORE_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
+            0,
+        )
+        messages = await fetch_channel_history(channel, limit=limit, reason="event_store.load")
+        for msg in messages:
             if msg.author == self.bot.user and self.MARKER in msg.content:
                 data = None
                 if msg.attachments:
@@ -158,6 +203,9 @@ class EventStore:
 
     async def _dump_console(self):
         channel = self.console_channel
+        if not channel:
+            channel = await self._resolve_console_channel()
+            self.console_channel = channel
         if not channel:
             return
         data = {

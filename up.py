@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 
 from utils.channel_resolver import resolve_text_channel
+from utils.discord_history import fetch_channel_history
 
 CHECK_INTERVAL_HOURS = 168  # 1 semaine
 VOTE_DURATION_SECONDS = 300  # 5 minutes
@@ -94,7 +95,16 @@ class UpCog(commands.Cog):
 
         if console_channel:
             # On lit l'historique à la recherche de la mention BOTUP_TAG
-            async for msg in console_channel.history(limit=1000, oldest_first=False):
+            limit = max(
+                int(os.getenv("UP_CONSOLE_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
+                0,
+            )
+            messages = await fetch_channel_history(
+                console_channel,
+                limit=limit,
+                reason="up.console",
+            )
+            for msg in messages:
                 if msg.author == self.bot.user and BOTUP_TAG in msg.content:
                     # On tente d'extraire le JSON entre ```json\n et \n```
                     try:
@@ -148,7 +158,16 @@ class UpCog(commands.Cog):
 
         # On supprime éventuellement les anciens messages BOTUP pour éviter la confusion
         # (optionnel, on peut vouloir garder l'historique)
-        async for old_msg in console_channel.history(limit=1000, oldest_first=False):
+        limit = max(
+            int(os.getenv("UP_CONSOLE_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
+            0,
+        )
+        messages = await fetch_channel_history(
+            console_channel,
+            limit=limit,
+            reason="up.console.cleanup",
+        )
+        for old_msg in messages:
             if old_msg.author == self.bot.user and BOTUP_TAG in old_msg.content:
                 try:
                     await old_msg.delete()
@@ -233,14 +252,25 @@ class UpCog(commands.Cog):
         if scan_days > 0:
             after = discord.utils.utcnow() - timedelta(days=scan_days)
         log.debug("UpCog: scan history limit=%s after=%s", scan_limit, after)
+        channel_delay = max(float(os.getenv("UP_SCAN_DELAY_SECONDS", "0.2")), 0.0)
         for guild in self.bot.guilds:
             for channel in guild.text_channels:
                 try:
                     async for msg in channel.history(limit=scan_limit, after=after, oldest_first=False):
                         if not msg.author.bot:
                             self.user_message_count[str(msg.author.id)] += 1
-                except (discord.Forbidden, discord.HTTPException):
+                except discord.HTTPException as exc:
+                    if getattr(exc, "status", None) == 429:
+                        retry_after = getattr(exc, "retry_after", None)
+                        wait = float(retry_after) if retry_after else channel_delay
+                        log.debug("UpCog: history rate limit on channel %s wait=%.2f", channel.id, wait)
+                        if wait > 0:
+                            await asyncio.sleep(wait)
+                        continue
+                except discord.Forbidden:
                     pass
+                if channel_delay > 0:
+                    await asyncio.sleep(channel_delay)
 
     async def verifier_membres_eligibles(self):
         """

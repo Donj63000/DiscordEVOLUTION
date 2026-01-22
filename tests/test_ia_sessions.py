@@ -105,6 +105,24 @@ async def test_missing_api_key_raises(monkeypatch):
         cog.configure_gemini()
 
 
+def test_configure_gemini_uses_client(monkeypatch):
+    cog = IACog(bot=object())
+
+    class DummyClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+
+    dummy_genai = types.SimpleNamespace(Client=DummyClient)
+    monkeypatch.setattr("ia.load_dotenv", lambda: None)
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setattr("ia.genai", dummy_genai)
+    cog.configure_gemini()
+
+    assert isinstance(cog._genai_client, DummyClient)
+    assert cog.model_pro == "gemini-2.5-pro"
+    assert cog.model_flash == "gemini-1.5-flash"
+
 @pytest.mark.asyncio
 async def test_ask_gemini_is_non_blocking():
     cog = IACog(bot=object())

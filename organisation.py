@@ -13,6 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 from utils.channel_resolver import resolve_text_channel
 from utils.datetime_utils import parse_fr_datetime
+from utils.discord_history import fetch_channel_history
 from utils.openai_config import build_async_openai_client, normalise_staff_model, resolve_reasoning_effort, resolve_staff_model
 
 def _ensure_utils() -> None:
@@ -60,6 +61,8 @@ DEFAULT_MODEL = resolve_staff_model()
 OPENAI_TIMEOUT = float(os.getenv('ORGANISATION_OPENAI_TIMEOUT', os.getenv('IASTAFF_TIMEOUT', '120')))
 MAX_OUTPUT_TOKENS = int(os.getenv('ORGANISATION_MAX_OUTPUT_TOKENS', '1200'))
 TEMPERATURE = float(os.getenv('ORGANISATION_TEMPERATURE', '0.35'))
+ORGANISATION_MAX_TURNS = int(os.getenv('ORGANISATION_MAX_TURNS', '8'))
+ORGANISATION_PLANNER_TEMP = float(os.getenv('ORGANISATION_PLANNER_TEMP', '0.25'))
 BACKEND_MODE = (os.getenv('ORGANISATION_BACKEND', 'auto') or 'auto').strip().lower()
 if BACKEND_MODE not in {'auto', 'responses', 'chat'}:
     BACKEND_MODE = 'auto'
@@ -71,6 +74,7 @@ EMOJI_NO = '❌'
 OUTING_EMOJIS: Tuple[str, str, str] = (EMOJI_GOING, EMOJI_MAYBE, EMOJI_NO)
 MAX_FIELD_CHARS = 1000
 ANNOUNCE_SCHEMA = {'name': 'OrganisationAnnouncement', 'schema': {'type': 'object', 'additionalProperties': False, 'required': ['title', 'body'], 'properties': {'title': {'type': 'string'}, 'body': {'type': 'string'}, 'cta': {'type': ['string', 'null']}, 'summary': {'type': ['string', 'null']}, 'mentions': {'type': ['string', 'null']}}}}
+PLANNER_SCHEMA = {'name': 'OrganisationPlanner', 'schema': {'type': 'object', 'additionalProperties': False, 'required': ['status', 'next_question', 'collected', 'summary'], 'properties': {'status': {'type': 'string'}, 'next_question': {'type': ['string', 'null']}, 'collected': {'type': 'object'}, 'summary': {'type': ['string', 'null']}}}}
 _JSON_BLOCK_RE = re.compile('```(?:json)?\\s*(?P<body>.+?)```', re.DOTALL | re.IGNORECASE)
 _ID_RE = re.compile('\\d+')
 
@@ -260,6 +264,17 @@ class OrganisationDraft:
         return {'activity': self.activity, 'date_time': self.date_time, 'location': self.location, 'seats': self.seats, 'details': self.details}
 
 @dataclass
+class OrganisationSession:
+    user_id: int
+    guild_id: int
+    channel_id: int
+    context: Dict[str, Any]
+    messages: List[Dict[str, Any]] = field(default_factory=list)
+    collected: Dict[str, Any] = field(default_factory=dict)
+    summary: Optional[str] = None
+    last_question: Optional[str] = None
+
+@dataclass
 class OrganisationEvent:
     id: str
     guild_id: int
@@ -360,26 +375,11 @@ class OrganisationCog(commands.Cog):
         return resolve_text_channel(guild, id_env='CHANNEL_CONSOLE_ID', name_env='CHANNEL_CONSOLE', default_name=CONSOLE_CHANNEL_NAME)
 
     async def _fetch_history(self, channel: discord.TextChannel, limit: int=200) -> List[discord.Message]:
-        delay = 0.5
-        for attempt in range(1, 4):
-            try:
-                messages: List[discord.Message] = []
-                async for msg in channel.history(limit=limit):
-                    messages.append(msg)
-                return messages
-            except Exception as exc:
-                status = getattr(exc, 'status', None)
-                if status == 429:
-                    retry_after = getattr(exc, 'retry_after', None)
-                    wait = float(retry_after) if retry_after else delay
-                    log.warning('Rate limited while reading console history (attempt %s). wait=%.2fs', attempt, wait)
-                    await asyncio.sleep(wait)
-                    delay = min(delay * 2, 8)
-                    continue
-                log.warning('Console history read failed: %s', exc)
-                return []
-        log.warning('Console history read failed after retries')
-        return []
+        return await fetch_channel_history(
+            channel,
+            limit=limit,
+            reason='organisation.console',
+        )
 
     async def _save_event_to_console(self, event: OrganisationEvent) -> bool:
         guild = self.bot.get_guild(event.guild_id)
@@ -488,18 +488,19 @@ class OrganisationCog(commands.Cog):
         blob = json.dumps(data, ensure_ascii=False)
         return 'Rédige une annonce pour une sortie guilde. Tu dois fournir un titre court et un corps structuré. Tu peux utiliser des puces, et une formulation Dofus (sobre). Les inscriptions se font via réactions: ✅ présent, ❔ peut-être, ❌ non. Données brutes: ' + blob
 
-    async def _call_openai_json_via_responses(self, *, system: str, user: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+    async def _call_openai_json_via_responses(self, *, system: str, user: str, schema: Dict[str, Any], temperature: Optional[float]=None) -> Dict[str, Any]:
         if not self._client:
             raise RuntimeError('OPENAI_API_KEY manquant ou client OpenAI indisponible.')
         request_kwargs: Dict[str, Any] = {'model': self._model, 'instructions': system, 'input': user, 'max_output_tokens': MAX_OUTPUT_TOKENS}
+        temp_value = TEMPERATURE if temperature is None else temperature
         reasoning = resolve_reasoning_effort(self._model)
         if reasoning:
             request_kwargs['reasoning'] = reasoning
         if self._supports_temperature:
             if self._temperature_mode == 'inference_config':
-                request_kwargs['inference_config'] = {'temperature': TEMPERATURE}
+                request_kwargs['inference_config'] = {'temperature': temp_value}
             elif self._temperature_mode == 'legacy':
-                request_kwargs['temperature'] = TEMPERATURE
+                request_kwargs['temperature'] = temp_value
         if self._supports_response_format:
             request_kwargs['response_format'] = {'type': 'json_schema', 'json_schema': schema}
         while True:
@@ -516,7 +517,7 @@ class OrganisationCog(commands.Cog):
                 if self._supports_temperature and self._temperature_mode == 'inference_config' and ('inference_config' in msg):
                     self._temperature_mode = 'legacy'
                     request_kwargs.pop('inference_config', None)
-                    request_kwargs['temperature'] = TEMPERATURE
+                    request_kwargs['temperature'] = temp_value
                     handled = True
                 if handled:
                     continue
@@ -549,12 +550,13 @@ class OrganisationCog(commands.Cog):
                 return json.loads(payload)
             raise RuntimeError('Réponse IA invalide: JSON introuvable.')
 
-    async def _call_openai_json_via_chat(self, *, system: str, user: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+    async def _call_openai_json_via_chat(self, *, system: str, user: str, schema: Dict[str, Any], temperature: Optional[float]=None) -> Dict[str, Any]:
         if not self._client:
             raise RuntimeError('OPENAI_API_KEY manquant ou client OpenAI indisponible.')
         messages = [{'role': 'system', 'content': system + "\n\nIMPORTANT: Tu dois appeler la fonction 'submit' et ne renvoyer aucun autre texte."}, {'role': 'user', 'content': user}]
         tools = [{'type': 'function', 'function': {'name': 'submit', 'description': 'Retourne le JSON final.', 'parameters': schema['schema']}}]
-        resp = await self._client.chat.completions.create(model=self._model, messages=messages, tools=tools, tool_choice='required', temperature=TEMPERATURE, max_tokens=MAX_OUTPUT_TOKENS)
+        temp_value = TEMPERATURE if temperature is None else temperature
+        resp = await self._client.chat.completions.create(model=self._model, messages=messages, tools=tools, tool_choice='required', temperature=temp_value, max_tokens=MAX_OUTPUT_TOKENS)
         try:
             choice = resp.choices[0]
             msg = choice.message
@@ -576,44 +578,144 @@ class OrganisationCog(commands.Cog):
             return json.loads(payload)
         raise RuntimeError("Le modèle n'a renvoyé aucun JSON exploitable.")
 
-    async def _call_openai_json(self, *, system: str, user: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+    def _messages_to_prompt(self, messages: List[Dict[str, Any]]) -> Tuple[str, str]:
+        system_parts: List[str] = []
+        user_parts: List[str] = []
+        for msg in messages:
+            role = str(msg.get('role') or '').lower()
+            content = str(msg.get('content') or '').strip()
+            if not content:
+                continue
+            if role == 'system':
+                system_parts.append(content)
+            else:
+                user_parts.append(f'{role}: {content}')
+        system_text = '\n'.join(system_parts).strip()
+        if not system_text:
+            system_text = 'Tu es EvolutionBOT.'
+        user_text = '\n'.join(user_parts).strip()
+        return (system_text, user_text)
+
+    async def _call_openai_json(self, *, system: Optional[str]=None, user: Optional[str]=None, messages: Optional[List[Dict[str, Any]]]=None, schema: Dict[str, Any], temperature: Optional[float]=None) -> Dict[str, Any]:
+        if messages is not None:
+            system_text, user_text = self._messages_to_prompt(messages)
+        else:
+            system_text = system or ''
+            user_text = user or ''
+        temp_value = TEMPERATURE if temperature is None else temperature
         if BACKEND_MODE == 'chat':
-            return await self._call_openai_json_via_chat(system=system, user=user, schema=schema)
+            return await self._call_openai_json_via_chat(system=system_text, user=user_text, schema=schema, temperature=temp_value)
         if BACKEND_MODE in {'auto', 'responses'}:
             try:
-                return await self._call_openai_json_via_responses(system=system, user=user, schema=schema)
+                return await self._call_openai_json_via_responses(system=system_text, user=user_text, schema=schema, temperature=temp_value)
             except Exception as exc:
                 if BACKEND_MODE == 'responses':
                     raise
                 log.warning('Organisation: Responses failed, fallback chat. err=%s', exc)
-                return await self._call_openai_json_via_chat(system=system, user=user, schema=schema)
-        return await self._call_openai_json_via_chat(system=system, user=user, schema=schema)
+                return await self._call_openai_json_via_chat(system=system_text, user=user_text, schema=schema, temperature=temp_value)
+        return await self._call_openai_json_via_chat(system=system_text, user=user_text, schema=schema, temperature=temp_value)
 
-    async def _generate_announcement(self, draft: OrganisationDraft) -> None:
-        dt = parse_fr_datetime(draft.date_time) if draft.date_time else None
-        draft.date_ts = int(dt.timestamp()) if dt else None
-        if not AI_ENABLED or not self._client:
-            self._fill_template(draft)
-            return
-        system = self._announcement_system_prompt()
-        user = self._announcement_user_prompt(draft)
-        try:
-            payload = await self._call_openai_json(system=system, user=user, schema=ANNOUNCE_SCHEMA)
-        except Exception as exc:
-            log.warning('Organisation: IA generation failed -> template. err=%s', exc, exc_info=True)
-            self._fill_template(draft)
-            return
-        title = str(payload.get('title') or '').strip()
+    def _planner_system_prompt(self, session: OrganisationSession) -> str:
+        context = session.context or {}
+        return 'Tu aides le staff a rassembler un brief pour une sortie guilde. Contexte: ' + json.dumps(context, ensure_ascii=False)
+
+    async def _planner_step(self, session: OrganisationSession, *, initial: bool=False, user_message: Optional[str]=None) -> Dict[str, Any]:
+        messages = list(session.messages or [])
+        if not any(str(m.get('role') or '').lower() == 'system' for m in messages):
+            messages.insert(0, {'role': 'system', 'content': self._planner_system_prompt(session)})
+        if user_message or initial:
+            prompt = user_message if user_message else 'Demarrage de la planification.'
+            messages.append({'role': 'user', 'content': prompt})
+        system_msgs = [m for m in messages if str(m.get('role') or '').lower() == 'system']
+        non_system = [m for m in messages if str(m.get('role') or '').lower() != 'system']
+        if ORGANISATION_MAX_TURNS > 0 and len(non_system) > ORGANISATION_MAX_TURNS:
+            summary_text = 'Contexte precedent compresse.'
+            if session.summary:
+                summary_text = f'{summary_text} {session.summary}'
+            tail_size = max(ORGANISATION_MAX_TURNS - 1, 0)
+            tail = non_system[-tail_size:] if tail_size else []
+            non_system = [{'role': 'assistant', 'content': summary_text}] + tail
+        messages = system_msgs + non_system
+        payload = await self._call_openai_json(messages=messages, schema=PLANNER_SCHEMA, temperature=ORGANISATION_PLANNER_TEMP)
+        collected = payload.get('collected') or {}
+        if isinstance(collected, dict):
+            session.collected.update(collected)
+        summary = payload.get('summary')
+        if summary is not None:
+            session.summary = str(summary) if summary else None
+        next_question = payload.get('next_question')
+        session.last_question = str(next_question) if next_question else None
+        session.messages = messages
+        status = str(payload.get('status') or '').lower()
+        if status == 'ask' and session.last_question:
+            session.messages.append({'role': 'assistant', 'content': session.last_question})
+        log.debug('Organisation planner step status=%s user_id=%s', payload.get('status'), session.user_id)
+        return payload
+
+    def _format_announcement(self, ctx: commands.Context, payload: Dict[str, Any]) -> Tuple[str, discord.Embed]:
+        title = str(payload.get('title') or '').strip() or 'Sortie guilde'
         body = str(payload.get('body') or '').strip()
         cta = str(payload.get('cta') or '').strip()
-        summary = str(payload.get('summary') or '').strip()
-        title = title.replace('@everyone', 'everyone').replace('@here', 'here')
-        body = body.replace('@everyone', 'everyone').replace('@here', 'here')
-        cta = cta.replace('@everyone', 'everyone').replace('@here', 'here')
-        draft.title = title[:256] if title else f'Sortie guilde — {draft.activity}'[:256]
-        draft.body = body[:3500] if body else ''
-        draft.cta = cta[:500] if cta else ''
-        draft.summary = summary[:200] if summary else ''
+        mentions = str(payload.get('mentions') or '').strip()
+        description = body
+        if cta:
+            description = f'{description}\n\n{cta}' if description else cta
+        embed = discord.Embed(title=title[:256], description=description[:4096] if description else None, color=discord.Color.blurple())
+        author = getattr(getattr(ctx, 'author', None), 'display_name', None)
+        if author:
+            embed.set_footer(text=f'Organisateur: {author}')
+        return (mentions, embed)
+
+    async def _generate_announcement(self, draft: OrganisationDraft | OrganisationSession, organiser: Optional[str]=None, channel: Optional[discord.TextChannel]=None) -> Optional[Dict[str, Any]]:
+        if isinstance(draft, OrganisationDraft):
+            dt = parse_fr_datetime(draft.date_time) if draft.date_time else None
+            draft.date_ts = int(dt.timestamp()) if dt else None
+            if not AI_ENABLED or not self._client:
+                self._fill_template(draft)
+                return None
+            system = self._announcement_system_prompt()
+            user = self._announcement_user_prompt(draft)
+            try:
+                payload = await self._call_openai_json(system=system, user=user, schema=ANNOUNCE_SCHEMA)
+            except Exception as exc:
+                log.warning('Organisation: IA generation failed -> template. err=%s', exc, exc_info=True)
+                self._fill_template(draft)
+                return None
+            title = str(payload.get('title') or '').strip()
+            body = str(payload.get('body') or '').strip()
+            cta = str(payload.get('cta') or '').strip()
+            summary = str(payload.get('summary') or '').strip()
+            title = title.replace('@everyone', 'everyone').replace('@here', 'here')
+            body = body.replace('@everyone', 'everyone').replace('@here', 'here')
+            cta = cta.replace('@everyone', 'everyone').replace('@here', 'here')
+            draft.title = title[:256] if title else f'Sortie guilde - {draft.activity}'[:256]
+            draft.body = body[:3500] if body else ''
+            draft.cta = cta[:500] if cta else ''
+            draft.summary = summary[:200] if summary else ''
+            return None
+        if not AI_ENABLED or not self._client:
+            payload = {
+                'title': 'Sortie guilde',
+                'body': 'Annonce non disponible.',
+                'cta': '',
+                'mentions': '',
+                'summary': '',
+            }
+            return payload
+        system = self._announcement_system_prompt()
+        context = {
+            'organiser': organiser or '',
+            'channel': channel.name if channel else '',
+            'context': draft.context,
+            'collected': draft.collected,
+            'summary': draft.summary,
+        }
+        user = json.dumps(context, ensure_ascii=False)
+        payload = await self._call_openai_json(system=system, user=user, schema=ANNOUNCE_SCHEMA)
+        summary = payload.get('summary')
+        if summary is not None:
+            draft.summary = str(summary) if summary else None
+        return payload
 
     def _fill_template(self, draft: OrganisationDraft) -> None:
         draft.title = f'📅 Sortie guilde — {draft.activity}'[:256]

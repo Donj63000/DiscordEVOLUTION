@@ -14,6 +14,7 @@ os.environ.setdefault("INSTANCE_ID", "test-instance")
 import pytest
 
 import main
+from utils import discord_history
 
 
 class FakeMessage:
@@ -209,7 +210,7 @@ async def test_fetch_history_retries_on_rate_limit(bot, monkeypatch):
     async def fake_sleep(delay):
         sleeps.append(delay)
 
-    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(discord_history.asyncio, "sleep", fake_sleep)
     messages = await bot._fetch_history(channel, limit=10)
     assert channel.calls == 2
     assert messages and messages[0].content == "ok"

@@ -4,6 +4,7 @@ import logging
 import discord
 
 from utils.channel_resolver import resolve_text_channel
+from utils.discord_history import fetch_channel_history
 
 log = logging.getLogger(__name__)
 CODEBLOCK = "```event"
@@ -48,7 +49,8 @@ class ConsoleStore:
         if chan is None:
             return self._cache
 
-        async for msg in chan.history(limit=200):
+        messages = await fetch_channel_history(chan, limit=200, reason="console_store.load")
+        for msg in messages:
             if msg.content.startswith(CODEBLOCK):
                 try:
                     payload = json.loads(msg.content[len(CODEBLOCK):].strip("` \n"))

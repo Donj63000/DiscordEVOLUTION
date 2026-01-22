@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from datetime import datetime, timedelta, date
 from utils.channel_resolver import resolve_text_channel
+from utils.discord_history import fetch_channel_history
 
 # Import d'un module externe "calendrier" contenant la fonction gen_cal
 from calendrier import gen_cal, MONTH_NAMES_FR
@@ -379,7 +380,16 @@ class ActiviteCog(commands.Cog):
                 break
         if console_channel:
             # On va scroller l'historique en commençant par le plus récent
-            async for msg in console_channel.history(limit=1000, oldest_first=False):
+            limit = max(
+                int(os.getenv("ACTIVITE_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
+                0,
+            )
+            messages = await fetch_channel_history(
+                console_channel,
+                limit=limit,
+                reason="activite.console",
+            )
+            for msg in messages:
                 if msg.author == self.bot.user and MARKER_TEXT in msg.content:
                     # Priorité 1 : s'il y a un attachement .json
                     if msg.attachments:

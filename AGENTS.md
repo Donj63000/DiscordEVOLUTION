@@ -14,7 +14,7 @@
 - Both IA workflows require `OPENAI_API_KEY`. Tests short-circuit gracefully when the key is missing; production deployments must provide it along with any optional `OPENAI_*` overrides.
 
 ## Build, Test, and Development Commands
-Run `pip install -r requirements.txt` in your virtualenv to sync dependencies. Use `python main.py` to launch the bot locally and `python alive.py` for the keep-alive Flask endpoint. Execute `python -m pytest` (optionally `-k <pattern>`) after **every** change; do not merge or hand off work unless the entire suite passes locally.
+Run `pip install -r requirements.txt` in your virtualenv to sync dependencies. Use `python main.py` to launch the bot locally and `gunicorn alive:app --bind 0.0.0.0:$PORT` for the keep-alive endpoint (or `python main.py` with `ALIVE_IN_PROCESS=1`). Execute `python -m pytest` (optionally `-k <pattern>`) after **every** change; do not merge or hand off work unless the entire suite passes locally.
 
 ## Coding Style & Naming Conventions
 Follow PEP 8 defaults: 4-space indents, `snake_case` for functions, `UPPER_CASE` for Discord channel constants, and `PascalCase` for classes. Prefer f-strings and keep line length near 100 characters. Preserve existing type hints and co-locate command text with its handler. Stick to ASCII unless a file already uses Unicode. Ship “clean room” production code: no inline comments or `TODO` notes—use expressive names, docstrings, and tests instead.

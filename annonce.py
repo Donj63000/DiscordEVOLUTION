@@ -189,17 +189,15 @@ def extract_generated_text(resp_obj) -> str:
 # =========================
 
 def split_message_for_discord(text: str, limit: int = 2000) -> list[str]:
-    """Split intelligent sans dépasser 2000 chars."""
+    """Split intelligent sans depasser 2000 chars."""
     if not text:
         return []
-    text = text.strip()
     if len(text) <= limit:
         return [text]
 
     parts: list[str] = []
     remaining = text
 
-    # On privilégie les gros séparateurs
     preferred_breaks = ["\n\n", "\n", " "]
 
     while remaining:
@@ -208,24 +206,23 @@ def split_message_for_discord(text: str, limit: int = 2000) -> list[str]:
             break
 
         cut = -1
-        window = remaining[:limit + 1]
+        cut_len = 0
+        window = remaining[:limit]
         for sep in preferred_breaks:
             idx = window.rfind(sep)
             if idx > cut:
                 cut = idx
+                cut_len = len(sep)
 
         if cut <= 0:
             cut = limit
         else:
-            # inclure le séparateur si \n ou espace
-            cut = cut + (2 if remaining[cut:cut+2] == "\n\n" else 1)
+            cut = cut + cut_len
 
-        chunk = remaining[:cut].rstrip()
-        if chunk:
-            parts.append(chunk)
-        remaining = remaining[cut:].lstrip()
+        parts.append(remaining[:cut])
+        remaining = remaining[cut:]
 
-    return [p for p in parts if p.strip()]
+    return parts
 
 def _neutralize_ai_mentions(text: str) -> str:
     """Empêche l’IA de ping via @everyone/@here et mentions <@...>."""
@@ -628,7 +625,7 @@ class AnnonceCog(commands.Cog):
     async def annonce_model(self, ctx: commands.Context, *, model: str | None = None):
         candidate = (model or "").strip()
         if not candidate:
-            await _safe_reply(ctx, "Précise un modèle, ex: `!annonce-model gpt-5-mini`.")
+            await _safe_reply(ctx, "Précise un identifiant, ex: `!annonce-model gpt-5-mini`.")
             return
         resolved = normalise_staff_model(candidate)
         if not resolved:

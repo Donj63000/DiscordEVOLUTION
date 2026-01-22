@@ -91,7 +91,7 @@ Ajoutez selon vos besoins :
 python main.py
 ```
 
-Pour maintenir le bot éveillé en production (Render), un micro-serveur Flask est exposé dans `alive.py` et peut être pingé par UptimeRobot.
+Pour maintenir le bot éveillé en production (Render), expose un endpoint WSGI et lance un service web avec `gunicorn alive:app --bind 0.0.0.0:$PORT`. Le bot reste lancé via `python main.py` (service worker). Pour un lancement unique en local avec endpoint intégré, garde `ALIVE_IN_PROCESS=1` (par défaut) et lance `python main.py`.
 
 ## Commandes clés
 

@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import asyncio
 import os
 import json
 import re
 import unicodedata
 import tempfile
 import hashlib, io
+import logging
+import time
 import discord
 from discord.ext import commands, tasks
 from collections import defaultdict
+from utils.channel_resolver import resolve_text_channel
+from utils.discord_history import fetch_channel_history, fetch_channel_message
 
-CONSOLE_CHANNEL_NAME = "console"
+CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 DATA_FILE = os.path.join(os.path.dirname(__file__), "jobs_data.json")
 STAFF_ROLE_NAME = "Staff"
 JOB_MIN_LEVEL = 1
 JOB_MAX_LEVEL = 100
 LOGO_FILENAME = "metier.png"
 LOGO_PATH = os.path.join(os.path.dirname(__file__), LOGO_FILENAME)
+log = logging.getLogger(__name__)
 
 
 def _canon_json(d: dict) -> str:
@@ -137,6 +143,14 @@ class JobCog(commands.Cog):
         self.bot = bot
         self.jobs_data = {}
         self.initialized = False
+        self.console_message_id = None
+        self._console_last_sync = 0.0
+        self._console_sync_lock = asyncio.Lock()
+        self._console_sync_ttl = max(float(os.getenv("JOB_CONSOLE_SYNC_TTL", "30")), 0.0)
+        self._console_history_limit = max(
+            int(os.getenv("JOB_CONSOLE_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
+            0,
+        )
 
     async def cog_load(self):
         await self.initialize_data()
@@ -145,16 +159,86 @@ class JobCog(commands.Cog):
         await self.prune_jobs()
 
     async def get_console_channel(self, guild: discord.Guild):
-        return discord.utils.get(guild.text_channels, name=CONSOLE_CHANNEL_NAME)
+        return resolve_text_channel(
+            guild,
+            id_env="CHANNEL_CONSOLE_ID",
+            name_env="CHANNEL_CONSOLE",
+            default_name=CONSOLE_CHANNEL_NAME,
+        )
+
+    async def _ensure_pinned(self, msg: discord.Message) -> None:
+        try:
+            if not msg.pinned:
+                await msg.pin(reason="Jobs data snapshot")
+        except Exception as exc:
+            log.debug("Jobs: unable to pin console snapshot: %s", exc)
+
+    async def _parse_jobs_message(self, msg: discord.Message) -> bool:
+        if msg.author != self.bot.user:
+            return False
+        content = msg.content or ""
+        if "===BOTJOBS===" not in content:
+            return False
+        if "fichier" in content and msg.attachments:
+            att = discord.utils.find(lambda a: a.filename == "jobs_data.json", msg.attachments)
+            if att:
+                try:
+                    data_bytes = await att.read()
+                    self.jobs_data = json.loads(data_bytes.decode("utf-8"))
+                    self.console_message_id = msg.id
+                    self._console_last_sync = time.monotonic()
+                    return True
+                except Exception as exc:
+                    log.debug("Jobs: failed to parse attachment: %s", exc)
+        if "```json" in content:
+            try:
+                start_idx = content.index("```json\n") + len("```json\n")
+                end_idx = content.rindex("\n```")
+                raw_json = content[start_idx:end_idx]
+                self.jobs_data = json.loads(raw_json)
+                self.console_message_id = msg.id
+                self._console_last_sync = time.monotonic()
+                return True
+            except Exception as exc:
+                log.debug("Jobs: failed to parse inline json: %s", exc)
+        return False
 
     async def _find_last_marker(self, ch: discord.TextChannel, marker: str, filename: str | None = None):
-        async for msg in ch.history(limit=300, oldest_first=False):
-            if msg.author == self.bot.user and marker in (msg.content or ""):
+        if self.console_message_id:
+            msg = await fetch_channel_message(ch, self.console_message_id, reason="job.console")
+            if msg and msg.author == self.bot.user and marker in (msg.content or ""):
                 if filename is None:
                     return msg
-                for att in msg.attachments:
-                    if att.filename == filename:
-                        return msg
+                if any(att.filename == filename for att in msg.attachments):
+                    return msg
+                return msg
+        try:
+            pinned = await ch.pins()
+        except Exception:
+            pinned = []
+        for msg in pinned:
+            if msg.author == self.bot.user and marker in (msg.content or ""):
+                if filename is None:
+                    self.console_message_id = msg.id
+                    return msg
+                if any(att.filename == filename for att in msg.attachments):
+                    self.console_message_id = msg.id
+                    return msg
+                self.console_message_id = msg.id
+                return msg
+        limit = self._console_history_limit or 300
+        if limit <= 0:
+            return None
+        messages = await fetch_channel_history(ch, limit=limit, reason="job.console")
+        for msg in messages:
+            if msg.author == self.bot.user and marker in (msg.content or ""):
+                if filename is None:
+                    self.console_message_id = msg.id
+                    return msg
+                if any(att.filename == filename for att in msg.attachments):
+                    self.console_message_id = msg.id
+                    return msg
+                self.console_message_id = msg.id
                 return msg
         return None
 
@@ -170,29 +254,40 @@ class JobCog(commands.Cog):
             await ctx.send(embed=embed)
 
     async def load_from_console(self, guild: discord.Guild):
-        ch = await self.get_console_channel(guild)
-        if not ch:
-            return False
-        async for msg in ch.history(limit=5000, oldest_first=False):
-            if msg.author == self.bot.user and "===BOTJOBS===" in msg.content:
-                if "fichier" in msg.content and msg.attachments:
-                    att = discord.utils.find(lambda a: a.filename == "jobs_data.json", msg.attachments)
-                    if att:
-                        try:
-                            data_bytes = await att.read()
-                            self.jobs_data = json.loads(data_bytes.decode("utf-8"))
-                            return True
-                        except:
-                            continue
-                try:
-                    start_idx = msg.content.index("```json\n") + len("```json\n")
-                    end_idx = msg.content.rindex("\n```")
-                    raw_json = msg.content[start_idx:end_idx]
-                    self.jobs_data = json.loads(raw_json)
+        async with self._console_sync_lock:
+            now = time.monotonic()
+            if (
+                self.jobs_data
+                and self._console_sync_ttl > 0
+                and (now - self._console_last_sync) < self._console_sync_ttl
+            ):
+                log.debug("Jobs: console sync skipped (cooldown %.1fs).", self._console_sync_ttl)
+                return True
+            ch = await self.get_console_channel(guild)
+            if not ch:
+                return False
+            if self.console_message_id:
+                msg = await fetch_channel_message(ch, self.console_message_id, reason="job.console")
+                if msg and await self._parse_jobs_message(msg):
                     return True
-                except:
-                    continue
-        return False
+                self.console_message_id = None
+            try:
+                pinned = await ch.pins()
+            except Exception:
+                pinned = []
+            for msg in pinned:
+                if await self._parse_jobs_message(msg):
+                    await self._ensure_pinned(msg)
+                    return True
+            limit = self._console_history_limit
+            if limit <= 0:
+                return False
+            messages = await fetch_channel_history(ch, limit=limit, reason="job.console")
+            for msg in messages:
+                if await self._parse_jobs_message(msg):
+                    await self._ensure_pinned(msg)
+                    return True
+            return False
 
     async def publish_to_console(self, guild: discord.Guild):
         ch = await self.get_console_channel(guild)
@@ -208,19 +303,27 @@ class JobCog(commands.Cog):
         if len(data_canon) < 1900:
             content = f"{header}\n```json\n{data_canon}\n```"
             if last and ("etag:" in (last.content or "")) and (digest in last.content):
+                self.console_message_id = last.id
+                self._console_last_sync = time.monotonic()
                 return True
+            message = None
             try:
                 if last:
                     await last.edit(content=content, attachments=[])
+                    message = last
                 else:
-                    await ch.send(content)
+                    message = await ch.send(content)
             except Exception:
                 if last:
                     try:
                         await last.delete()
                     except:
                         pass
-                await ch.send(content)
+                message = await ch.send(content)
+            if message:
+                self.console_message_id = message.id
+                self._console_last_sync = time.monotonic()
+                await self._ensure_pinned(message)
             return True
 
         payload = data_canon.encode("utf-8")
@@ -228,8 +331,11 @@ class JobCog(commands.Cog):
         file_obj.seek(0)
 
         if last and ("etag:" in (last.content or "")) and (digest in last.content):
+            self.console_message_id = last.id
+            self._console_last_sync = time.monotonic()
             return True
 
+        message = None
         try:
             if last:
                 try:
@@ -237,20 +343,31 @@ class JobCog(commands.Cog):
                         content=f"{header} (fichier)",
                         attachments=[discord.File(file_obj, filename="jobs_data.json")],
                     )
+                    message = last
                 except Exception:
                     try:
                         await last.delete()
                     except:
                         pass
                     file_obj.seek(0)
-                    await ch.send(f"{header} (fichier)", file=discord.File(file_obj, filename="jobs_data.json"))
+                    message = await ch.send(
+                        f"{header} (fichier)",
+                        file=discord.File(file_obj, filename="jobs_data.json"),
+                    )
             else:
-                await ch.send(f"{header} (fichier)", file=discord.File(file_obj, filename="jobs_data.json"))
+                message = await ch.send(
+                    f"{header} (fichier)",
+                    file=discord.File(file_obj, filename="jobs_data.json"),
+                )
         finally:
             try:
                 file_obj.close()
             except:
                 pass
+        if message:
+            self.console_message_id = message.id
+            self._console_last_sync = time.monotonic()
+            await self._ensure_pinned(message)
         return True
 
     async def initialize_data(self):
@@ -275,8 +392,7 @@ class JobCog(commands.Cog):
             pass
 
     async def dump_data_to_console(self, guild: discord.Guild):
-        await self.publish_to_console(guild)
-        await self.load_from_console(guild)
+        return await self.publish_to_console(guild)
 
     def _as_temp_file(self, data_str: str) -> str:
         tmp = tempfile.NamedTemporaryFile(delete=False, mode="w", encoding="utf-8", suffix=".json")
