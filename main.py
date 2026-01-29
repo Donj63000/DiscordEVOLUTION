@@ -138,7 +138,7 @@ class EvoBot(commands.Bot):
         if not loaded_org:
             logging.error("Extension 'organisation' introuvable ou invalide.")
 
-        await self.load_extension("cogs.profil")
+        await self._safe_load("cogs.profil")
         await self._safe_load("cogs.annonce_ai")
 
         await self._load_iastaff_anywhere()

@@ -19,10 +19,38 @@ import discord
 
 
 def _ensure_utils() -> None:
-    if not hasattr(discord.utils, "evaluate_annotation"):
-        discord.utils.evaluate_annotation = lambda *a, **k: None
-    if not hasattr(discord.utils, "is_inside_class"):
-        discord.utils.is_inside_class = lambda obj: False
+    utils = getattr(discord, "utils", None)
+    if utils is None:
+        return
+    if not hasattr(utils, "is_inside_class"):
+
+        def _is_inside_class(obj: Any) -> bool:
+            qualname = getattr(obj, "__qualname__", "")
+            return "." in qualname and "<locals>" not in qualname
+
+        try:
+            setattr(utils, "is_inside_class", _is_inside_class)
+        except Exception:
+            return
+    if not hasattr(utils, "evaluate_annotation"):
+
+        def _evaluate_annotation(
+            annotation: Any,
+            globalns: Optional[Dict[str, Any]] = None,
+            localns: Optional[Dict[str, Any]] = None,
+            cache: Optional[Dict[str, Any]] = None,
+        ):
+            if isinstance(annotation, str):
+                try:
+                    return eval(annotation, globalns or {}, localns or {})
+                except Exception:
+                    return annotation
+            return annotation
+
+        try:
+            setattr(utils, "evaluate_annotation", _evaluate_annotation)
+        except Exception:
+            return
 
 
 _ensure_utils()
