@@ -397,26 +397,42 @@ class OrganisationCog(commands.Cog):
                 return True
             except discord.NotFound:
                 event.console_message_id = None
-            except Exception:
+            except Exception as exc:
+                log.warning(
+                    "Organisation: console edit failed event_id=%s msg_id=%s err=%s",
+                    event.id,
+                    event.console_message_id,
+                    exc,
+                )
                 return False
         try:
             msg = await chan.send(content)
             event.console_message_id = msg.id
             return True
-        except Exception:
+        except Exception as exc:
+            log.warning(
+                "Organisation: console send failed event_id=%s channel_id=%s err=%s",
+                event.id,
+                chan.id,
+                exc,
+            )
             return False
 
     async def _load_events_from_console(self, guild: discord.Guild) -> int:
         chan = await self._console_channel(guild)
         if not chan:
             return 0
-        pattern = re.compile(f'^```{re.escape(ORGANISATION_DB_BLOCK)}\\n(?P<body>.+?)\\n```$', re.S)
+        pattern = re.compile(
+            rf"^```{re.escape(ORGANISATION_DB_BLOCK)}\s*\r?\n(?P<body>.+?)\r?\n```$",
+            re.S,
+        )
         messages = await self._fetch_history(chan, limit=300)
         loaded = 0
         for msg in messages:
             if msg.author != self.bot.user:
                 continue
-            m = pattern.match(msg.content or '')
+            content = (msg.content or '').strip()
+            m = pattern.match(content)
             if not m:
                 continue
             try:
@@ -1038,8 +1054,13 @@ class OrganisationCog(commands.Cog):
         await self._update_event_message(event)
         try:
             await self._save_event_to_console(event)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning(
+                "Organisation: console persist failed event_id=%s msg_id=%s err=%s",
+                event.id,
+                event.message_id,
+                exc,
+            )
 
     async def _update_event_message(self, event: OrganisationEvent) -> None:
         guild = self.bot.get_guild(event.guild_id)

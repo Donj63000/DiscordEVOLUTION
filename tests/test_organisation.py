@@ -137,3 +137,52 @@ async def test_turn_limit_preserves_valid_response(monkeypatch):
 
     assert payload["status"] == "ready"
     assert session.collected["event_type"] == "Donjon"
+
+
+@pytest.mark.asyncio
+async def test_load_events_from_console_tolerates_whitespace(monkeypatch):
+    monkeypatch.setattr(organisation, "AsyncOpenAI", None)
+    bot = MagicMock()
+    bot.user = object()
+    cog = organisation.OrganisationCog(bot=bot)
+
+    event = organisation.OrganisationEvent(
+        id="evt-1",
+        guild_id=1,
+        channel_id=2,
+        message_id=3,
+        author_id=4,
+        created_at_iso="2024-01-01T00:00:00+00:00",
+        activity="Donjon",
+        date_time="Samedi 20h",
+        date_ts=None,
+        location="Astrub",
+        seats=0,
+        details="Bring items",
+        title="Sortie Donjon",
+        body="Details",
+    )
+    payload = json.dumps(event.to_json(), ensure_ascii=False, indent=2)
+    content = f"\n```{organisation.ORGANISATION_DB_BLOCK}\n{payload}\n```\n"
+
+    message = MagicMock()
+    message.author = bot.user
+    message.content = content
+    message.id = 99
+
+    channel = MagicMock()
+    channel.id = 123
+
+    async def fake_console_channel(_guild):
+        return channel
+
+    async def fake_fetch_history(_channel, limit=300):
+        return [message]
+
+    monkeypatch.setattr(cog, "_console_channel", fake_console_channel)
+    monkeypatch.setattr(cog, "_fetch_history", fake_fetch_history)
+
+    loaded = await cog._load_events_from_console(MagicMock())
+
+    assert loaded == 1
+    assert event.message_id in cog._events
