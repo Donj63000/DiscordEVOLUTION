@@ -266,14 +266,20 @@ class PlayersCog(commands.Cog):
             return None
         try:
             start = content.index("```json") + len("```json")
+            if start >= len(content):
+                return None
             if content[start] == "\n":
                 start += 1
-            end = content.rindex("```")
+            if start >= len(content):
+                return None
+            end = content.find("```", start)
+            if end == -1:
+                return None
             raw_json = content[start:end].strip()
             if not raw_json:
                 return None
             return json.loads(raw_json)
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (ValueError, IndexError, json.JSONDecodeError) as exc:
             print(f"[DEBUG] Erreur lors du parsing JSON depuis {CONSOLE_CHANNEL_NAME}: {exc}")
             return None
 
