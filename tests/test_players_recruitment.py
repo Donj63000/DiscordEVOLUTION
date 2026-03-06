@@ -73,3 +73,28 @@ async def test_auto_register_member_merges_placeholder(monkeypatch):
     assert record["mules"] == ["CraMule"]
     cog.dump_data_to_console.assert_awaited_once()
 
+
+def test_extract_json_from_message_handles_empty_json_block():
+    cog = players.PlayersCog(MagicMock())
+
+    result = cog._extract_json_from_message("===PLAYERSDATA===\n```json\n\n```")
+
+    assert result is None
+
+
+def test_extract_json_from_message_handles_incomplete_json_block():
+    cog = players.PlayersCog(MagicMock())
+
+    result = cog._extract_json_from_message("===PLAYERSDATA===\n```json\n{\"a\": 1")
+
+    assert result is None
+
+
+def test_extract_json_from_message_parses_valid_json_block():
+    cog = players.PlayersCog(MagicMock())
+
+    result = cog._extract_json_from_message(
+        "===PLAYERSDATA===\n```json\n{\"123\": {\"discord_name\": \"Alice\", \"main\": \"Iop\", \"mules\": []}}\n```"
+    )
+
+    assert result == {"123": {"discord_name": "Alice", "main": "Iop", "mules": []}}
