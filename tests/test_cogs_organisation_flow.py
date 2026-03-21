@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -9,6 +9,7 @@ import discord
 organisation_cog = pytest.importorskip(
     "cogs.organisation",
     reason="Legacy organisation flow removed; tests retained for historical reference.",
+    exc_type=ImportError,
 )
 
 
