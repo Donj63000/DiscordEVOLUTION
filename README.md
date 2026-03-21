@@ -1,131 +1,274 @@
+<div align="center">
+
 # DiscordEVOLUTION
 
-Bot Discord complet utilisé sur le serveur **EVOLUTION** (guilde Dofus Retro). Il automatise l'accueil, les annonces, les tickets, la planification d'événements, la gestion des métiers et propose des assistants IA (Gemini, OpenAI). Le projet a été développé par **Coca**, membre de la guilde Evolution sur Boune.
+<p>
+  <strong>Le bot Discord tout-en-un de la guilde EVOLUTION sur Dofus Retro.</strong><br>
+  Accueil, modération, tickets, activités, métiers, profils, statistiques et assistants IA dans une seule base de code.
+</p>
 
-## Sommaire
+<p>
+  <a href="#installation-rapide">Installation rapide</a> •
+  <a href="#fonctionnalités">Fonctionnalités</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#tests">Tests</a>
+</p>
 
-- [Fonctionnalités principales](#fonctionnalités-principales)
-- [Architecture des modules](#architecture-des-modules)
-- [Préparation du serveur Discord](#préparation-du-serveur-discord)
-- [Installation](#installation)
-- [Configuration (.env)](#configuration-env)
-- [Démarrage](#démarrage)
-- [Commandes clés](#commandes-clés)
-- [Persistance et sauvegardes](#persistance-et-sauvegardes)
-- [Tests](#tests)
-- [Licence](#licence)
+<p>
+  <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/discord-bot-5865F2" alt="Discord bot">
+  <img src="https://img.shields.io/badge/tests-pytest-0A9EDC" alt="Pytest">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
+</p>
 
-## Fonctionnalités principales
+</div>
 
-- **Accueil et modération** : salutations automatiques, départs, filtrage des insultes, avertissements et timeouts.
-- **Tickets et annonces** : création de tickets privés, annonces publiques ou staff, sondages.
-- **Gestion des métiers et profils** : enregistrement des métiers (`!job`), profils joueurs (`!profil`), ladder et score de puissance.
-- **Activités et événements** : planification via `!activite`, `!organisation` (assistant IA) ou `!event` (DM guidés), avec publication dans `#organisation`.
-- **Assistants IA** : Gemini (Google) et OpenAI alimentent `!organisation`, `!iastaff` et certaines synthèses d'événements.
-- **Statistiques et promotions** : modules `stats.py` et `up.py` pour suivre l'activité et gérer les montées en grade.
+---
 
-## Architecture des modules
+## Vue d'ensemble
 
-- `main.py` : point d'entrée, configure le bot et charge les cogs.
-- `cogs/` : commandes métiers et interactions Discord (profils, annonces, tickets, musique, etc.).
-- `utils/` : stockage, sérialisation vers `#console`, helpers OpenAI/Gemini, dates, logs.
-- `models/` : schémas de données (par exemple `event_data.py`).
-- `examples/` : exemples anonymisés de JSON persistant.
-- `tests/` : couverture Pytest (notamment `tests/test_main_evo_bot.py`, `tests/test_iastaff_*`, `tests/test_event_data.py`).
+**DiscordEVOLUTION** est un bot Discord complet utilise sur le serveur **EVOLUTION**, une guilde **Dofus Retro**. Il centralise les workflows essentiels du serveur : accueil des membres, moderation, tickets, annonces, gestion des metiers, profils joueurs, organisation d'evenements et assistance IA pour le staff.
 
-## Préparation du serveur Discord
+Le projet a ete developpe par **Coca**, membre de la guilde Evolution sur Boune, avec une architecture modulaire orientee production et une persistance des donnees pensee pour survivre aux redemarrages de Render.
 
-### Rôles requis
-- **Staff** : commandes d'administration, tickets et événements.
-- **Membre validé d'Evolution** : rôle appliqué aux membres officiels (utilisé par `!activite`, `!ladder`, etc.).
-- **Invités/Invité** : rôle optionnel pour les visiteurs.
-- **Vétéran** : utilisé par le module de promotion `up.py`.
+## Pourquoi ce projet se demarque
 
-### Salons textuels attendus
-- `console` : sauvegarde/chargement des fichiers JSON du bot.
-- `ticket` : réception des tickets (`!ticket`).
-- `annonces` : annonces publiques et sondages (`!annonce`, `!annoncestaff`).
-- `organisation` : briefs d'activités (`!activite`, `!organisation`, `!event`).
-- `𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥` : messages publics si les DM sont bloqués.
-- `𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭` : entrées et départs de la guilde.
-- `𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞` : messages d'accueil et d'au revoir.
-- `𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥-staff` : votes de promotion.
-- `xplock-rondesasa-ronde` : annonces de PL.
+- **Experience serveur complete** : un seul bot couvre l'accueil, la moderation, les tickets, l'organisation, les metiers et les statistiques.
+- **IA integree au quotidien** : `!organisation` et `!iastaff` exploitent OpenAI pour accelerer les taches staff.
+- **Persistance resiliente** : les donnees critiques sont republiees dans `#console` pour resister aux redemarrages de l'hebergement.
+- **Base de code testee** : la logique metier est couverte par une suite `pytest` et de nombreux tests cibles.
+- **Exploitation flexible** : execution locale simple, hebergement Render et endpoint keep-alive via Gunicorn.
 
-Adaptez les constantes dans les fichiers Python si vous renommez ces salons ou rôles. Le module d'accueil conserve la liste des membres déjà salués dans `welcome_data.json` pour éviter les doublons après un redémarrage.
+## Fonctionnalites
 
-### Permissions du bot
+### Gestion communautaire
 
-- **Gérer les événements** pour créer ou modifier les événements planifiés.
-- **Gérer les rôles** pour attribuer le rôle temporaire *Participants événement*.
-- **Envoyer** et **gérer les messages** dans les salons listés ci-dessus.
-- Accès aux messages privés et position hiérarchique suffisante pour créer des rôles.
+| Domaine | Description |
+| --- | --- |
+| Accueil | Messages de bienvenue et de depart, suivi des membres deja salues, repli en salon public si les DM ne passent pas. |
+| Moderation | Detection d'insultes, avertissements, timeouts, reset des sanctions et outils de controle staff. |
+| Tickets | Creation de tickets prives pour les membres avec suivi cote staff. |
+| Annonces | Publications publiques, staff et sondages avec formats adaptes au serveur. |
 
-## Installation
+### Outils de guilde
 
-Clonez le dépôt puis installez les dépendances :
+| Domaine | Description |
+| --- | --- |
+| Activites | Organisation d'activites via `!activite` et publication dans les salons dedies. |
+| Evenements | Workflow guide en DM avec `!event`, publication dans `#organisation` et persistance associee. |
+| Metiers | Enregistrement des metiers et niveaux avec `!job`, consultation par joueur ou par metier. |
+| Profils | Fiches joueurs, statistiques, ladder global et filtres par classe. |
+| Promotions | Gestion des promotions et de la progression des membres. |
+| Statistiques | Suivi d'activite, stockage persistant et commandes de pilotage pour le staff. |
+
+### Assistants IA
+
+| Commande | Role |
+| --- | --- |
+| `!organisation` | Guide le staff dans la preparation d'un brief d'evenement avec OpenAI. |
+| `!iastaff` | Assistant staff capable de raisonner, repondre et, si active, d'utiliser des outils pour agir sur le bot. |
+| Syntheses IA | Certaines etapes de resume et de preparation d'evenements utilisent Gemini ou OpenAI selon la configuration. |
+
+## Apercu du projet
+
+### Parcours principaux
+
+1. **Un membre ouvre un ticket** via `!ticket` et le staff le traite dans le salon dedie.
+2. **Un organisateur prepare une activite** via `!activite`, `!organisation` ou `!event`.
+3. **Le staff consulte ou met a jour les metiers** avec `!job` et les profils avec `!profil`.
+4. **Les donnees sont dupliquees dans `#console`** pour garantir la reprise apres redemarrage.
+5. **Les assistants IA** accelerent la preparation, l'edition et certaines actions staff.
+
+### Captures du projet
+
+<p align="center">
+  <img src="iastaff.png" alt="Capture du module IA Staff" width="31%">
+  <img src="metier.png" alt="Capture de la gestion des metiers" width="31%">
+  <img src="entree.png" alt="Capture des messages d'accueil" width="31%">
+</p>
+
+## Architecture
+
+### Structure du depot
+
+```text
+DiscordEVOLUTION/
+├── main.py                 # point d'entree et chargement du bot
+├── activite.py             # workflow d'activites
+├── organisation.py         # assistant IA d'organisation
+├── iastaff.py              # assistant IA staff et outils
+├── event_conversation.py   # workflow DM pour !event
+├── job.py                  # gestion des metiers
+├── players.py              # donnees joueurs et recrutement
+├── stats.py                # statistiques et persistance associee
+├── cogs/                   # commandes Discord et interfaces metier
+├── models/                 # schemas et modeles de donnees
+├── utils/                  # persistance, helpers IA, dates, stockage
+├── tests/                  # suite de tests pytest
+└── examples/               # echantillons JSON anonymises
+```
+
+### Modules cles
+
+| Module | Responsabilite |
+| --- | --- |
+| `main.py` | Initialise le client Discord, charge les modules et relie les services partages. |
+| `organisation.py` | Gere le parcours IA de `!organisation` avec OpenAI et les variables `ORGANISATION_*`. |
+| `iastaff.py` | Expose l'assistant staff `!iastaff`, les outils IA et le pilotage du modele. |
+| `event_conversation.py` | Reste l'autorite pour `!event`, ses DM guides et sa persistance. |
+| `utils/console_store.py` | Centralise la sauvegarde distante vers le salon `#console`. |
+| `tests/` | Verifie les comportements critiques, notamment les modules IA, les cogs et la persistance. |
+
+## Preparation du serveur Discord
+
+### Roles attendus
+
+- **Staff** pour les commandes d'administration, les tickets et l'orchestration des evenements.
+- **Membre valide d'Evolution** pour les commandes reservees a la guilde.
+- **Invites / Invite** pour les visiteurs si vous utilisez ce flux.
+- **Veteran** pour le module de promotion `up.py`.
+
+### Salons recommandes
+
+- `console` pour la persistance distante.
+- `ticket` pour la reception et le traitement des tickets.
+- `annonces` pour les annonces et sondages.
+- `organisation` pour les activites et evenements.
+- `𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥` comme fallback si les DM echouent.
+- `𝐑𝐞𝐜𝐫𝐮𝐭𝐞𝐦𝐞𝐧𝐭` pour les entrees et sorties.
+- `𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞` pour l'accueil.
+- `𝐆𝐞́𝐧𝐞́𝐫𝐚𝐥-staff` pour certains votes staff.
+- `xplock-rondesasa-ronde` pour les annonces de PL.
+
+### Permissions conseillees
+
+- **Gerer les evenements**.
+- **Gerer les roles**.
+- **Envoyer** et **gerer les messages**.
+- Acces aux **messages prives**.
+- Une position suffisante dans la hierarchie des roles.
+
+## Installation rapide
+
+### 1. Cloner le depot
+
+```bash
+git clone <votre-url-du-repo>
+cd DiscordEVOLUTION
+```
+
+### 2. Installer les dependances
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Configuration (.env)
+### 3. Configurer l'environnement
 
-Créez un fichier `.env` avec au minimum :
+Creez un fichier `.env` avec les secrets adaptes a votre serveur.
 
-- `DISCORD_TOKEN` (obligatoire)
-- `GOOGLE_API_KEY` pour les appels Gemini
-- `FERNET_KEY` pour le chiffrement des URL (générer via `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`)
-
-Ajoutez selon vos besoins :
-
-- `OPENAI_API_KEY` (+ `OPENAI_STAFF_MODEL`, `OPENAI_FORCE_ORG`, `OPENAI_ORG_ID`) pour les assistants IA.
-- `IASTAFF_*` pour configurer les outils et le contexte du module `iastaff.py`.
-- `ORGANISATION_*` pour la planification IA (`!organisation`).
-- `DATABASE_URL` si vous stockez les événements dans PostgreSQL (sinon persistance dans `#console`).
-- `PROFILE_*`, `SCORE_*`, `PROFILE_SCORE_WEIGHTS` pour ajuster le ladder.
-
-## Démarrage
+### 4. Lancer le bot
 
 ```bash
 python main.py
 ```
 
-Pour maintenir le bot éveillé en production (Render), expose un endpoint WSGI et lance un service web avec `gunicorn alive:app --bind 0.0.0.0:$PORT`. Le bot reste lancé via `python main.py` (service worker). Pour un lancement unique en local avec endpoint intégré, garde `ALIVE_IN_PROCESS=1` (par défaut) et lance `python main.py`.
+## Configuration
 
-## Commandes clés
+### Variables minimales
 
-- `!welcome` / automatisme d'accueil (messages dans `#𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞`).
-- `!ticket <objet>` : ouvre un ticket privé dans `#ticket`.
-- `!annonce`, `!annoncestaff`, `!sondage` : annonces et sondages dans `#annonces`.
-- `!activite` : planification d'activités avec formulaire Discord.
-- `!organisation` : assistant IA en salon pour rédiger un brief d'événement (OpenAI).
-- `!event` : planification complète en DM avec résumé Gemini puis publication dans `#organisation`.
-- `!job <métier> <niveau>` / `!job del <nom>` : gestion des métiers (persistés dans `jobs_data.json`).
-- `!profil set`, `!profil stats`, `!ladder`, `!ladder class <classe>`, `!ladder all` : profils et score de puissance.
-- `!iastaff <message>` : assistant Staff IA (outils Discord si `IASTAFF_ENABLE_TOOLS=1`).
-- `!warnings`, `!resetwarnings` : modération et sanctions automatiques.
-- `!up` : gestion des promotions (rôle **Vétéran**).
+| Variable | Description |
+| --- | --- |
+| `DISCORD_TOKEN` | Token du bot Discord. |
+| `FERNET_KEY` | Cle de chiffrement pour certaines donnees et URL. |
+| `GOOGLE_API_KEY` | Requise pour les flux Gemini utilises par certaines fonctionnalites. |
 
-Chaque cog applique ses propres contrôles de rôles/permissions ; en cas d'échec, le bot répond avec une erreur explicite.
+Generation rapide de `FERNET_KEY` :
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+### Variables IA et options avancees
+
+| Groupe | Variables |
+| --- | --- |
+| OpenAI | `OPENAI_API_KEY`, `OPENAI_STAFF_MODEL`, `OPENAI_ORG_ID`, `OPENAI_FORCE_ORG` |
+| IA Staff | `IASTAFF_ENABLE_TOOLS` et les variables `IASTAFF_*` |
+| Organisation | variables `ORGANISATION_*` |
+| Stockage | `DATABASE_URL` si PostgreSQL est utilise |
+| Profil / Score | `PROFILE_*`, `SCORE_*`, `PROFILE_SCORE_WEIGHTS` |
 
 ## Persistance et sauvegardes
 
-- Fichiers créés automatiquement : `activities_data.json`, `jobs_data.json`, `players_data.json`, `promotions_data.json`, `stats_data.json`, `warnings_data.json`, `welcome_data.json`.
-- Les fichiers résident à côté des modules Python et ne sont pas suivis par Git. À chaque sauvegarde, leur contenu est aussi publié dans le salon `#console` (sauvegarde distante).
-- Le module de statistiques maintient un message épinglé dans `#console` ; `stats_data.json` sert de cache local.
-- Des exemples anonymisés se trouvent dans [`examples`](examples/).
+La persistance locale repose sur plusieurs fichiers JSON generes a l'execution, puis synchronises vers **`#console`**, qui fait foi en production.
+
+### Fichiers de donnees courants
+
+- `activities_data.json`
+- `jobs_data.json`
+- `players_data.json`
+- `promotions_data.json`
+- `stats_data.json`
+- `warnings_data.json`
+- `welcome_data.json`
+
+### Principe de sauvegarde
+
+- Le bot maintient des caches locaux pour fonctionner rapidement.
+- Les etats critiques sont republies dans `#console` afin de survivre aux redemarrages Render.
+- Des exemples anonymises sont fournis dans le dossier [`examples/`](examples/).
+- Les donnees runtime ne doivent pas etre committees dans Git.
+
+## Commandes cles
+
+| Commande | Usage |
+| --- | --- |
+| `!ticket <objet>` | Ouvre un ticket prive. |
+| `!annonce` / `!annoncestaff` / `!sondage` | Diffuse des annonces et des sondages. |
+| `!activite` | Lance un formulaire de planification d'activite. |
+| `!organisation` | Demarre l'assistant IA de preparation d'evenement. |
+| `!event` | Conduit une creation d'evenement guidee en DM. |
+| `!job <metier> <niveau>` | Ajoute ou met a jour un metier joueur. |
+| `!job del <nom>` | Supprime un metier enregistre. |
+| `!profil set` / `!profil stats` | Met a jour ou consulte les profils joueurs. |
+| `!ladder` | Consulte le classement du serveur. |
+| `!iastaff <message>` | Interagit avec l'assistant IA staff. |
+| `!warnings` / `!resetwarnings` | Gere la moderation et les sanctions. |
+| `!up` | Pilote la progression et les promotions. |
 
 ## Tests
 
-Lancez l'ensemble de la suite :
+La suite de tests est basee sur **Pytest** et couvre les workflows critiques : commandes IA, cogs, validation des evenements, persistance et orchestration du bot principal.
 
 ```bash
 python -m pytest
 ```
 
-Les tests couvrent notamment les commandes IA, la validation des événements (`tests/test_event_data.py`) et le comportement du bot principal.
+## Deploiement
+
+### Execution locale
+
+```bash
+python main.py
+```
+
+### Endpoint keep-alive / Render
+
+```bash
+gunicorn alive:app --bind 0.0.0.0:$PORT
+```
+
+Le mode `ALIVE_IN_PROCESS=1` permet de demarrer le bot et l'endpoint keep-alive dans un meme processus local si besoin.
+
+## Bonnes pratiques pour contribuer
+
+- Conserver une logique metier testee avec `python -m pytest`.
+- Ne jamais versionner de tokens, caches runtime ou exports sensibles.
+- Utiliser `#console` comme source de verite pour les donnees persistantes.
+- Ajouter des tests cibles lors de toute evolution comportementale.
 
 ## Licence
 
-Projet distribué sous licence MIT. Voir [LICENSE](LICENSE) pour plus de détails.
+Projet distribue sous licence **MIT**. Consultez le fichier [LICENSE](LICENSE).
