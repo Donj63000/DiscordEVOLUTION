@@ -26,6 +26,10 @@ try:
     from openai import AsyncOpenAI
 except Exception:
     AsyncOpenAI = None
+try:
+    from google import genai
+except Exception:
+    genai = None
 
 log = logging.getLogger("iastaff")
 
@@ -42,6 +46,7 @@ EMBED_SAFE_CHUNK = 3800
 OPENAI_TIMEOUT = float(os.getenv("IASTAFF_TIMEOUT", "120"))
 MAX_OUTPUT_TOKENS = int(os.getenv("IASTAFF_MAX_OUTPUT_TOKENS", "1800"))
 INPUT_MAX_CHARS = int(os.getenv("IASTAFF_INPUT_MAX_CHARS", "12000"))
+IASTAFF_BACKEND = (os.getenv("IASTAFF_BACKEND") or "gemini").strip().lower()
 
 
 def _parse_float_env(var_name: str, default: float) -> float:
@@ -384,11 +389,16 @@ def _content_to_string(content_parts: list[dict]) -> str:
 class IAStaff(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.backend = IASTAFF_BACKEND if IASTAFF_BACKEND in {"openai", "gemini"} else "gemini"
         self.client: AsyncOpenAI | None = None
+        self.gemini_client = None
         self._load_error: str | None = None
         self._ensure_client()
         # Normalisé via utils.openai_config (ENV > défaut "gpt-5-mini" spécifique IA Staff)
-        self.model = resolve_staff_model(default=DEFAULT_MODEL)
+        if self.backend == "gemini":
+            self.model = (os.getenv("IASTAFF_MODEL") or "gemini-2.5-flash").strip()
+        else:
+            self.model = resolve_staff_model(default=DEFAULT_MODEL)
         self.system_prompt = os.getenv("IASTAFF_SYSTEM_PROMPT", SYSTEM_PROMPT_DEFAULT)
         self.history: dict[int, list[dict[str, str]]] = {}
         self.locks: dict[int, asyncio.Lock] = {}
@@ -414,7 +424,9 @@ class IAStaff(commands.Cog):
         ).strip()
         if not self.morning_message:
             self.morning_message = "Bonjour à tous les membres de la guilde Evolution ! Passez une excellente journée ☀️"
-        self.morning_model = resolve_openai_model("IASTAFF_MORNING_MODEL", "gpt-5-mini")
+        self.morning_model = resolve_openai_model(
+            "IASTAFF_MORNING_MODEL", "gemini-1.5-flash" if self.backend == "gemini" else "gpt-5-mini"
+        )
         self.morning_temperature = float(os.getenv("IASTAFF_MORNING_TEMPERATURE", "0.75"))
         self.morning_max_tokens = int(os.getenv("IASTAFF_MORNING_MAX_TOKENS", "450"))
         self.morning_system_prompt = os.getenv(
@@ -430,7 +442,28 @@ class IAStaff(commands.Cog):
         self.pending_confirmations: dict[str, dict] = {}
 
     def _ensure_client(self) -> bool:
-        if self.client is not None:
+        if self.backend == "gemini" and self.gemini_client is not None:
+            return True
+        if self.backend == "openai" and self.client is not None:
+            return True
+        if self.backend == "gemini":
+            if genai is None:
+                self._load_error = "Librairie google-genai manquante. Installe google-genai."
+                log.warning("IAStaff indisponible: %s", self._load_error)
+                return False
+            gemini_key = (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+            if not gemini_key:
+                self._load_error = "GOOGLE_API_KEY/GEMINI_API_KEY manquante. Configure la clé Gemini."
+                log.warning("IAStaff indisponible: %s", self._load_error)
+                return False
+            try:
+                self.gemini_client = genai.Client(api_key=gemini_key)
+            except Exception as exc:
+                self._load_error = f"Impossible d'initialiser google.genai.Client: {exc}"
+                log.error("IAStaff: initialisation du client Gemini impossible: %s", exc, exc_info=True)
+                self.gemini_client = None
+                return False
+            self._load_error = None
             return True
         if AsyncOpenAI is None:
             self._load_error = "Librairie openai manquante. Installe openai>=1.58.0."
@@ -460,9 +493,16 @@ class IAStaff(commands.Cog):
             if self._load_error:
                 log.warning("IAStaff charge mais desactive: %s", self._load_error)
             else:
-                log.warning("IAStaff charge mais le client OpenAI est indisponible.")
+                log.warning("IAStaff charge mais le client IA est indisponible.")
             return
-        log.info("IAStaff prêt (model=%s | history=%d tours | web=%s | files=%s)", self.model, HISTORY_TURNS, "on" if ENABLE_WEB_SEARCH else "off", "on" if VECTOR_STORE_ID else "off")
+        log.info(
+            "IAStaff prêt (backend=%s | model=%s | history=%d tours | web=%s | files=%s)",
+            self.backend,
+            self.model,
+            HISTORY_TURNS,
+            "on" if ENABLE_WEB_SEARCH else "off",
+            "on" if VECTOR_STORE_ID else "off",
+        )
         if not self.morning_greeting.is_running():
             self.morning_greeting.start()
 
@@ -511,6 +551,49 @@ class IAStaff(commands.Cog):
             channel_name=self.primary_morning_channel_name,
         )
 
+    def _messages_to_plaintext(self, messages: list[dict]) -> str:
+        lines: list[str] = []
+        for message in messages:
+            role = str(message.get("role") or "user").upper()
+            content = _content_to_string(message.get("content") or [])
+            if not content:
+                continue
+            lines.append(f"{role}:\n{content}")
+        return "\n\n".join(lines).strip()
+
+    async def _ask_gemini_prompt(
+        self,
+        prompt: str,
+        *,
+        model: str,
+        temperature: float,
+        max_output_tokens: int,
+    ) -> str:
+        if not self._ensure_client():
+            raise RuntimeError(self._load_error or "Client Gemini indisponible.")
+        if not self.gemini_client:
+            raise RuntimeError("Client Gemini indisponible.")
+        loop = asyncio.get_running_loop()
+
+        def _call():
+            return self.gemini_client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config={
+                    "temperature": temperature,
+                    "max_output_tokens": max_output_tokens,
+                },
+            )
+
+        response = await loop.run_in_executor(None, _call)
+        text = getattr(response, "text", None)
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        payload = _to_dict(response)
+        gathered = _gather_text_nodes(payload)
+        joined = "\n".join(item for item in gathered if isinstance(item, str) and item.strip()).strip()
+        return joined
+
     async def _generate_morning_message(self) -> str:
         if not self._ensure_client():
             return ""
@@ -519,30 +602,41 @@ class IAStaff(commands.Cog):
         prompt = self._render_morning_prompt(now).strip()
         if not prompt:
             return ""
-        messages = [
-            {"role": "system", "content": [{"type": "input_text", "text": self.morning_system_prompt}]},
-            {"role": "user", "content": [{"type": "input_text", "text": prompt}]},
-        ]
-        req = {
-            "model": self.morning_model,
-            "input": messages,
-            "max_output_tokens": self.morning_max_tokens,
-            "store": False,
-            "temperature": self.morning_temperature,
-        }
-        self._maybe_attach_reasoning(req, model=self.morning_model)
         for attempt in range(3):
             try:
-                resp = await self.client.responses.create(**req)
+                if self.backend == "gemini":
+                    combined_prompt = (
+                        f"SYSTEM:\n{self.morning_system_prompt.strip()}\n\n"
+                        f"USER:\n{prompt}"
+                    )
+                    text = await self._ask_gemini_prompt(
+                        combined_prompt,
+                        model=self.morning_model,
+                        temperature=min(1.2, self.morning_temperature + (attempt * 0.1)),
+                        max_output_tokens=self.morning_max_tokens,
+                    )
+                else:
+                    messages = [
+                        {"role": "system", "content": [{"type": "input_text", "text": self.morning_system_prompt}]},
+                        {"role": "user", "content": [{"type": "input_text", "text": prompt}]},
+                    ]
+                    req = {
+                        "model": self.morning_model,
+                        "input": messages,
+                        "max_output_tokens": self.morning_max_tokens,
+                        "store": False,
+                        "temperature": min(1.2, self.morning_temperature + (attempt * 0.1)),
+                    }
+                    self._maybe_attach_reasoning(req, model=self.morning_model)
+                    resp = await self.client.responses.create(**req)
+                    text = extract_generated_text(resp).strip()
             except Exception as exc:
                 log.warning("IAStaff: génération du message du matin échouée (tentative %d): %s", attempt + 1, exc)
                 await asyncio.sleep(2)
                 continue
-            text = extract_generated_text(resp).strip()
             if not text:
                 continue
             if self._last_morning_content and text == self._last_morning_content and attempt < 2:
-                req["temperature"] = min(1.2, req.get("temperature", self.morning_temperature) + 0.1)
                 continue
             self._last_morning_content = text
             self._last_morning_date = today_key
@@ -1838,6 +1932,8 @@ class IAStaff(commands.Cog):
 
     async def _try_chat_with_tools(self, ctx: commands.Context, messages: list[dict]) -> str | None:
         """Ask Chat Completions for a tool call and execute it if present."""
+        if self.backend != "openai":
+            return None
         if not self.enable_tools or not self.client:
             return None
         tool_specs = self._command_tools()
@@ -1926,7 +2022,19 @@ class IAStaff(commands.Cog):
             out.append({"role": role, "content": text})
         return out
 
-    async def _ask_openai(self, messages: list[dict]) -> str:
+    async def _ask_model(self, messages: list[dict]) -> str:
+        if self.backend == "gemini":
+            prompt = self._messages_to_plaintext(messages)
+            log.debug("IAStaff Gemini request: model=%s prompt_chars=%d", self.model, len(prompt))
+            try:
+                return await self._ask_gemini_prompt(
+                    prompt,
+                    model=self.model,
+                    temperature=IASTAFF_TEMPERATURE,
+                    max_output_tokens=MAX_OUTPUT_TOKENS,
+                )
+            except Exception as exc:
+                raise RuntimeError(f"Erreur API Gemini: {exc}") from exc
         if not self._ensure_client():
             raise RuntimeError(self._load_error or "Client OpenAI indisponible.")
         req = self._build_request(messages)
@@ -1953,22 +2061,21 @@ class IAStaff(commands.Cog):
             except Exception as ee:
                 raise RuntimeError(f"Erreur API OpenAI: {ee}") from ee
             raise RuntimeError(f"Erreur API OpenAI: {e}") from e
-        if True:
-            try:
-                cc_messages = self._to_chat_messages(messages)
-                resp = await self.client.chat.completions.create(model=self.model, messages=cc_messages, max_tokens=MAX_OUTPUT_TOKENS)
-                data = _to_dict(resp)
-                choice = None
-                if isinstance(data.get("choices"), list) and data["choices"]:
-                    choice = data["choices"][0]
-                if isinstance(choice, dict):
-                    msg = choice.get("message")
-                    if isinstance(msg, dict):
-                        cont = msg.get("content")
-                        if isinstance(cont, str) and cont.strip():
-                            return cont.strip()
-            except Exception as e:
-                pass
+        try:
+            cc_messages = self._to_chat_messages(messages)
+            resp = await self.client.chat.completions.create(model=self.model, messages=cc_messages, max_tokens=MAX_OUTPUT_TOKENS)
+            data = _to_dict(resp)
+            choice = None
+            if isinstance(data.get("choices"), list) and data["choices"]:
+                choice = data["choices"][0]
+            if isinstance(choice, dict):
+                msg = choice.get("message")
+                if isinstance(msg, dict):
+                    cont = msg.get("content")
+                    if isinstance(cont, str) and cont.strip():
+                        return cont.strip()
+        except Exception:
+            return ""
         return ""
 
     def _make_embed(self, page_text: str, idx: int, total: int) -> tuple[discord.Embed, list[discord.File]]:
@@ -2034,7 +2141,7 @@ class IAStaff(commands.Cog):
         origin_message: discord.Message | None = None,
     ):
         if not self._ensure_client():
-            reason = self._load_error or "Client OpenAI indisponible."
+            reason = self._load_error or "Client IA indisponible."
             if ctx is not None:
                 await ctx.reply(f"[! ] IA Staff indisponible : {reason}", mention_author=False)
             elif origin_message is not None:
@@ -2086,7 +2193,7 @@ class IAStaff(commands.Cog):
                     text = tool_ack
                 else:
                     try:
-                        text = await self._ask_openai(messages)
+                        text = await self._ask_model(messages)
                     except Exception as e:
                         if ctx is not None:
                             await ctx.reply(f"❌ {e}", mention_author=False)
@@ -2130,6 +2237,7 @@ class IAStaff(commands.Cog):
             return
         if low in {"info", "config"}:
             details_lines = [
+                f"Backend: `{self.backend}`",
                 f"Model: `{self.model}`",
                 f"Timeout: {OPENAI_TIMEOUT}s | Max output tokens: {MAX_OUTPUT_TOKENS}",
                 f"Température: {IASTAFF_TEMPERATURE} | Mentions: {'bloquées' if IASTAFF_SAFE_MENTIONS else 'autorisées'} | Règles: {IASTAFF_RULES_MODE}",
@@ -2147,10 +2255,11 @@ class IAStaff(commands.Cog):
             # normalisation basique côté bot (aliases ENV gérés par resolve_staff_model si besoin)
             normalized = new_model.lower().replace(" ", "-").replace("_", "-")
             self.model = normalized
+            persisted_var = "OPENAI_STAFF_MODEL" if self.backend == "openai" else "IASTAFF_MODEL"
             await ctx.reply(
                 f"Modèle IA Staff mis à jour pour cette instance : `{self.model}`.\n"
                 "💡 Pour rendre ce choix **persistant** après redémarrage Render, définis "
-                "`OPENAI_STAFF_MODEL` dans les variables d'environnement.",
+                f"`{persisted_var}` dans les variables d'environnement.",
                 mention_author=False,
             )
             return
