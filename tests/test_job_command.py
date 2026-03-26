@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -111,3 +111,44 @@ async def test_job_prune_staff_triggers_cleanup(job_cog):
     job_cog.prune_jobs.assert_awaited_once()
     embed = ctx.sent_messages[-1].embed
     assert "2" in embed.description
+
+
+@pytest.mark.asyncio
+async def test_on_member_remove_deletes_entry_and_persists(job_cog):
+    guild = SimpleNamespace(id=77)
+    member = SimpleNamespace(id=444, display_name="Crafter", guild=guild)
+    job_cog.jobs_data = {
+        "444": {
+            "name": "Crafter",
+            "jobs": {"Mineur": 80},
+        }
+    }
+    job_cog.save_data_local = Mock()
+    job_cog.dump_data_to_console = AsyncMock()
+
+    await job_cog.on_member_remove(member)
+
+    assert "444" not in job_cog.jobs_data
+    job_cog.save_data_local.assert_called_once_with()
+    job_cog.dump_data_to_console.assert_awaited_once_with(guild)
+
+
+@pytest.mark.asyncio
+async def test_on_member_remove_without_match_skips_persistence(job_cog):
+    guild = SimpleNamespace(id=88)
+    member = SimpleNamespace(id=999, display_name="Absent", guild=guild)
+    job_cog.jobs_data = {
+        "123": {
+            "name": "Present",
+            "jobs": {"Boulanger": 100},
+        }
+    }
+    initial_data = dict(job_cog.jobs_data)
+    job_cog.save_data_local = Mock()
+    job_cog.dump_data_to_console = AsyncMock()
+
+    await job_cog.on_member_remove(member)
+
+    assert job_cog.jobs_data == initial_data
+    job_cog.save_data_local.assert_not_called()
+    job_cog.dump_data_to_console.assert_not_awaited()
