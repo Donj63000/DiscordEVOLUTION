@@ -133,6 +133,7 @@ def iastaff_tools_cog(monkeypatch):
     bot.is_ready = lambda: True
     bot.get_command = lambda name: None
     cog = IAStaff(bot)
+    cog.backend = "openai"
     cog.enable_tools = True
     cog.job_stub = None
     cog.players_stub = None
