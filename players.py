@@ -4,6 +4,7 @@
 import os
 import json
 import asyncio
+import logging
 import discord
 from datetime import datetime
 from discord.ext import commands
@@ -21,6 +22,8 @@ CONSOLE_CHANNEL_ID = os.getenv("CHANNEL_CONSOLE_ID")
 PLAYERS_MARKER = "===PLAYERSDATA==="
 RECRUITMENT_CHANNEL_FALLBACK = os.getenv("RECRUTEMENT_CHANNEL_NAME") or "📌 Recrutement 📌"
 NOT_REGISTERED_MESSAGE = "Vous n'êtes pas encore enregistré. Faites `!membre principal <NomPerso>` d'abord."
+
+logger = logging.getLogger(__name__)
 
 def _load_json_candidate(path: str) -> Optional[Dict[str, dict]]:
     if not os.path.exists(path):
@@ -114,10 +117,24 @@ class PlayersCog(commands.Cog):
                 self.initialized = True
                 print(f"[DEBUG] initialize_data terminé. {len(self.persos_data)} enregistrements.")
 
-    async def dump_data_to_console(self, ctx: commands.Context = None):
+    async def dump_data_to_console(
+        self,
+        ctx: commands.Context = None,
+        guild: Optional[discord.Guild] = None,
+    ):
         sauvegarder_donnees(self.persos_data)
-        guild = ctx.guild if ctx and ctx.guild else None
-        console_channel = await self._resolve_console_channel(guild)
+        target_guild = guild or (ctx.guild if ctx and ctx.guild else None)
+        logger.debug(
+            "Players persistence targeting guild id=%s name=%s",
+            getattr(target_guild, "id", None),
+            getattr(target_guild, "name", None),
+        )
+        console_channel = await self._resolve_console_channel(target_guild)
+        logger.debug(
+            "Players persistence resolved console channel id=%s name=%s",
+            getattr(console_channel, "id", None),
+            getattr(console_channel, "name", None),
+        )
         if not console_channel:
             print(f"[DEBUG] Salon #{CONSOLE_CHANNEL_NAME} introuvable, impossible de publier le JSON.")
             return
@@ -363,7 +380,7 @@ class PlayersCog(commands.Cog):
         if member_id in self.persos_data:
             stored_name = self.persos_data[member_id].get("discord_name", member.display_name)
             del self.persos_data[member_id]
-            await self.dump_data_to_console()
+            await self.dump_data_to_console(guild=member.guild)
             recruitment_channel = resolve_text_channel(
                 member.guild,
                 id_env="RECRUTEMENT_CHANNEL_ID",

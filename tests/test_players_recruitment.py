@@ -38,7 +38,7 @@ async def test_on_member_remove_persists_and_notifies(monkeypatch):
     await cog.on_member_remove(member)
 
     assert "123" not in cog.persos_data
-    cog.dump_data_to_console.assert_awaited_once()
+    cog.dump_data_to_console.assert_awaited_once_with(guild=guild)
     assert channel.messages == [
         "Le membre **TestRecruit** a quitté le serveur. Sa fiche a été supprimée."
     ]
