@@ -1,0 +1,85 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="88" y1="42" x2="1194" y2="622" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#08131F"/>
+      <stop offset="0.52" stop-color="#0F2432"/>
+      <stop offset="1" stop-color="#173848"/>
+    </linearGradient>
+    <radialGradient id="tealGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(962 170) rotate(128.4) scale(364 428)">
+      <stop stop-color="#14C1B0" stop-opacity="0.46"/>
+      <stop offset="1" stop-color="#14C1B0" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="goldGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(238 88) rotate(57.8) scale(308 342)">
+      <stop stop-color="#F2B544" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#F2B544" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M44 0H0V44" stroke="#F4F0E8" stroke-opacity="0.07"/>
+    </pattern>
+    <linearGradient id="panel" x1="840" y1="90" x2="1184" y2="520" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#132B3B"/>
+      <stop offset="1" stop-color="#10212E"/>
+    </linearGradient>
+    <linearGradient id="panelLine" x1="828" y1="82" x2="1160" y2="500" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#23D0BC"/>
+      <stop offset="1" stop-color="#F2B544"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#01060B" flood-opacity="0.34"/>
+    </filter>
+  </defs>
+
+  <rect x="20" y="20" width="1240" height="600" rx="32" fill="url(#bg)"/>
+  <rect x="20" y="20" width="1240" height="600" rx="32" fill="url(#grid)"/>
+  <rect x="20" y="20" width="1240" height="600" rx="32" fill="url(#tealGlow)"/>
+  <rect x="20" y="20" width="1240" height="600" rx="32" fill="url(#goldGlow)"/>
+
+  <rect x="74" y="74" width="690" height="492" rx="28" fill="#0D1D2A" fill-opacity="0.66" stroke="#F4F0E8" stroke-opacity="0.08"/>
+
+  <text x="108" y="134" fill="#F2B544" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700" letter-spacing="0.2em">DISCORD GUILD OPS / DOFUS RETRO</text>
+  <text x="108" y="228" fill="#F8F5EF" font-family="Segoe UI, Arial, sans-serif" font-size="72" font-weight="800">DiscordEVOLUTION</text>
+  <text x="108" y="282" fill="#BBD5DE" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="500">Le bot Discord modulaire de la guilde EVOLUTION.</text>
+  <text x="108" y="326" fill="#BBD5DE" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="500">Moderation, tickets, activites, metiers, profils, stats et IA.</text>
+
+  <rect x="108" y="376" width="118" height="44" rx="22" fill="#143347" stroke="#1BD4BF" stroke-opacity="0.52"/>
+  <text x="167" y="404" text-anchor="middle" fill="#F8F5EF" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">Accueil</text>
+
+  <rect x="240" y="376" width="146" height="44" rx="22" fill="#143347" stroke="#1BD4BF" stroke-opacity="0.52"/>
+  <text x="313" y="404" text-anchor="middle" fill="#F8F5EF" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">Moderation</text>
+
+  <rect x="400" y="376" width="108" height="44" rx="22" fill="#143347" stroke="#1BD4BF" stroke-opacity="0.52"/>
+  <text x="454" y="404" text-anchor="middle" fill="#F8F5EF" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">Tickets</text>
+
+  <rect x="522" y="376" width="118" height="44" rx="22" fill="#143347" stroke="#1BD4BF" stroke-opacity="0.52"/>
+  <text x="581" y="404" text-anchor="middle" fill="#F8F5EF" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">Metiers</text>
+
+  <rect x="654" y="376" width="88" height="44" rx="22" fill="#143347" stroke="#1BD4BF" stroke-opacity="0.52"/>
+  <text x="698" y="404" text-anchor="middle" fill="#F8F5EF" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">IA</text>
+
+  <text x="108" y="472" fill="#F8F5EF" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="700">Une seule base pour faire tourner le serveur au quotidien</text>
+  <text x="108" y="510" fill="#9FC0CC" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="500">Discord.py, workflows guides, snapshots persistants dans #console, tests Pytest et CI GitHub.</text>
+  <text x="108" y="548" fill="#9FC0CC" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="500">Pret pour le local, Render et les evolutions staff outillees par OpenAI ou Gemini.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="824" y="84" width="382" height="148" rx="24" fill="url(#panel)" stroke="url(#panelLine)" stroke-opacity="0.48"/>
+    <circle cx="876" cy="136" r="18" fill="#F2B544"/>
+    <rect x="864" y="124" width="24" height="24" rx="12" fill="#0D1D2A" fill-opacity="0.34"/>
+    <text x="912" y="132" fill="#F8F5EF" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="700">Community ops</text>
+    <text x="912" y="170" fill="#A6C8D1" font-family="Segoe UI, Arial, sans-serif" font-size="19" font-weight="500">Welcome, moderation, tickets, polls</text>
+    <text x="912" y="198" fill="#A6C8D1" font-family="Segoe UI, Arial, sans-serif" font-size="19" font-weight="500">and high signal staff announcements.</text>
+
+    <rect x="824" y="252" width="382" height="148" rx="24" fill="url(#panel)" stroke="url(#panelLine)" stroke-opacity="0.48"/>
+    <circle cx="876" cy="304" r="18" fill="#14C1B0"/>
+    <rect x="864" y="292" width="24" height="24" rx="12" fill="#0D1D2A" fill-opacity="0.34"/>
+    <text x="912" y="300" fill="#F8F5EF" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="700">Guild tools</text>
+    <text x="912" y="338" fill="#A6C8D1" font-family="Segoe UI, Arial, sans-serif" font-size="19" font-weight="500">Activities, event planning, jobs,</text>
+    <text x="912" y="366" fill="#A6C8D1" font-family="Segoe UI, Arial, sans-serif" font-size="19" font-weight="500">profiles, promotions and stats.</text>
+
+    <rect x="824" y="420" width="382" height="148" rx="24" fill="url(#panel)" stroke="url(#panelLine)" stroke-opacity="0.48"/>
+    <circle cx="876" cy="472" r="18" fill="#F8F5EF"/>
+    <rect x="864" y="460" width="24" height="24" rx="12" fill="#0D1D2A" fill-opacity="0.34"/>
+    <text x="912" y="468" fill="#F8F5EF" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="700">AI + persistence</text>
+    <text x="912" y="506" fill="#A6C8D1" font-family="Segoe UI, Arial, sans-serif" font-size="19" font-weight="500">IA Staff, organisation briefs,</text>
+    <text x="912" y="534" fill="#A6C8D1" font-family="Segoe UI, Arial, sans-serif" font-size="19" font-weight="500">console snapshots and restart safety.</text>
+  </g>
+</svg>
