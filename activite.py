@@ -3,6 +3,7 @@
 
 import os
 import json
+import tempfile
 import re
 import asyncio
 import io
@@ -484,18 +485,30 @@ class ActiviteCog(commands.Cog):
             await console_channel.send(f"{content_prefix}\n```json\n{data_str}\n```")
         else:
             # Fichier trop gros, on envoie en pièce jointe
-            temp_file_path = "temp_activities_data.json"
+            tmp = tempfile.NamedTemporaryFile(delete=False, mode="w", encoding="utf-8", suffix=".json")
+            temp_file_path = tmp.name
             try:
-                with open(temp_file_path, "w", encoding="utf-8") as tmp:
-                    tmp.write(data_str)
+                tmp.write(data_str)
+                tmp.flush()
+                tmp.close()
             except Exception as ex:
                 logger.warning(f"Erreur création du fichier temp {CONSOLE_CHANNEL_FALLBACK}: {ex}")
+                try:
+                    os.remove(temp_file_path)
+                except OSError:
+                    pass
                 return
 
-            await console_channel.send(
-                f"{content_prefix} (fichier)",
-                file=discord.File(fp=temp_file_path, filename="activities_data.json")
-            )
+            try:
+                await console_channel.send(
+                    f"{content_prefix} (fichier)",
+                    file=discord.File(fp=temp_file_path, filename="activities_data.json")
+                )
+            finally:
+                try:
+                    os.remove(temp_file_path)
+                except OSError:
+                    pass
 
     @tasks.loop(minutes=5)
     async def check_events_loop(self):
@@ -670,7 +683,7 @@ class ActiviteCog(commands.Cog):
         await self.save_data_local()
         await self.dump_data_to_console(ctx)
 
-        # Ajout du rôle au créateur (logique redondante, 
+        # Ajout du rôle au créateur (logique redondante,
         # mais permet de donner les perms ou l'identifiant visuel)
         try:
             await ctx.author.add_roles(new_role)

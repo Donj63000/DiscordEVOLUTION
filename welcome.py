@@ -1,46 +1,115 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import asyncio
 import discord
 import json
-import os
 import logging
+import os
 import unicodedata
 from discord.ext import commands
-from datetime import datetime
 
 from utils.channel_resolver import resolve_text_channel
+from utils.console_json_store import ConsoleJSONSnapshotStore
 
-# Constantes de configuration (noms des rôles / salons et délais)
 INVITES_ROLE_NAME = "Invites"
 VALIDATED_ROLE_NAME = "Membre valide d Evolution"
 GENERAL_CHANNEL_NAME = "📄 Général 📄"
 RECRUITMENT_CHANNEL_NAME = "📌 Recrutement 📌"
 WELCOME_CHANNEL_NAME = "𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞"
 TIMEOUT_RESPONSE = 300.0
-DATA_FILE = os.path.join(os.path.dirname(__file__), "welcome_data.json")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(BASE_DIR, "welcome_data.json")
+WELCOME_IMAGE_PATH = os.path.join(BASE_DIR, "welcome1.png")
+WELCOME_MARKER = "===WELCOME==="
+CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 log = logging.getLogger(__name__)
+
 
 class WelcomeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.already_welcomed = set()
-        self.pending_welcomes = {}
+        self.already_welcomed: set[int] = set()
+        self.pending_welcomes: dict[int, dict] = {}
+        self.console_message_id: int | None = None
+        self._init_task: asyncio.Task | None = None
+        self.store = ConsoleJSONSnapshotStore(
+            bot,
+            marker=WELCOME_MARKER,
+            filename="welcome_data.json",
+            default_channel_name=CONSOLE_CHANNEL_NAME,
+            history_limit_env="WELCOME_HISTORY_LIMIT",
+        )
         self.load_welcomed_data()
+
+    async def cog_load(self):
+        if hasattr(self.bot, "wait_until_ready"):
+            if self._init_task is None or self._init_task.done():
+                self._init_task = asyncio.create_task(self._post_ready_init())
+
+    def cog_unload(self):
+        if self._init_task and not self._init_task.done():
+            self._init_task.cancel()
+
+    async def _post_ready_init(self):
+        await self.bot.wait_until_ready()
+        await self._load_from_console()
+
+    def _serialize_state(self) -> dict:
+        return {
+            "already_welcomed": sorted(self.already_welcomed),
+            "pending_welcomes": {str(k): dict(v) for k, v in self.pending_welcomes.items()},
+        }
+
+    async def _load_from_console(self):
+        message, payload = await self.store.load_latest(current_message_id=self.console_message_id)
+        if not isinstance(payload, dict):
+            return
+        ids = payload.get("already_welcomed", [])
+        pending = payload.get("pending_welcomes", {})
+        if isinstance(ids, list):
+            self.already_welcomed = {int(x) for x in ids}
+        if isinstance(pending, dict):
+            cleaned: dict[int, dict] = {}
+            for key, value in pending.items():
+                try:
+                    uid = int(key)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(value, dict):
+                    cleaned[uid] = value
+            self.pending_welcomes = cleaned
+        self.console_message_id = getattr(message, "id", None)
+
+    async def _persist_state(self):
+        self.save_welcomed_data()
+        message = await self.store.save(self._serialize_state(), current_message_id=self.console_message_id)
+        if message is not None:
+            self.console_message_id = message.id
 
     def load_welcomed_data(self):
         if os.path.isfile(DATA_FILE):
             try:
                 with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    ids = json.load(f)
-                self.already_welcomed = set(int(x) for x in ids)
+                    raw = json.load(f)
+                if isinstance(raw, list):
+                    self.already_welcomed = set(int(x) for x in raw)
+                    self.pending_welcomes = {}
+                    return
+                if isinstance(raw, dict):
+                    ids = raw.get("already_welcomed", [])
+                    pending = raw.get("pending_welcomes", {})
+                    self.already_welcomed = set(int(x) for x in ids)
+                    self.pending_welcomes = {
+                        int(k): v for k, v in pending.items() if isinstance(v, dict)
+                    }
             except Exception as e:
                 print(f"[Welcome] Erreur chargement {DATA_FILE}: {e}")
 
     def save_welcomed_data(self):
         try:
             with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump(list(self.already_welcomed), f)
+                json.dump(self._serialize_state(), f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"[Welcome] Erreur sauvegarde {DATA_FILE}: {e}")
 
@@ -127,16 +196,15 @@ class WelcomeCog(commands.Cog):
             description=description,
             color=discord.Color.green(),
         )
-        file = discord.File("welcome1.png", filename="welcome1.png")
+        file = discord.File(WELCOME_IMAGE_PATH, filename="welcome1.png")
         embed.set_image(url="attachment://welcome1.png")
         await dm_channel.send(embed=embed, file=file)
 
-    async def _start_welcome_flow(
-        self, member: discord.Member, dm_channel: discord.DMChannel | None = None
-    ) -> None:
+    async def _start_welcome_flow(self, member: discord.Member, dm_channel: discord.DMChannel | None = None) -> None:
         channel = dm_channel or await member.create_dm()
         await self._send_welcome_intro(member, channel)
         self.pending_welcomes[member.id] = {"stage": "reglement"}
+        await self._persist_state()
         log.debug("Welcome flow started for %s.", member.id)
 
     async def _handle_invite_status(self, member: discord.Member, dm_channel: discord.DMChannel) -> None:
@@ -156,6 +224,7 @@ class WelcomeCog(commands.Cog):
             await dm_channel.send("Le role 'Invites' n'existe pas encore. Peux-tu prevenir un admin ?")
         self.pending_welcomes.pop(member.id, None)
         self._mark_welcomed(member.id)
+        await self._persist_state()
 
     async def _finalize_member_registration(
         self,
@@ -164,7 +233,7 @@ class WelcomeCog(commands.Cog):
         dofus_pseudo: str,
         recruiter_pseudo: str,
     ) -> None:
-        recruitment_date = datetime.now().strftime("%d/%m/%Y")
+        recruitment_date = discord.utils.utcnow().strftime("%d/%m/%Y")
         validated_role = self._find_role(member.guild, VALIDATED_ROLE_NAME)
         try:
             await member.edit(nick=dofus_pseudo)
@@ -240,6 +309,7 @@ class WelcomeCog(commands.Cog):
         if self._is_onboarded(member):
             self.pending_welcomes.pop(member.id, None)
             self._mark_welcomed(member.id)
+            await self._persist_state()
             return
 
         state = self.pending_welcomes.get(member.id)
@@ -247,6 +317,7 @@ class WelcomeCog(commands.Cog):
             status = self._resolve_status(content)
             if self._is_yes(content):
                 self.pending_welcomes[member.id] = {"stage": "status"}
+                await self._persist_state()
                 await message.channel.send(self._status_prompt())
                 return
             if status == "invite":
@@ -254,6 +325,7 @@ class WelcomeCog(commands.Cog):
                 return
             if status == "membre":
                 self.pending_welcomes[member.id] = {"stage": "pseudo"}
+                await self._persist_state()
                 await message.channel.send(self._pseudo_prompt())
                 return
             await self._start_welcome_flow(member, message.channel)
@@ -265,6 +337,7 @@ class WelcomeCog(commands.Cog):
                 await message.channel.send("Pour continuer, reponds simplement par **oui**.")
                 return
             state["stage"] = "status"
+            await self._persist_state()
             await message.channel.send(self._status_prompt())
             return
         if stage == "status":
@@ -276,6 +349,7 @@ class WelcomeCog(commands.Cog):
                 await self._handle_invite_status(member, message.channel)
                 return
             state["stage"] = "pseudo"
+            await self._persist_state()
             await message.channel.send(self._pseudo_prompt())
             return
         if stage == "pseudo":
@@ -285,6 +359,7 @@ class WelcomeCog(commands.Cog):
                 return
             state["dofus_pseudo"] = dofus_pseudo
             state["stage"] = "recruiter"
+            await self._persist_state()
             await message.channel.send(self._recruiter_prompt())
             return
         if stage == "recruiter":
@@ -293,6 +368,7 @@ class WelcomeCog(commands.Cog):
             await self._finalize_member_registration(member, message.channel, dofus_pseudo, recruiter_pseudo)
             self.pending_welcomes.pop(member.id, None)
             self._mark_welcomed(member.id)
+            await self._persist_state()
             return
 
     @commands.Cog.listener()
@@ -304,6 +380,7 @@ class WelcomeCog(commands.Cog):
             return
         if self._is_onboarded(member):
             self._mark_welcomed(member.id)
+            await self._persist_state()
             return
         if member.id in self.pending_welcomes:
             return
@@ -351,6 +428,7 @@ class WelcomeCog(commands.Cog):
             )
         else:
             print(f"[DEBUG] Fallback impossible : canal #{GENERAL_CHANNEL_NAME} introuvable.")
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(WelcomeCog(bot))

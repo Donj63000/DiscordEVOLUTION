@@ -47,6 +47,14 @@ def _normalize(value: str | None) -> str:
     return text.strip("-")
 
 
+def _is_text_channel_for_guild(guild: discord.Guild, channel) -> bool:
+    if channel is None:
+        return False
+    if isinstance(channel, discord.TextChannel):
+        return True
+    return channel in list(getattr(guild, "text_channels", []) or [])
+
+
 def resolve_text_channel(
     guild: discord.Guild,
     *,
@@ -54,14 +62,13 @@ def resolve_text_channel(
     name_env: str | None = None,
     default_name: str | None = None,
 ) -> discord.TextChannel | None:
+    text_channels = list(getattr(guild, "text_channels", []) or [])
     channel_id = None
     if id_env:
         channel_id = _take_digits(os.getenv(id_env))
     if channel_id:
         channel = guild.get_channel(channel_id)
-        if isinstance(channel, discord.TextChannel):
-            return channel
-        if channel and getattr(channel, "id", None) is not None:
+        if _is_text_channel_for_guild(guild, channel):
             return channel
     candidates: list[str] = []
     if name_env:
@@ -78,19 +85,15 @@ def resolve_text_channel(
         candidate_id = _take_digits(candidate)
         if candidate_id:
             channel = guild.get_channel(candidate_id)
-            if isinstance(channel, discord.TextChannel):
+            if _is_text_channel_for_guild(guild, channel):
                 return channel
-            if channel and getattr(channel, "id", None) is not None:
-                return channel
-        channel = discord.utils.get(guild.text_channels, name=candidate)
-        if isinstance(channel, discord.TextChannel):
-            return channel
-        if channel and getattr(channel, "id", None) is not None:
+        channel = discord.utils.get(text_channels, name=candidate)
+        if _is_text_channel_for_guild(guild, channel):
             return channel
         target = _normalize(candidate)
         if not target:
             continue
-        for text_channel in guild.text_channels:
+        for text_channel in text_channels:
             if _normalize(text_channel.name) == target:
                 return text_channel
     return None

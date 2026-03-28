@@ -1,14 +1,16 @@
-import os
-import json
 import asyncio
+import json
 import logging
+import os
+from collections import defaultdict
+from datetime import timedelta
+from typing import Optional
+
 import discord
 from discord.ext import commands, tasks
-from datetime import datetime, timedelta
-from collections import defaultdict
 
 from utils.channel_resolver import resolve_text_channel
-from utils.discord_history import fetch_channel_history
+from utils.console_json_store import ConsoleJSONSnapshotStore
 
 CHECK_INTERVAL_HOURS = 168  # 1 semaine
 VOTE_DURATION_SECONDS = 300  # 5 minutes
@@ -18,10 +20,11 @@ INVITE_ROLE_NAME = "Invité"
 VETERAN_ROLE_NAME = "Vétéran"
 STAFF_CHANNEL_NAME = os.getenv("STAFF_CHANNEL_NAME", "📚 Général-staff 📚")
 CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
-BOTUP_TAG = "===BOTUP==="         # <-- marqueur spécial pour retrouver le JSON
+BOTUP_TAG = "===BOTUP==="
 MESSAGE_THRESHOLD = 20
 JOINED_THRESHOLD_DAYS = 6 * 30
-PROMOTIONS_FILE = "promotions_data.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROMOTIONS_FILE = os.path.join(BASE_DIR, "promotions_data.json")
 
 log = logging.getLogger(__name__)
 
@@ -30,35 +33,45 @@ class UpCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.user_message_count = defaultdict(int)
-
-        # On stocke la data dans self.promotions_data
-        self.promotions_data = {}
+        self.promotions_data: dict[str, dict] = {}
         self.initialized = False
+        self.console_message_id: Optional[int] = None
         self._init_lock = asyncio.Lock()
         self._init_task: asyncio.Task | None = None
-
-    def cog_unload(self):
-        if self._init_task and not self._init_task.done():
-            self._init_task.cancel()
-        if self.check_up_status.is_running():
-            self.check_up_status.cancel()
-
-    # =========================
-    #  Chargement / Sauvegarde
-    # =========================
+        self._vote_tasks: dict[int, asyncio.Task] = {}
+        self.store = ConsoleJSONSnapshotStore(
+            bot,
+            marker=BOTUP_TAG,
+            filename="promotions_data.json",
+            default_channel_name=CONSOLE_CHANNEL_NAME,
+            history_limit_env="UP_CONSOLE_HISTORY_LIMIT",
+        )
 
     async def cog_load(self):
         if self._init_task is None or self._init_task.done():
             self._init_task = asyncio.create_task(self._post_ready_init())
 
+    def cog_unload(self):
+        if self._init_task and not self._init_task.done():
+            self._init_task.cancel()
+        for task in self._vote_tasks.values():
+            if not task.done():
+                task.cancel()
+        self._vote_tasks.clear()
+        if self.check_up_status.is_running():
+            self.check_up_status.cancel()
+
     async def _post_ready_init(self):
-        await self.bot.wait_until_ready()
+        wait_until_ready = getattr(self.bot, "wait_until_ready", None)
+        if callable(wait_until_ready):
+            await wait_until_ready()
         async with self._init_lock:
             if self.initialized:
                 return
             log.debug("UpCog: init start")
             await self.load_promotions_data()
             self.initialized = True
+            await self._resume_pending_votes()
             log.debug("UpCog: init complete (entries=%s)", len(self.promotions_data))
         if not self.check_up_status.is_running():
             self.check_up_status.start()
@@ -76,167 +89,197 @@ class UpCog(commands.Cog):
             await self._post_ready_init()
 
     async def load_promotions_data(self):
-        """
-        Tente de lire le JSON promotions_data depuis le canal console,
-        via un message contenant BOTUP_TAG. Sinon, fallback sur le fichier local.
-        """
-        # 1) Cherche dans le canal console un message avec "===BOTUP===" et du JSON
-        console_channel = None
-        for guild in self.bot.guilds:
-            channel = resolve_text_channel(
-                guild,
-                id_env="CHANNEL_CONSOLE_ID",
-                name_env="CHANNEL_CONSOLE",
-                default_name=CONSOLE_CHANNEL_NAME,
-            )
-            if channel:
-                console_channel = channel
-                break
-
-        if console_channel:
-            # On lit l'historique à la recherche de la mention BOTUP_TAG
-            limit = max(
-                int(os.getenv("UP_CONSOLE_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
-                0,
-            )
-            messages = await fetch_channel_history(
-                console_channel,
-                limit=limit,
-                reason="up.console",
-            )
-            for msg in messages:
-                if msg.author == self.bot.user and BOTUP_TAG in msg.content:
-                    # On tente d'extraire le JSON entre ```json\n et \n```
-                    try:
-                        start_idx = msg.content.index("```json\n") + len("```json\n")
-                        end_idx = msg.content.rindex("\n```")
-                        raw_json = msg.content[start_idx:end_idx]
-                        data_loaded = json.loads(raw_json)
-                        self.promotions_data = data_loaded
-                        print(f"[UpCog] Data rechargée depuis le canal {CONSOLE_CHANNEL_NAME} !")
-                        break
-                    except Exception as e:
-                        print(f"[UpCog] Erreur parsing {CONSOLE_CHANNEL_NAME} data:", e)
-                        pass
-
-        # 2) Si on n'a rien chargé depuis le console_channel et que c'est toujours vide, fallback sur le fichier local
-        if not self.promotions_data and os.path.exists(PROMOTIONS_FILE):
+        message, payload = await self.store.load_latest(current_message_id=self.console_message_id)
+        if isinstance(payload, dict):
+            self.promotions_data = payload
+            self.console_message_id = getattr(message, "id", None)
+            log.info("UpCog: data loaded from console (%s entries).", len(self.promotions_data))
+            return
+        if os.path.exists(PROMOTIONS_FILE):
             try:
                 with open(PROMOTIONS_FILE, "r", encoding="utf-8") as f:
-                    self.promotions_data = json.load(f)
-                print("[UpCog] Data rechargée depuis le fichier local (promotions_data.json).")
-            except:
-                self.promotions_data = {}
-        else:
-            if not self.promotions_data:
-                print(f"[UpCog] Aucune data existante ({CONSOLE_CHANNEL_NAME} + local). promotions_data reste vide.")
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    self.promotions_data = data
+                    log.info("UpCog: data loaded from local file.")
+                    return
+            except Exception as exc:
+                log.warning("UpCog: failed to load local promotions file: %s", exc)
+        self.promotions_data = {}
+        log.info("UpCog: no persisted promotion data found.")
 
     def save_promotions_data_local(self):
-        """Sauvegarde locale classique."""
         with open(PROMOTIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.promotions_data, f, indent=4, ensure_ascii=False)
+            json.dump(self.promotions_data, f, indent=4, ensure_ascii=False, sort_keys=True)
 
     async def dump_data_to_console(self):
-        """
-        Envoie (ou met à jour) le JSON complet dans le canal console, en utilisant BOTUP_TAG.
-        On le fait à chaque fois qu'on modifie promotions_data.
-        """
-        console_channel = None
-        for guild in self.bot.guilds:
-            channel = resolve_text_channel(
-                guild,
-                id_env="CHANNEL_CONSOLE_ID",
-                name_env="CHANNEL_CONSOLE",
-                default_name=CONSOLE_CHANNEL_NAME,
-            )
-            if channel:
-                console_channel = channel
-                break
-        if not console_channel:
-            print(f"[UpCog] Pas de canal {CONSOLE_CHANNEL_NAME}, impossible d'y sauvegarder la data.")
-            return
+        message = await self.store.save(self.promotions_data, current_message_id=self.console_message_id)
+        if message is not None:
+            self.console_message_id = message.id
 
-        # On supprime éventuellement les anciens messages BOTUP pour éviter la confusion
-        # (optionnel, on peut vouloir garder l'historique)
-        limit = max(
-            int(os.getenv("UP_CONSOLE_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
-            0,
-        )
-        messages = await fetch_channel_history(
-            console_channel,
-            limit=limit,
-            reason="up.console.cleanup",
-        )
-        for old_msg in messages:
-            if old_msg.author == self.bot.user and BOTUP_TAG in old_msg.content:
-                try:
-                    await old_msg.delete()
-                except:
-                    pass
-                break
+    async def _persist_state(self):
+        self.save_promotions_data_local()
+        await self.dump_data_to_console()
 
-        # On génère la string JSON
-        data_str = json.dumps(self.promotions_data, indent=4, ensure_ascii=False)
-        # Envoi
-        if len(data_str) < 1900:
-            content_msg = f"{BOTUP_TAG}\n```json\n{data_str}\n```"
-            await console_channel.send(content_msg)
-        else:
-            # Envoi en fichier
-            content_msg = f"{BOTUP_TAG} (fichier car trop long)"
-            filename = "promotions_data.json"
-            with open(filename, "w", encoding="utf-8") as tmp:
-                tmp.write(data_str)
-            await console_channel.send(content_msg, file=discord.File(filename))
-
-    # ========================
-    #   Fonctions d'Accès
-    # ========================
+    def _entry(self, user_id: int) -> dict:
+        return self.promotions_data.setdefault(str(user_id), {})
 
     def get_promotion_status(self, user_id: int):
         return self.promotions_data.get(str(user_id), {}).get("status")
 
-    def set_promotion_status(self, user_id: int, status: str):
-        user_id_str = str(user_id)
-        if user_id_str not in self.promotions_data:
-            self.promotions_data[user_id_str] = {}
-        self.promotions_data[user_id_str]["status"] = status
+    def set_promotion_status(self, user_id: int, status: str, *, clear_vote: bool = False):
+        entry = self._entry(user_id)
+        entry["status"] = status
+        if clear_vote:
+            entry.pop("vote", None)
 
-    # ========================
-    #   Tâche programmée
-    # ========================
+    def get_vote_info(self, user_id: int) -> Optional[dict]:
+        return self.promotions_data.get(str(user_id), {}).get("vote")
+
+    def set_vote_info(self, user_id: int, vote_info: Optional[dict]):
+        entry = self._entry(user_id)
+        if vote_info is None:
+            entry.pop("vote", None)
+        else:
+            entry["vote"] = vote_info
+
+    def _find_member(self, guild_id: int, user_id: int) -> Optional[discord.Member]:
+        guild = self.bot.get_guild(guild_id) if hasattr(self.bot, "get_guild") else None
+        if guild is None:
+            for candidate in getattr(self.bot, "guilds", []) or []:
+                if getattr(candidate, "id", None) == guild_id:
+                    guild = candidate
+                    break
+        if guild is None:
+            return None
+        get_member = getattr(guild, "get_member", None)
+        if callable(get_member):
+            return get_member(user_id)
+        for member in getattr(guild, "members", []) or []:
+            if getattr(member, "id", None) == user_id:
+                return member
+        return None
+
+    async def _resume_pending_votes(self):
+        now_ts = int(discord.utils.utcnow().timestamp())
+        changed = False
+        for user_id_str, entry in list(self.promotions_data.items()):
+            if entry.get("status") != "voting":
+                continue
+            vote = entry.get("vote") or {}
+            try:
+                user_id = int(user_id_str)
+            except (TypeError, ValueError):
+                continue
+            ends_at_ts = int(vote.get("ends_at_ts", 0) or 0)
+            if ends_at_ts <= 0:
+                self.set_promotion_status(user_id, "postponed", clear_vote=True)
+                changed = True
+                continue
+            if ends_at_ts <= now_ts:
+                await self._finalize_vote(user_id)
+            else:
+                self._schedule_vote_finalization(user_id)
+        if changed:
+            await self._persist_state()
+
+    def _schedule_vote_finalization(self, user_id: int):
+        existing = self._vote_tasks.get(user_id)
+        if existing and not existing.done():
+            return
+        self._vote_tasks[user_id] = asyncio.create_task(self._wait_and_finalize_vote(user_id))
+
+    async def _wait_and_finalize_vote(self, user_id: int):
+        try:
+            vote = self.get_vote_info(user_id) or {}
+            ends_at_ts = int(vote.get("ends_at_ts", 0) or 0)
+            if ends_at_ts <= 0:
+                self.set_promotion_status(user_id, "postponed", clear_vote=True)
+                await self._persist_state()
+                return
+            delay = max(0.0, ends_at_ts - discord.utils.utcnow().timestamp())
+            if delay > 0:
+                await asyncio.sleep(delay)
+            await self._finalize_vote(user_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("UpCog: vote finalization failed for %s: %s", user_id, exc, exc_info=True)
+        finally:
+            self._vote_tasks.pop(user_id, None)
+
+    async def _finalize_vote(self, user_id: int):
+        entry = self.promotions_data.get(str(user_id), {})
+        if entry.get("status") != "voting":
+            return
+        vote = entry.get("vote") or {}
+        guild_id = int(vote.get("guild_id", 0) or 0)
+        channel_id = int(vote.get("staff_channel_id", 0) or 0)
+        message_id = int(vote.get("message_id", 0) or 0)
+        guild = self.bot.get_guild(guild_id) if hasattr(self.bot, "get_guild") else None
+        if guild is None:
+            for candidate in getattr(self.bot, "guilds", []) or []:
+                if getattr(candidate, "id", None) == guild_id:
+                    guild = candidate
+                    break
+        if guild is None:
+            self.set_promotion_status(user_id, "postponed", clear_vote=True)
+            await self._persist_state()
+            return
+        staff_channel = guild.get_channel(channel_id) if hasattr(guild, "get_channel") else None
+        member = self._find_member(guild_id, user_id)
+        if not isinstance(staff_channel, discord.TextChannel) or member is None:
+            self.set_promotion_status(user_id, "postponed", clear_vote=True)
+            await self._persist_state()
+            return
+        try:
+            vote_message = await staff_channel.fetch_message(message_id)
+        except discord.NotFound:
+            await staff_channel.send(f"Le message de vote pour {member.mention} a disparu, vote reporté.")
+            self.set_promotion_status(user_id, "postponed", clear_vote=True)
+            await self._persist_state()
+            return
+        except discord.HTTPException as exc:
+            log.warning("UpCog: unable to fetch vote message %s: %s", message_id, exc)
+            self.set_promotion_status(user_id, "postponed", clear_vote=True)
+            await self._persist_state()
+            return
+
+        yes_count = 0
+        no_count = 0
+        for reaction in getattr(vote_message, "reactions", []) or []:
+            if str(reaction.emoji) == "✅":
+                yes_count = max(reaction.count - 1, 0)
+            elif str(reaction.emoji) == "❌":
+                no_count = max(reaction.count - 1, 0)
+
+        total_votes = yes_count + no_count
+        if total_votes == 0:
+            await staff_channel.send(
+                f"Aucun vote exprimé pour {member.mention}, proposition reportée à la semaine prochaine."
+            )
+            self.set_promotion_status(user_id, "postponed", clear_vote=True)
+            await self._persist_state()
+            return
+        if no_count >= 1:
+            await staff_channel.send(
+                f"Promotion refusée pour {member.mention}. (Un ❌ suffit à annuler la promotion)"
+            )
+            self.set_promotion_status(user_id, "refused", clear_vote=True)
+            await self._persist_state()
+            return
+        await self.promouvoir_veteran(staff_channel, member)
 
     @tasks.loop(hours=CHECK_INTERVAL_HOURS)
     async def check_up_status(self):
-        """
-        Tâche qui se réveille toutes les 168h (une semaine), scanne l'historique,
-        puis vérifie les membres éligibles, et lance des votes si nécessaire.
-        """
         await self._ensure_initialized()
         if not self.initialized:
             return
-
-        # On (re)charge la data depuis le console, au cas où un reload a eu lieu
-        # (Optionnel si on veut forcer la synchro avant chaque check)
-        # => Décommenter si nécessaire.
-        # await self.load_promotions_data()
-
         await self.scan_entire_history()
         await self.verifier_membres_eligibles()
-
-        # Après modifications éventuelles, on sauvegarde
-        self.save_promotions_data_local()
-        await self.dump_data_to_console()
-
-    # ========================
-    #   Scan de l'historique
-    # ========================
+        await self._persist_state()
 
     async def scan_entire_history(self):
-        """
-        Parcourt tous les channels texte de toutes les guilds, et
-        incr??mente un compteur de messages par utilisateur.
-        """
         self.user_message_count.clear()
         try:
             scan_days = int(os.getenv("UP_SCAN_DAYS", "180"))
@@ -251,33 +294,34 @@ class UpCog(commands.Cog):
         after = None
         if scan_days > 0:
             after = discord.utils.utcnow() - timedelta(days=scan_days)
-        log.debug("UpCog: scan history limit=%s after=%s", scan_limit, after)
         channel_delay = max(float(os.getenv("UP_SCAN_DELAY_SECONDS", "0.2")), 0.0)
-        for guild in self.bot.guilds:
-            for channel in guild.text_channels:
-                try:
-                    async for msg in channel.history(limit=scan_limit, after=after, oldest_first=False):
-                        if not msg.author.bot:
-                            self.user_message_count[str(msg.author.id)] += 1
-                except discord.HTTPException as exc:
-                    if getattr(exc, "status", None) == 429:
-                        retry_after = getattr(exc, "retry_after", None)
-                        wait = float(retry_after) if retry_after else channel_delay
-                        log.debug("UpCog: history rate limit on channel %s wait=%.2f", channel.id, wait)
-                        if wait > 0:
-                            await asyncio.sleep(wait)
-                        continue
-                except discord.Forbidden:
-                    pass
+        history_retries = max(int(os.getenv("UP_SCAN_RETRIES", "2")), 0)
+        for guild in getattr(self.bot, "guilds", []) or []:
+            for channel in getattr(guild, "text_channels", []) or []:
+                attempt = 0
+                while True:
+                    try:
+                        async for msg in channel.history(limit=scan_limit, after=after, oldest_first=False):
+                            if not msg.author.bot:
+                                self.user_message_count[str(msg.author.id)] += 1
+                        break
+                    except discord.HTTPException as exc:
+                        if getattr(exc, "status", None) == 429 and attempt < history_retries:
+                            retry_after = getattr(exc, "retry_after", None)
+                            wait = float(retry_after) if retry_after else channel_delay
+                            if wait > 0:
+                                await asyncio.sleep(wait)
+                            attempt += 1
+                            continue
+                        break
+                    except discord.Forbidden:
+                        break
                 if channel_delay > 0:
                     await asyncio.sleep(channel_delay)
 
     async def verifier_membres_eligibles(self):
-        """
-        Vérifie pour chaque membre s'il remplit les conditions (JOINED_THRESHOLD_DAYS, MESSAGE_THRESHOLD, etc.)
-        et si oui, lance un vote de promotion si pas déjà voté/refusé/promu.
-        """
-        for guild in self.bot.guilds:
+        await self._ensure_initialized()
+        for guild in getattr(self.bot, "guilds", []) or []:
             staff_channel = resolve_text_channel(
                 guild,
                 id_env="STAFF_CHANNEL_ID",
@@ -286,128 +330,82 @@ class UpCog(commands.Cog):
             )
             if not staff_channel:
                 continue
-
-            for member in guild.members:
-                if member.bot:
+            for member in getattr(guild, "members", []) or []:
+                if getattr(member, "bot", False):
                     continue
-
                 join_days = 0
-                if member.joined_at:
+                if getattr(member, "joined_at", None):
                     join_days = (discord.utils.utcnow() - member.joined_at).days
-
-                has_valid_role = any(r.name == VALID_MEMBER_ROLE_NAME for r in member.roles)
-                has_invite_role = any(r.name == INVITE_ROLE_NAME for r in member.roles)
+                has_valid_role = any(getattr(r, "name", None) == VALID_MEMBER_ROLE_NAME for r in member.roles)
+                has_invite_role = any(getattr(r, "name", None) == INVITE_ROLE_NAME for r in member.roles)
+                has_veteran_role = any(getattr(r, "name", None) == VETERAN_ROLE_NAME for r in member.roles)
                 msg_count = self.user_message_count.get(str(member.id), 0)
                 status = self.get_promotion_status(member.id)
-
-                # On ignore ceux qui sont déjà promus ou refusés ou en cours de vote
                 if status in ["promoted", "refused", "voting"]:
                     continue
-
-                # S'il avait été reporté (postponed) => on retente
-                # On autorise un second vote en status=postponed ou None
                 if status not in ["postponed", None]:
                     continue
-
-                # Conditions pour être éligible
                 if (
                     join_days >= JOINED_THRESHOLD_DAYS
                     and has_valid_role
                     and not has_invite_role
                     and msg_count >= MESSAGE_THRESHOLD
-                    and not any(r.name == VETERAN_ROLE_NAME for r in member.roles)
+                    and not has_veteran_role
                 ):
                     await self.lancer_vote(staff_channel, member)
-
-        # Après modifications, on resauvegarde
-        self.save_promotions_data_local()
-        await self.dump_data_to_console()
+        await self._persist_state()
 
     async def lancer_vote(self, staff_channel: discord.TextChannel, member: discord.Member):
+        if self.get_promotion_status(member.id) == "voting":
+            return
         mention_staff_role = discord.utils.get(member.guild.roles, name=STAFF_ROLE_NAME)
         mention_text = mention_staff_role.mention if mention_staff_role else "@Staff"
-
         embed = discord.Embed(
             title="Vote Promotion",
             description=(
                 f"{mention_text} — Promotion de {member.mention} en **{VETERAN_ROLE_NAME}** ?\n"
                 f"Réagissez ✅ ou ❌ (durée: {VOTE_DURATION_SECONDS // 60} min)."
             ),
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
-
         vote_message = await staff_channel.send(embed=embed)
         await vote_message.add_reaction("✅")
         await vote_message.add_reaction("❌")
 
+        now_ts = int(discord.utils.utcnow().timestamp())
+        vote_info = {
+            "guild_id": member.guild.id,
+            "staff_channel_id": staff_channel.id,
+            "message_id": vote_message.id,
+            "started_at_ts": now_ts,
+            "ends_at_ts": now_ts + VOTE_DURATION_SECONDS,
+        }
         self.set_promotion_status(member.id, "voting")
-        self.save_promotions_data_local()
-        await self.dump_data_to_console()
-
-        await asyncio.sleep(VOTE_DURATION_SECONDS)
-
-        try:
-            vote_message = await vote_message.channel.fetch_message(vote_message.id)
-        except discord.NotFound:
-            await staff_channel.send(f"Le message de vote pour {member.mention} a disparu, vote reporté.")
-            self.set_promotion_status(member.id, "postponed")
-            self.save_promotions_data_local()
-            await self.dump_data_to_console()
-            return
-
-        yes_count = 0
-        no_count = 0
-        for reaction in vote_message.reactions:
-            if str(reaction.emoji) == "✅":
-                yes_count = reaction.count - 1
-            elif str(reaction.emoji) == "❌":
-                no_count = reaction.count - 1
-
-        total_votes = yes_count + no_count
-
-        if total_votes == 0:
-            await staff_channel.send(f"Aucun vote exprimé pour {member.mention}, proposition reportée à la semaine prochaine.")
-            self.set_promotion_status(member.id, "postponed")
-            self.save_promotions_data_local()
-            await self.dump_data_to_console()
-            return
-
-        # Si un seul NON => refus
-        if no_count >= 1:
-            await staff_channel.send(f"Promotion refusée pour {member.mention}. (Un ❌ suffit à annuler la promotion)")
-            self.set_promotion_status(member.id, "refused")
-            self.save_promotions_data_local()
-            await self.dump_data_to_console()
-            return
-
-        # Sinon => promotion
-        await self.promouvoir_veteran(staff_channel, member)
+        self.set_vote_info(member.id, vote_info)
+        await self._persist_state()
+        self._schedule_vote_finalization(member.id)
 
     async def promouvoir_veteran(self, staff_channel: discord.TextChannel, member: discord.Member):
         veteran_role = discord.utils.get(member.guild.roles, name=VETERAN_ROLE_NAME)
         if not veteran_role:
             await staff_channel.send("Rôle 'Vétéran' introuvable, impossible de promouvoir.")
-            self.set_promotion_status(member.id, "refused")
-            self.save_promotions_data_local()
-            await self.dump_data_to_console()
+            self.set_promotion_status(member.id, "refused", clear_vote=True)
+            await self._persist_state()
             return
-
         try:
             await member.add_roles(veteran_role)
             await staff_channel.send(f"{member.mention} promu(e) **{VETERAN_ROLE_NAME}**.")
-            self.set_promotion_status(member.id, "promoted")
-            self.save_promotions_data_local()
-            await self.dump_data_to_console()
+            self.set_promotion_status(member.id, "promoted", clear_vote=True)
+            await self._persist_state()
         except discord.Forbidden:
             await staff_channel.send(f"Permissions insuffisantes pour promouvoir {member.display_name}.")
-            self.set_promotion_status(member.id, "refused")
-            self.save_promotions_data_local()
-            await self.dump_data_to_console()
-        except discord.HTTPException as e:
-            await staff_channel.send(f"Erreur promotion {member.display_name} : {e}")
-            self.set_promotion_status(member.id, "refused")
-            self.save_promotions_data_local()
-            await self.dump_data_to_console()
+            self.set_promotion_status(member.id, "refused", clear_vote=True)
+            await self._persist_state()
+        except discord.HTTPException as exc:
+            await staff_channel.send(f"Erreur promotion {member.display_name} : {exc}")
+            self.set_promotion_status(member.id, "refused", clear_vote=True)
+            await self._persist_state()
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(UpCog(bot))

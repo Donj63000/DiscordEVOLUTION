@@ -53,6 +53,23 @@ def test_resolve_text_channel_normalizes_accents_and_emoji(monkeypatch):
     assert found is channel
 
 
+class DummyGuildWithoutTextChannels:
+    def get_channel(self, channel_id: int):
+        return None
+
+
+def test_resolve_text_channel_handles_missing_text_channels(monkeypatch):
+    monkeypatch.delenv("STAFF_CHANNEL_NAME", raising=False)
+
+    found = channel_resolver.resolve_text_channel(
+        DummyGuildWithoutTextChannels(),
+        name_env="STAFF_CHANNEL_NAME",
+        default_name="general-staff",
+    )
+
+    assert found is None
+
+
 def test_resolve_text_channel_normalizes_bold_letters(monkeypatch):
     monkeypatch.delenv("STAFF_CHANNEL_NAME", raising=False)
     channel = DummyChannel(2, _bold_general_name())

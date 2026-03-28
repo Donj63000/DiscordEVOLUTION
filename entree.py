@@ -4,11 +4,13 @@
 import os
 import discord
 from discord.ext import commands
-from datetime import datetime
 
 from utils.channel_resolver import resolve_text_channel
 
 WELCOME_CHANNEL_FALLBACK = os.getenv("WELCOME_CHANNEL_NAME") or "𝐁𝐢𝐞𝐧𝐯𝐞𝐧𝐮𝐞"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENTREE_IMAGE_PATH = os.path.join(BASE_DIR, "entree.png")
+QUITTER_IMAGE_PATH = os.path.join(BASE_DIR, "quitter.png")
 
 class EntreeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -37,7 +39,7 @@ class EntreeCog(commands.Cog):
         )
 
         try:
-            file = discord.File("entree.png", filename="entree.png")
+            file = discord.File(ENTREE_IMAGE_PATH, filename="entree.png")
             await bienvenue_channel.send(content=message_texte, file=file)
             print(f"[DEBUG] Message de bienvenue envoyé pour {member} avec l'image entree.png.")
         except Exception as e:
@@ -61,7 +63,7 @@ class EntreeCog(commands.Cog):
         if member.joined_at is None:
             duree_str = "inconnue"
         else:
-            duree = datetime.utcnow() - member.joined_at.replace(tzinfo=None)
+            duree = discord.utils.utcnow() - member.joined_at
             jours = duree.days
             heures = duree.seconds // 3600
             minutes = (duree.seconds % 3600) // 60
@@ -89,7 +91,7 @@ class EntreeCog(commands.Cog):
         )
 
         try:
-            file = discord.File("quitter.png", filename="quitter.png")
+            file = discord.File(QUITTER_IMAGE_PATH, filename="quitter.png")
             await bienvenue_channel.send(content=message_texte, file=file)
             print(f"[DEBUG] Message d'au revoir envoyé pour {member} avec l'image quitter.png.")
         except Exception as e:

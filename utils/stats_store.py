@@ -65,7 +65,7 @@ class StatsStore:
         if len(content) <= 2000:
             try:
                 if self._msg:
-                    await self._msg.edit(content=content)
+                    await self._msg.edit(content=content, attachments=[])
                 else:
                     self._msg = await chan.send(content)
             except Exception:
@@ -120,26 +120,25 @@ class StatsStore:
             return None
 
         checked: set[int] = set()
-
-        async def iter_candidates():
-            try:
-                for msg in await chan.pins():
-                    mid = getattr(msg, "id", id(msg))
-                    if mid in checked:
-                        continue
-                    checked.add(mid)
-                    yield msg
-            except Exception:
-                log.debug("Aucun pin exploitable pour #%s", self.channel_name)
-            messages = await fetch_channel_history(chan, limit=50, reason="stats_store.load")
-            for msg in messages:
+        candidates = []
+        try:
+            for msg in await chan.pins():
                 mid = getattr(msg, "id", id(msg))
                 if mid in checked:
                     continue
                 checked.add(mid)
-                yield msg
+                candidates.append(msg)
+        except Exception:
+            log.debug("Aucun pin exploitable pour #%s", self.channel_name)
+        messages = await fetch_channel_history(chan, limit=50, reason="stats_store.load")
+        for msg in messages:
+            mid = getattr(msg, "id", id(msg))
+            if mid in checked:
+                continue
+            checked.add(mid)
+            candidates.append(msg)
 
-        async for msg in iter_candidates():
+        for msg in candidates:
             data = await self._extract_payload(msg)
             if data is not None:
                 return data

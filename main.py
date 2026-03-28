@@ -13,12 +13,13 @@ from dotenv import load_dotenv
 from alive import keep_alive
 from collections import deque
 from utils.channel_resolver import resolve_text_channel
-from utils.discord_history import fetch_channel_history
+from utils.discord_history import fetch_channel_history, fetch_channel_message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("main")
 
 LOCK_TAG = "===BOTLOCK==="
+STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", os.getenv("STAFF_ROLE_NAME", "Staff"))
 
 
 class EvoBot(commands.Bot):
@@ -209,9 +210,37 @@ class EvoBot(commands.Bot):
                     getattr(guild, "name", guild.id),
                 )
                 continue
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(
+                    view_channel=False,
+                    read_messages=False,
+                    send_messages=False,
+                    read_message_history=False,
+                ),
+                me: discord.PermissionOverwrite(
+                    view_channel=True,
+                    read_messages=True,
+                    send_messages=True,
+                    attach_files=True,
+                    manage_messages=True,
+                    read_message_history=True,
+                ),
+            }
+            staff_role = discord.utils.find(
+                lambda role: getattr(role, "name", None) == STAFF_ROLE_NAME,
+                getattr(guild, "roles", []) or [],
+            )
+            if staff_role is not None:
+                overwrites[staff_role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    read_messages=True,
+                    send_messages=True,
+                    read_message_history=True,
+                )
             try:
                 created = await guild.create_text_channel(
                     default_name,
+                    overwrites=overwrites,
                     reason="Console persistence channel",
                 )
                 logging.info(
@@ -281,16 +310,22 @@ class EvoBot(commands.Bot):
                 if self._lock_channel_id and self._lock_message_id:
                     ch = self.get_channel(self._lock_channel_id)
                     if ch:
+                        own_lock = await fetch_channel_message(ch, self._lock_message_id, reason="main.lock.self")
                         last, inst, ts = await self.parse_latest_lock(ch)
-                        if not last or last.id != self._lock_message_id:
+                        if last is not None and last.id != self._lock_message_id:
                             logging.warning("Perte du lock au profit de %s, fermeture.", inst or "inconnu")
                             await self.close()
                             os._exit(0)
-                        try:
-                            msg = await ch.fetch_message(self._lock_message_id)
-                            await msg.edit(content=f"{LOCK_TAG} {self.INSTANCE_ID} {int(time.time())}")
-                        except Exception:
-                            pass
+                        if own_lock is None:
+                            logging.warning(
+                                "Impossible de relire le message de lock %s; conservation prudente de l'instance.",
+                                self._lock_message_id,
+                            )
+                        else:
+                            try:
+                                await own_lock.edit(content=f"{LOCK_TAG} {self.INSTANCE_ID} {int(time.time())}")
+                            except Exception:
+                                pass
             except Exception:
                 pass
             await asyncio.sleep(15)

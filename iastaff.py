@@ -531,7 +531,7 @@ class IAStaff(commands.Cog):
     def _current_morning_datetime(self) -> datetime:
         if MORNING_TIMEZONE is not None:
             return datetime.now(tz=MORNING_TIMEZONE)
-        return datetime.now()
+        return datetime.now().astimezone()
 
     def _render_morning_prompt(self, now: datetime) -> str:
         weekday = FRENCH_WEEKDAYS[now.weekday()]
@@ -1643,7 +1643,7 @@ class IAStaff(commands.Cog):
     def _prune_expired_confirmations(self):
         if not self.pending_confirmations:
             return
-        now = datetime.utcnow()
+        now = discord.utils.utcnow()
         expired = [
             nonce
             for nonce, entry in self.pending_confirmations.items()
@@ -1658,7 +1658,7 @@ class IAStaff(commands.Cog):
         self._prune_expired_confirmations()
         nonce = secrets.token_hex(8)
         entry = {
-            "created_at": datetime.utcnow(),
+            "created_at": discord.utils.utcnow(),
             "channel_id": getattr(ctx.channel, "id", None),
             "user_id": getattr(ctx.author, "id", None),
             "tool": tool_name,
@@ -1676,7 +1676,7 @@ class IAStaff(commands.Cog):
         entry = self.pending_confirmations.get(nonce)
         if not entry:
             return "Nonce introuvable ou expiré. Relance la commande initiale."
-        now = datetime.utcnow()
+        now = discord.utils.utcnow()
         if (now - entry.get("created_at", now)).total_seconds() > IASTAFF_CONFIRM_TTL:
             self.pending_confirmations.pop(nonce, None)
             return "Nonce expiré. Relance la commande initiale."
@@ -2093,7 +2093,7 @@ class IAStaff(commands.Cog):
             emb.set_author(name=title, icon_url="attachment://iastaff.png")
         else:
             emb.set_author(name=title)
-        emb.timestamp = datetime.utcnow()
+        emb.timestamp = discord.utils.utcnow()
         return emb, files
 
     async def _send_long_reply(

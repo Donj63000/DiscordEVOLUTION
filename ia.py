@@ -57,7 +57,7 @@ class IASession:
     history: list = field(default_factory=list)
     @property
     def expired(self) -> bool:
-        return datetime.utcnow() - self.start_ts > timedelta(minutes=60)
+        return discord.utils.utcnow() - self.start_ts > timedelta(minutes=60)
 
 CONSOLE_CHANNEL_NAME = "console"
 QUEUE_PROCESS_INTERVAL = 5
@@ -310,7 +310,7 @@ class IACog(commands.Cog):
     @commands.cooldown(1, 5, commands.BucketType.user)
     async def ia_start_command(self, ctx: commands.Context):
         async with self.session_lock:
-            now = datetime.utcnow()
+            now = discord.utils.utcnow()
             key = ctx.author.id
             sess = self.sessions.get(key)
             if sess and not sess.expired:
@@ -591,7 +591,7 @@ class IACog(commands.Cog):
             model_name = "gemini-2.5-pro"
             system_prompt = "Tu es l'assistant de la guilde Evolution sur Dofus Retro."
             chat = self._new_chat(model_name, system_prompt)
-            self.sessions[uid] = IASession(model_name=model_name, chat=chat, start_ts=datetime.utcnow(), last_activity=datetime.utcnow())
+            self.sessions[uid] = IASession(model_name=model_name, chat=chat, start_ts=discord.utils.utcnow(), last_activity=discord.utils.utcnow())
             await message.channel.send("🆕 Session IA **privée** démarrée. Tu peux écrire directement ici. Pour terminer: `!iaend`.")
         except Exception as e:
             await message.channel.send(f"❗ Impossible de démarrer la session IA: {e}")
@@ -628,7 +628,7 @@ class IACog(commands.Cog):
         key = message.author.id if isinstance(message.channel, discord.DMChannel) else message.channel.id
         session = self.sessions.get(key)
         if session and not session.expired:
-            session.last_activity = datetime.utcnow()
+            session.last_activity = discord.utils.utcnow()
             try:
                 async with message.channel.typing():
                     response = await self._ask_gemini(session.chat, message.content)

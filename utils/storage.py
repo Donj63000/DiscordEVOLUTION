@@ -11,6 +11,7 @@ from utils.channel_resolver import resolve_text_channel
 from utils.discord_history import fetch_channel_history
 
 logger = logging.getLogger(__name__)
+STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", os.getenv("STAFF_ROLE_NAME", "Staff"))
 
 
 class EventStore:
@@ -52,9 +53,37 @@ class EventStore:
             me = guild.me or (guild.get_member(self.bot.user.id) if self.bot.user else None)
             if not me or not getattr(me.guild_permissions, "manage_channels", False):
                 continue
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(
+                    view_channel=False,
+                    read_messages=False,
+                    send_messages=False,
+                    read_message_history=False,
+                ),
+                me: discord.PermissionOverwrite(
+                    view_channel=True,
+                    read_messages=True,
+                    send_messages=True,
+                    attach_files=True,
+                    manage_messages=True,
+                    read_message_history=True,
+                ),
+            }
+            staff_role = discord.utils.find(
+                lambda role: getattr(role, "name", None) == STAFF_ROLE_NAME,
+                getattr(guild, "roles", []) or [],
+            )
+            if staff_role is not None:
+                overwrites[staff_role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    read_messages=True,
+                    send_messages=True,
+                    read_message_history=True,
+                )
             try:
                 return await guild.create_text_channel(
                     default_name,
+                    overwrites=overwrites,
                     reason="Console persistence channel",
                 )
             except (discord.Forbidden, discord.HTTPException):
@@ -67,23 +96,24 @@ class EventStore:
             self.backend = "postgres"
             try:
                 import asyncpg
-
+            except ImportError as exc:
+                raise RuntimeError(
+                    "DATABASE_URL is set but asyncpg is not installed. Add asyncpg to requirements.txt."
+                ) from exc
+            try:
                 self.db = await asyncpg.create_pool(dsn=db_url)
                 await self._init_db()
                 logger.info("EventStore connected to PostgreSQL.")
-            except Exception as e:
-                logger.warning(f"PostgreSQL unavailable: {e}")
-                self.backend = "console"
-        else:
-            self.backend = "console"
-
-        if self.backend == "console":
-            self.console_channel = await self._resolve_console_channel()
-            if not self.console_channel:
-                logger.warning(
-                    "Console channel not found; persistence disabled. "
-                    "Set CHANNEL_CONSOLE_ID or create #console."
-                )
+                return
+            except Exception as exc:
+                raise RuntimeError(f"PostgreSQL configured but unavailable: {exc}") from exc
+        self.backend = "console"
+        self.console_channel = await self._resolve_console_channel()
+        if not self.console_channel:
+            logger.warning(
+                "Console channel not found; persistence disabled. "
+                "Set CHANNEL_CONSOLE_ID or create #console."
+            )
 
     async def _init_db(self):
         if not self.db:

@@ -5,6 +5,7 @@ import os
 import json
 import asyncio
 import logging
+import tempfile
 import discord
 from datetime import datetime
 from discord.ext import commands
@@ -151,7 +152,7 @@ class PlayersCog(commands.Cog):
             message_content = f"{PLAYERS_MARKER}\n```json\n{data_str}\n```"
             existing_message = await self._get_console_snapshot(console_channel)
             if existing_message:
-                await existing_message.edit(content=message_content)
+                await existing_message.edit(content=message_content, attachments=[])
                 self.console_message_id = existing_message.id
                 await ensure_pinned(existing_message)
             else:
@@ -166,18 +167,25 @@ class PlayersCog(commands.Cog):
                     await existing_message.delete()
                 except discord.HTTPException as exc:
                     print(f"[DEBUG] Impossible de supprimer l'ancien snapshot console : {exc}")
-            sent_message = await console_channel.send(
-                f"{PLAYERS_MARKER} (fichier)",
-                file=discord.File(fp=temp_file_path, filename=DATA_FILE_NAME)
-            )
-            self.console_message_id = sent_message.id
-            await ensure_pinned(sent_message)
+            try:
+                sent_message = await console_channel.send(
+                    f"{PLAYERS_MARKER} (fichier)",
+                    file=discord.File(fp=temp_file_path, filename=DATA_FILE_NAME)
+                )
+                self.console_message_id = sent_message.id
+                await ensure_pinned(sent_message)
+            finally:
+                try:
+                    os.remove(temp_file_path)
+                except OSError:
+                    pass
 
     def _as_temp_file(self, data_str: str) -> str:
-        temp_filename = "temp_players_data.json"
-        with open(temp_filename, "w", encoding="utf-8") as tmp:
-            tmp.write(data_str)
-        return temp_filename
+        tmp = tempfile.NamedTemporaryFile(delete=False, mode="w", encoding="utf-8", suffix=".json")
+        tmp.write(data_str)
+        tmp.flush()
+        tmp.close()
+        return tmp.name
 
     async def _resolve_console_channel(self, guild: Optional[discord.Guild] = None) -> Optional[discord.TextChannel]:
         channel: Optional[discord.abc.GuildChannel] = None

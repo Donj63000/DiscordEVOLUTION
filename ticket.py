@@ -183,7 +183,7 @@ class TicketCog(commands.Cog):
         embed = discord.Embed(
             title="🎟 Nouveau Ticket",
             color=discord.Color.blurple(),
-            timestamp=datetime.datetime.utcnow(),
+            timestamp=discord.utils.utcnow(),
         )
         embed.add_field(name="Demandeur", value=user.display_name, inline=True)
         embed.add_field(name="Statut", value="En attente ✅", inline=True)

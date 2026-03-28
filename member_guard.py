@@ -200,43 +200,41 @@ class FormerMemberGuardCog(commands.Cog):
 
     async def _load_from_console(self, console_channel: discord.TextChannel) -> Optional[Dict[str, Any]]:
         candidates = []
+        seen_ids: set[int] = set()
         try:
-            candidates.extend(await console_channel.pins())
+            for msg in await console_channel.pins():
+                msg_id = getattr(msg, "id", None)
+                if msg_id is None or msg_id in seen_ids:
+                    continue
+                seen_ids.add(msg_id)
+                candidates.append(msg)
         except Exception:
             pass
-        best = None
-        best_size = -1
+        for msg in await self._fetch_console_history(console_channel):
+            msg_id = getattr(msg, "id", None)
+            if msg_id is None or msg_id in seen_ids:
+                continue
+            seen_ids.add(msg_id)
+            candidates.append(msg)
+        candidates.sort(
+            key=lambda msg: (
+                ((msg.created_at.replace(tzinfo=timezone.utc) if msg.created_at and msg.created_at.tzinfo is None else msg.created_at) or datetime.min.replace(tzinfo=timezone.utc)).timestamp(),
+                msg.id,
+            ),
+            reverse=True,
+        )
         for msg in candidates:
             if not self._is_console_snapshot(msg):
                 continue
             data = await self._extract_payload(msg)
             if data is None:
                 continue
+            self.console_message_id = msg.id
             guilds = data.get("guilds", {})
             size = sum(len(bucket.get("members", {})) for bucket in guilds.values())
-            if size > best_size:
-                best = data
-                best_size = size
-                self.console_message_id = msg.id
-        if best:
-            log.debug("Former member guard loaded %s entries from pinned snapshot.", best_size)
-            return best
-        history_messages = await self._fetch_console_history(console_channel)
-        for msg in history_messages:
-            if not self._is_console_snapshot(msg):
-                continue
-            data = await self._extract_payload(msg)
-            if data is None:
-                continue
-            guilds = data.get("guilds", {})
-            size = sum(len(bucket.get("members", {})) for bucket in guilds.values())
-            if size > best_size:
-                best = data
-                best_size = size
-                self.console_message_id = msg.id
-        if best:
-            log.debug("Former member guard loaded %s entries from console history.", best_size)
-        return best
+            log.debug("Former member guard loaded %s entries from snapshot %s.", size, msg.id)
+            return data
+        return None
 
     async def _extract_payload(self, message: discord.Message) -> Optional[Dict[str, Any]]:
         for attachment in getattr(message, "attachments", []) or []:
@@ -277,7 +275,7 @@ class FormerMemberGuardCog(commands.Cog):
         if len(data_str) < 1900:
             content = f"{FORMER_MEMBERS_MARKER}\n```json\n{data_str}\n```"
             if message:
-                await message.edit(content=content)
+                await message.edit(content=content, attachments=[])
             else:
                 message = await console_channel.send(content)
                 self.console_message_id = message.id
