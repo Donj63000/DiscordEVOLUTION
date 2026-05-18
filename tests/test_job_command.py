@@ -20,6 +20,25 @@ class FakeContext:
         return payload
 
 
+class FakeConsoleMessage:
+    def __init__(self, content="", *, pinned=False):
+        self.content = content
+        self.pinned = pinned
+        self.deleted = False
+
+    async def delete(self):
+        self.deleted = True
+
+
+class FakeConsoleChannel:
+    def __init__(self, messages):
+        self.messages = list(messages)
+
+    async def history(self, limit=None, oldest_first=False):
+        for message in self.messages:
+            yield message
+
+
 @pytest.fixture
 def job_cog():
     fake_bot = SimpleNamespace(
@@ -50,6 +69,10 @@ def job_cog():
 
 async def invoke_job(cog, ctx, *args):
     await cog.job_command.callback(cog, ctx, *args)
+
+
+async def invoke_clear(cog, ctx, *args):
+    await cog.clear_console_command.callback(cog, ctx, *args)
 
 
 @pytest.mark.asyncio
@@ -111,6 +134,26 @@ async def test_job_prune_staff_triggers_cleanup(job_cog):
     job_cog.prune_jobs.assert_awaited_once()
     embed = ctx.sent_messages[-1].embed
     assert "2" in embed.description
+
+
+@pytest.mark.asyncio
+async def test_clear_console_preserves_persistent_snapshots(job_cog):
+    author = SimpleNamespace(id=555, display_name="Mod", roles=[SimpleNamespace(name=STAFF_ROLE_NAME)])
+    ctx = FakeContext(author)
+    persistent = FakeConsoleMessage("===BOTSTATS===\n```json\n{}\n```")
+    pinned = FakeConsoleMessage("message épinglé", pinned=True)
+    transient = FakeConsoleMessage("debug temporaire")
+    channel = FakeConsoleChannel([persistent, pinned, transient])
+    job_cog.get_console_channel = AsyncMock(return_value=channel)
+
+    await invoke_clear(job_cog, ctx, "console", "CONFIRMER")
+
+    assert persistent.deleted is False
+    assert pinned.deleted is False
+    assert transient.deleted is True
+    embed = ctx.sent_messages[-1].embed
+    assert "Messages supprimés" in embed.description
+    assert "**1**" in embed.description
 
 
 @pytest.mark.asyncio

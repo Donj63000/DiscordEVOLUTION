@@ -14,16 +14,9 @@ from typing import Dict, Optional
 import discord
 
 from discord.ext import commands, tasks
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.image as mpimg
 from datetime import datetime, timedelta, date
 from utils.channel_resolver import resolve_text_channel
 from utils.discord_history import fetch_channel_history
-
-# Import d'un module externe "calendrier" contenant la fonction gen_cal
-from calendrier import gen_cal, MONTH_NAMES_FR
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,6 +29,22 @@ VALIDATED_ROLE_NAME = "Membre validé d'Evolution"
 # Fichier de persistance
 DATA_FILE = "activities_data.json"
 MARKER_TEXT = "===BOTACTIVITES==="
+
+MONTH_NAMES_FR = [
+    "",
+    "Janvier",
+    "Février",
+    "Mars",
+    "Avril",
+    "Mai",
+    "Juin",
+    "Juillet",
+    "Août",
+    "Septembre",
+    "Octobre",
+    "Novembre",
+    "Décembre",
+]
 
 # Expression régulière pour parse la date/heure
 DATE_TIME_REGEX = re.compile(r"(?P<date>\d{2}/\d{2}/\d{4})\s*(?:;|\s+)\s*(?P<time>\d{2}:\d{2})(?P<desc>.*)$")
@@ -195,6 +204,8 @@ class CalendrierView(discord.ui.View):
         )
 
     def build_file(self) -> discord.File:
+        from calendrier import gen_cal
+
         buffer = gen_cal(
             self.events,
             self.bg_image,
@@ -977,6 +988,8 @@ class ActiviteCog(commands.Cog):
             return await ctx.send("Données en cours de chargement.")
 
         try:
+            import matplotlib.image as mpimg
+
             bg = mpimg.imread("calendrier1.png")
         except Exception as e:
             logger.info(f"Impossible de charger 'calendrier1.png': {e}")

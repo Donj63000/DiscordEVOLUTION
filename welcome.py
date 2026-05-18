@@ -6,6 +6,7 @@ import discord
 import json
 import logging
 import os
+import re
 import unicodedata
 from discord.ext import commands
 
@@ -24,6 +25,29 @@ WELCOME_IMAGE_PATH = os.path.join(BASE_DIR, "welcome1.png")
 WELCOME_MARKER = "===WELCOME==="
 CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 log = logging.getLogger(__name__)
+
+CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+EVERYONE_HERE_RE = re.compile(r"@(?=everyone\b|here\b)", re.IGNORECASE)
+DISCORD_MENTION_RE = re.compile(r"<(@!?|@&|#)\d+>")
+
+
+def _sanitize_display_text(value: str | None, *, default: str = "non", max_len: int = 64) -> str:
+    text = unicodedata.normalize("NFKC", value or "").strip()
+    text = CONTROL_CHARS_RE.sub("", text)
+    text = EVERYONE_HERE_RE.sub("@\u200b", text)
+    text = DISCORD_MENTION_RE.sub("[mention retirée]", text)
+    text = text.replace("`", "ʼ")
+    text = " ".join(text.split())
+
+    if max_len > 0 and len(text) > max_len:
+        text = text[:max_len].rstrip() + "…"
+
+    return text or default
+
+
+def _safe_nickname(value: str | None, fallback: str) -> str:
+    nickname = _sanitize_display_text(value, default=fallback, max_len=32)
+    return nickname[:32] or fallback[:32]
 
 
 class WelcomeCog(commands.Cog):
@@ -234,9 +258,14 @@ class WelcomeCog(commands.Cog):
         recruiter_pseudo: str,
     ) -> None:
         recruitment_date = discord.utils.utcnow().strftime("%d/%m/%Y")
+        safe_dofus_pseudo = _sanitize_display_text(dofus_pseudo, default=member.display_name, max_len=64)
+        safe_recruiter_pseudo = _sanitize_display_text(recruiter_pseudo, default="non", max_len=64)
         validated_role = self._find_role(member.guild, VALIDATED_ROLE_NAME)
         try:
-            await member.edit(nick=dofus_pseudo)
+            await member.edit(
+                nick=_safe_nickname(safe_dofus_pseudo, member.display_name),
+                reason="Validation welcome Evolution",
+            )
             log.debug("Nickname updated for %s.", member.id)
         except (discord.Forbidden, discord.HTTPException) as exc:
             log.debug("Unable to rename %s: %s", member.id, exc, exc_info=True)
@@ -252,7 +281,7 @@ class WelcomeCog(commands.Cog):
 
         try:
             await dm_channel.send(
-                f"Genial, {dofus_pseudo}! Te voila membre officiel de la guilde Evolution. "
+                f"Genial, {safe_dofus_pseudo}! Te voila membre officiel de la guilde Evolution. "
                 "Bienvenue a toi et profite bien du serveur !"
             )
         except discord.Forbidden:
@@ -263,7 +292,7 @@ class WelcomeCog(commands.Cog):
             await players_cog.auto_register_member(
                 discord_id=member.id,
                 discord_display_name=member.display_name,
-                dofus_pseudo=dofus_pseudo,
+                dofus_pseudo=safe_dofus_pseudo,
             )
             log.debug("PlayersCog auto registration done for %s.", member.id)
         else:
@@ -278,11 +307,19 @@ class WelcomeCog(commands.Cog):
         if general_channel:
             annonce_msg_general = (
                 "Nouvelle recrue en approche !\n\n"
-                f"Faites un triomphe a {member.mention}, alias **{dofus_pseudo}** sur Dofus, "
+                f"Faites un triomphe a {member.mention}, alias **{safe_dofus_pseudo}** sur Dofus, "
                 "qui rejoint officiellement nos rangs !\n"
                 "Un grand bienvenue de la part de toute la guilde !"
             )
-            await general_channel.send(annonce_msg_general)
+            await general_channel.send(
+                annonce_msg_general,
+                allowed_mentions=discord.AllowedMentions(
+                    users=[member],
+                    roles=False,
+                    everyone=False,
+                    replied_user=False,
+                ),
+            )
         else:
             log.debug("General channel not found for announcement.")
 
@@ -293,13 +330,15 @@ class WelcomeCog(commands.Cog):
             default_name=RECRUITMENT_CHANNEL_NAME,
         )
         if recruitment_channel:
-            if recruiter_pseudo.lower() == "non":
+            if safe_recruiter_pseudo.lower() == "non":
                 recruiter_info = "n'a pas indique de recruteur"
             else:
-                recruiter_info = f"a ete invite par **{recruiter_pseudo}**"
+                recruiter_info = f"a ete invite par **{safe_recruiter_pseudo}**"
+
             await recruitment_channel.send(
-                f"Le joueur **{dofus_pseudo}** a rejoint la guilde le **{recruitment_date}** "
-                f"et {recruiter_info}."
+                f"Le joueur **{safe_dofus_pseudo}** a rejoint la guilde le **{recruitment_date}** "
+                f"et {recruiter_info}.",
+                allowed_mentions=discord.AllowedMentions.none(),
             )
         else:
             log.debug("Recruitment channel not found for announcement.")
@@ -424,7 +463,13 @@ class WelcomeCog(commands.Cog):
             await general_channel.send(
                 f"👋 {member.mention}, je n’ai pas pu t’envoyer de message privé ! "
                 "Active tes MP pour finaliser l’accueil. "
-                "En attendant, sois le/la bienvenu·e parmi nous ! 🎉" + extra
+                "En attendant, sois le/la bienvenu·e parmi nous ! 🎉" + extra,
+                allowed_mentions=discord.AllowedMentions(
+                    users=[member],
+                    roles=False,
+                    everyone=False,
+                    replied_user=False,
+                ),
             )
         else:
             print(f"[DEBUG] Fallback impossible : canal #{GENERAL_CHANNEL_NAME} introuvable.")

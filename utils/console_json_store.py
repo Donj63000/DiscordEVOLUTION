@@ -70,7 +70,7 @@ class ConsoleJSONSnapshotStore:
                 name_env=self.channel_name_env,
                 default_name=self.default_channel_name,
             )
-            if isinstance(channel, discord.TextChannel):
+            if channel is not None:
                 return channel
         return None
 

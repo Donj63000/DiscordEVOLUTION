@@ -57,7 +57,13 @@ class IASession:
     history: list = field(default_factory=list)
     @property
     def expired(self) -> bool:
-        return discord.utils.utcnow() - self.start_ts > timedelta(minutes=60)
+        now = discord.utils.utcnow()
+        start_ts = self.start_ts
+        if now.tzinfo is not None and start_ts.tzinfo is None:
+            start_ts = start_ts.replace(tzinfo=now.tzinfo)
+        elif now.tzinfo is None and start_ts.tzinfo is not None:
+            now = now.replace(tzinfo=start_ts.tzinfo)
+        return now - start_ts > timedelta(minutes=60)
 
 CONSOLE_CHANNEL_NAME = "console"
 QUEUE_PROCESS_INTERVAL = 5
@@ -623,7 +629,6 @@ class IACog(commands.Cog):
             return
         ctx = await self.bot.get_context(message)
         if ctx.valid and ctx.command is not None:
-            await self.bot.process_commands(message)
             return
         key = message.author.id if isinstance(message.channel, discord.DMChannel) else message.channel.id
         session = self.sessions.get(key)

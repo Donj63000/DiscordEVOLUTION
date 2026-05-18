@@ -397,10 +397,42 @@ async def test_run_bot_command_invokes_generic_command(iastaff_tools_cog):
         ctx,
         "run_bot_command",
         {"command": "job", "positional_args": ["liste"], "keyword_args": {"foo": "bar"}},
+        skip_confirmation=True,
     )
 
     ctx.invoke.assert_awaited_once_with(dummy_command, "liste", foo="bar")
     assert "!job" in ack
+
+
+@pytest.mark.asyncio
+async def test_run_bot_command_requires_confirmation_by_default(iastaff_tools_cog):
+    ctx = FakeContext()
+    dummy_command = object()
+    iastaff_tools_cog.bot.get_command = lambda name: dummy_command if name == "job" else None
+
+    ack = await iastaff_tools_cog._dispatch_command_tool(
+        ctx,
+        "run_bot_command",
+        {"command": "job", "positional_args": ["liste"]},
+    )
+
+    assert "Action sensible" in ack
+    assert iastaff_tools_cog.pending_confirmations
+    ctx.invoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_bot_command_blocks_dangerous_commands(iastaff_tools_cog):
+    ctx = FakeContext()
+    iastaff_tools_cog.bot.get_command = lambda name: object()
+
+    with pytest.raises(RuntimeError, match="Commande interdite"):
+        await iastaff_tools_cog._dispatch_command_tool(
+            ctx,
+            "run_bot_command",
+            {"command": "clear"},
+            skip_confirmation=True,
+        )
 
 
 @pytest.mark.asyncio
@@ -430,6 +462,7 @@ async def test_revoke_role_handles_missing_role(iastaff_tools_cog):
         ctx,
         "revoke_role",
         {"member": "Dwzo", "role": "Validé"},
+        skip_confirmation=True,
     )
 
     member.remove_roles.assert_awaited_once()

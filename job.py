@@ -25,6 +25,25 @@ LOGO_FILENAME = "metier.png"
 LOGO_PATH = os.path.join(os.path.dirname(__file__), LOGO_FILENAME)
 log = logging.getLogger(__name__)
 
+CONSOLE_PRESERVE_MARKERS = (
+    "===BOTLOCK===",
+    "===BOTSTATS===",
+    "===BOTJOBS===",
+    "===PLAYERSDATA===",
+    "===WELCOME===",
+    "===FORMER_MEMBERS===",
+    "===BOTACTIVITES===",
+    "===BOTPROFILES===",
+    "===LADDER_SNAPSHOT===",
+    "===WARNINGS===",
+    "===BOTUP===",
+    "===PERCO===",
+    "===SONDAGES===",
+    "===EVENTSTORE===",
+)
+
+CLEAR_CONSOLE_CONFIRMATION = os.getenv("CLEAR_CONSOLE_CONFIRMATION", "CONFIRMER")
+
 
 def _canon_json(d: dict) -> str:
     return json.dumps(d, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -841,13 +860,38 @@ class JobCog(commands.Cog):
 
     @commands.command(name="clear")
     @commands.has_role(STAFF_ROLE_NAME)
-    async def clear_console_command(self, ctx, channel_name=None):
+    async def clear_console_command(
+        self,
+        ctx: commands.Context,
+        channel_name: str | None = None,
+        confirmation: str | None = None,
+    ):
         if not channel_name:
-            e = discord.Embed(title="Utilisation", description="`!clear console`", color=discord.Color.orange())
+            e = discord.Embed(
+                title="Utilisation",
+                description=(
+                    "`!clear console CONFIRMER`\n\n"
+                    "Cette commande nettoie uniquement les messages non persistants du salon console. "
+                    "Les snapshots du bot et messages épinglés sont conservés."
+                ),
+                color=discord.Color.orange(),
+            )
             await self.send_logo_embed(ctx, e)
             return
         if channel_name.lower() != "console":
-            e = discord.Embed(title="Commande limitée", description="Pour l'instant, seule la commande `!clear console` est disponible.", color=discord.Color.orange())
+            e = discord.Embed(
+                title="Commande limitée",
+                description="Seule la commande `!clear console CONFIRMER` est disponible.",
+                color=discord.Color.orange(),
+            )
+            await self.send_logo_embed(ctx, e)
+            return
+        if confirmation != CLEAR_CONSOLE_CONFIRMATION:
+            e = discord.Embed(
+                title="Confirmation requise",
+                description=f"Pour confirmer : `!clear console {CLEAR_CONSOLE_CONFIRMATION}`",
+                color=discord.Color.orange(),
+            )
             await self.send_logo_embed(ctx, e)
             return
         channel = await self.get_console_channel(ctx.guild)
@@ -856,13 +900,27 @@ class JobCog(commands.Cog):
             await self.send_logo_embed(ctx, e)
             return
         deleted_count = 0
+        preserved_count = 0
+
         async for msg in channel.history(limit=None, oldest_first=True):
+            content = getattr(msg, "content", "") or ""
+            if getattr(msg, "pinned", False) or any(marker in content for marker in CONSOLE_PRESERVE_MARKERS):
+                preserved_count += 1
+                continue
+
             try:
                 await msg.delete()
                 deleted_count += 1
-            except:
+            except discord.HTTPException:
                 pass
-        e = discord.Embed(title="Nettoyage effectué", description=f"Salon console nettoyé, {deleted_count} messages supprimés.", color=discord.Color.green())
+        e = discord.Embed(
+            title="Nettoyage effectué",
+            description=(
+                f"Messages supprimés : **{deleted_count}**\n"
+                f"Messages persistants/épinglés conservés : **{preserved_count}**"
+            ),
+            color=discord.Color.green(),
+        )
         await self.send_logo_embed(ctx, e)
 
 async def setup(bot: commands.Bot):

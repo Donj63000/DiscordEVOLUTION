@@ -26,3 +26,4 @@ async def test_stats_log_capping():
         await cog.on_message(message)
 
     assert len(cog.stats_data["logs"]["messages_created"]) == 2
+    assert cog.stats_data["logs"]["messages_created"][-1]["content"] is None

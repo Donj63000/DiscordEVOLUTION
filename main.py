@@ -15,6 +15,8 @@ from collections import deque
 from utils.channel_resolver import resolve_text_channel
 from utils.discord_history import fetch_channel_history, fetch_channel_message
 
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("main")
 
@@ -22,18 +24,33 @@ LOCK_TAG = "===BOTLOCK==="
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", os.getenv("STAFF_ROLE_NAME", "Staff"))
 
 
+def env_bool(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
+
+def env_csv(name: str) -> list[str]:
+    return [item.strip() for item in (os.getenv(name) or "").split(",") if item.strip()]
+
+
 class EvoBot(commands.Bot):
     def __init__(self):
-        load_dotenv()
         token = os.getenv("DISCORD_TOKEN")
         if not token:
             raise RuntimeError("DISCORD_TOKEN manquant")
 
         intents = discord.Intents.default()
-        intents.message_content = True
-        intents.members = True
+        intents.message_content = env_bool("ENABLE_MESSAGE_CONTENT_INTENT", True)
+        intents.members = env_bool("ENABLE_MEMBERS_INTENT", True)
+        intents.presences = env_bool("ENABLE_PRESENCE_INTENT", False)
 
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(
+            command_prefix=os.getenv("BOT_PREFIX", "!"),
+            intents=intents,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
         self.token = token
         self.INSTANCE_ID = os.getenv("RENDER_INSTANCE_ID") or os.getenv("INSTANCE_ID") or uuid.uuid4().hex
         self._singleton_ready = False
@@ -113,47 +130,73 @@ class EvoBot(commands.Bot):
     async def setup_hook(self):
         self.remove_command("help")
 
-        base_exts = [
+        required_exts = [
             "job",
-            "ia",
             "activite",
             "ticket",
-            "music",
             "players",
             "sondage",
             "stats",
             "help",
             "welcome",
-            "entree",
             "member_guard",
             "calcul",
-            "defender",
             "perco",
             "avis",
+            "organisation",
+            "event_conversation",
         ]
 
-        for ext in base_exts:
+        optional_exts = [
+            "ia",
+            "music",
+            "defender",
+            "moderation",
+            "up",
+            "entree",
+            "slash_events",
+            "cogs.profil",
+            "cogs.annonce_ai",
+        ]
+
+        failed_required: list[str] = []
+
+        for ext in required_exts:
+            if not await self._safe_load(ext):
+                failed_required.append(ext)
+
+        for ext in optional_exts:
             await self._safe_load(ext)
-
-        loaded_org = await self._safe_load("organisation")
-        if not loaded_org:
-            logging.error("Extension 'organisation' introuvable ou invalide.")
-
-        await self._safe_load("cogs.profil")
-        await self._safe_load("cogs.annonce_ai")
 
         await self._load_iastaff_anywhere()
 
-        try:
-            await self.load_extension("event_conversation")
-            logging.info("Extension chargée: event_conversation")
-        except Exception as e:
-            logging.error("Échec load_extension event_conversation: %s", e, exc_info=True)
-            await self.close()
-            os._exit(1)
+        if failed_required:
+            logging.error("Extensions critiques non chargées: %s", ", ".join(failed_required))
+            raise RuntimeError(f"Extensions critiques non chargées: {', '.join(failed_required)}")
 
-        cmds = [c.name for c in self.commands]
-        logging.info("Commandes enregistrées: %s", cmds)
+        await self._sync_app_commands()
+
+        cmds = [c.qualified_name for c in self.commands]
+        logging.info("Commandes prefix enregistrées: %s", cmds)
+
+    async def _sync_app_commands(self) -> None:
+        if not env_bool("SYNC_SLASH_COMMANDS", False):
+            logging.info("Sync slash commands désactivée (SYNC_SLASH_COMMANDS=0).")
+            return
+
+        guild_id_raw = (os.getenv("SYNC_SLASH_GUILD_ID") or "").strip()
+
+        try:
+            if guild_id_raw:
+                guild = discord.Object(id=int(guild_id_raw))
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                logging.info("Slash commands synchronisées sur guild %s: %d", guild_id_raw, len(synced))
+            else:
+                synced = await self.tree.sync()
+                logging.info("Slash commands globales synchronisées: %d", len(synced))
+        except Exception as exc:
+            logging.warning("Sync slash commands échouée: %s", exc, exc_info=True)
 
     async def wait_console_channel(self, timeout=30):
         default_name = os.getenv("CHANNEL_CONSOLE", "console")
@@ -354,12 +397,51 @@ async def ping_cmd(ctx):
 
 
 @bot.event
-async def on_command_error(ctx, error):
+async def on_command_error(ctx: commands.Context, error: Exception):
+    original = getattr(error, "original", error)
+
+    if isinstance(original, commands.CommandNotFound):
+        return
+
+    if isinstance(original, commands.MissingRequiredArgument):
+        await ctx.reply(
+            f"Paramètre manquant : `{original.param.name}`.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+
+    if isinstance(original, commands.BadArgument):
+        await ctx.reply(
+            "Argument invalide. Vérifie la commande avec `!aide`.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+
+    if isinstance(original, commands.CheckFailure):
+        await ctx.reply(
+            "Tu n’as pas la permission d’utiliser cette commande.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+
+    logging.exception(
+        "Erreur commande %s par %s: %s",
+        getattr(ctx.command, "qualified_name", "inconnue"),
+        getattr(ctx.author, "id", "unknown"),
+        original,
+    )
+
     try:
-        await ctx.reply(f"⚠️ {error.__class__.__name__}: {error}", mention_author=False)
+        await ctx.reply(
+            "Erreur interne pendant l’exécution de la commande. Le staff peut consulter les logs.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
     except Exception:
         pass
-    logging.exception("on_command_error: %s", error)
 
 
 if __name__ == "__main__":

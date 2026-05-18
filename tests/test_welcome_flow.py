@@ -12,6 +12,16 @@ if str(ROOT) not in sys.path:
 import welcome
 
 
+def test_sanitize_display_text_removes_mentions_and_limits_length():
+    unsafe = "@everyone <@1234567890> `Pseudo` " + "x" * 100
+    sanitized = welcome._sanitize_display_text(unsafe, max_len=32)
+
+    assert "@everyone" not in sanitized
+    assert "<@1234567890>" not in sanitized
+    assert "`" not in sanitized
+    assert len(sanitized) <= 33
+
+
 class DummyRole:
     def __init__(self, name: str) -> None:
         self.name = name

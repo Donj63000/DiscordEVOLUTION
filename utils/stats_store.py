@@ -1,181 +1,109 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+from __future__ import annotations
 
 import hashlib
 import json
 import logging
 import os
-import re
-import tempfile
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import discord
 
-from utils.channel_resolver import resolve_text_channel
-from utils.discord_history import fetch_channel_history
+from utils.console_json_store import ConsoleJSONSnapshotStore
 
-log = logging.getLogger("utils.stats_store")
+log = logging.getLogger(__name__)
 
-CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*\n(?P<body>.+?)```", re.DOTALL)
+STATS_MARKER = "===BOTSTATS==="
+STATS_FILENAME = "stats_data.json"
 
 
-def _json_digest(obj) -> str:
-    payload = json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+def _json_digest(payload: dict[str, Any]) -> str:
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.md5(body.encode("utf-8")).hexdigest()
+
+
+def _read_int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _read_bool_env(name: str, default: bool = True) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
 
 
 class StatsStore:
-    def __init__(self, bot, channel_name: str = "console"):
+    """
+    Persistance des statistiques dans #console.
+
+    Points importants :
+    - ne lit que les messages marqués ===BOTSTATS=== ou l'attachment stats_data.json ;
+    - évite de confondre les snapshots stats avec jobs/profils/welcome/etc. ;
+    - épingle le snapshot pour faciliter la reprise après redémarrage ;
+    - conserve une sauvegarde fichier via ConsoleJSONSnapshotStore si le JSON dépasse la limite Discord.
+    """
+
+    def __init__(self, bot: discord.Client, channel_name: str = "console") -> None:
         self.bot = bot
         self.channel_name = channel_name
-        self._msg: discord.Message | None = None
-        self._etag: str | None = None
-        self._last_save: float = 0.0
-        self.min_interval = int(os.getenv("STATS_MIN_INTERVAL", "900"))
+        self._message_id: Optional[int] = None
+        self._etag: Optional[str] = None
+        self._last_save = 0.0
+        self.min_interval = max(_read_int_env("STATS_MIN_INTERVAL", 900), 0)
 
-    async def _get_channel(self):
-        for guild in getattr(self.bot, "guilds", []):
-            chan = resolve_text_channel(
-                guild,
-                id_env="CHANNEL_CONSOLE_ID",
-                name_env="CHANNEL_CONSOLE",
-                default_name=self.channel_name,
-            )
-            if chan:
-                return chan
-        get_all_channels = getattr(self.bot, "get_all_channels", None)
-        if callable(get_all_channels):
-            chan = discord.utils.get(get_all_channels(), name=self.channel_name)
-            if chan:
-                return chan
-        log.warning("Canal #%s introuvable – persistance désactivée", self.channel_name)
-        return None
+        self._store = ConsoleJSONSnapshotStore(
+            bot,
+            marker=STATS_MARKER,
+            filename=STATS_FILENAME,
+            default_channel_name=channel_name,
+            channel_id_env="CHANNEL_CONSOLE_ID",
+            channel_name_env="CHANNEL_CONSOLE",
+            history_limit_env="STATS_CONSOLE_HISTORY_LIMIT",
+            history_limit_default=max(_read_int_env("CONSOLE_HISTORY_LIMIT", 300), 50),
+            pin_messages=_read_bool_env("STATS_PIN_MESSAGES", True),
+        )
 
-    async def save(self, data) -> bool:
-        chan = await self._get_channel()
-        if not chan:
+    async def save(self, data: dict[str, Any]) -> bool:
+        if not isinstance(data, dict):
+            log.warning("StatsStore.save ignoré : payload non-dict (%s).", type(data).__name__)
             return False
+
         digest = _json_digest(data)
-        now = time.time()
+        now = time.monotonic()
+
         if self._etag == digest and (now - self._last_save) < self.min_interval:
             return True
-        payload = json.dumps(data, ensure_ascii=False, indent=2)
-        content = f"```json\n{payload}\n```"
-        if len(content) <= 2000:
-            try:
-                if self._msg:
-                    await self._msg.edit(content=content, attachments=[])
-                else:
-                    self._msg = await chan.send(content)
-            except Exception:
-                try:
-                    self._msg = await chan.send(content)
-                except Exception:
-                    log.exception("Impossible d'enregistrer les stats dans #%s", self.channel_name)
-                    return False
-            self._etag = digest
-            self._last_save = now
-            return True
-        fd, path = tempfile.mkstemp(suffix=".json")
+
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(payload)
-            try:
-                if self._msg:
-                    try:
-                        await self._msg.edit(
-                            content="===BOTSTATS=== (fichier)",
-                            attachments=[discord.File(path, filename="stats_data.json")],
-                        )
-                    except Exception:
-                        try:
-                            await self._msg.delete()
-                        except Exception:
-                            pass
-                        self._msg = await chan.send(
-                            "===BOTSTATS=== (fichier)",
-                            file=discord.File(path, filename="stats_data.json"),
-                        )
-                else:
-                    self._msg = await chan.send(
-                        "===BOTSTATS=== (fichier)",
-                        file=discord.File(path, filename="stats_data.json"),
-                    )
-            except Exception:
-                log.exception("Impossible d'envoyer le fichier de stats dans #%s", self.channel_name)
-                return False
-        finally:
-            try:
-                os.remove(path)
-            except:
-                pass
+            message = await self._store.save(data, current_message_id=self._message_id)
+        except Exception:
+            log.exception("Impossible d'enregistrer les stats dans #%s.", self.channel_name)
+            return False
+
+        if message is None:
+            log.warning("Canal #%s introuvable : persistance stats Discord désactivée.", self.channel_name)
+            return False
+
+        self._message_id = getattr(message, "id", None)
         self._etag = digest
         self._last_save = now
         return True
 
-    async def load(self) -> Optional[dict]:
-        chan = await self._get_channel()
-        if not chan:
-            return None
-
-        checked: set[int] = set()
-        candidates = []
+    async def load(self) -> Optional[dict[str, Any]]:
         try:
-            for msg in await chan.pins():
-                mid = getattr(msg, "id", id(msg))
-                if mid in checked:
-                    continue
-                checked.add(mid)
-                candidates.append(msg)
+            message, payload = await self._store.load_latest(current_message_id=self._message_id)
         except Exception:
-            log.debug("Aucun pin exploitable pour #%s", self.channel_name)
-        messages = await fetch_channel_history(chan, limit=50, reason="stats_store.load")
-        for msg in messages:
-            mid = getattr(msg, "id", id(msg))
-            if mid in checked:
-                continue
-            checked.add(mid)
-            candidates.append(msg)
-
-        for msg in candidates:
-            data = await self._extract_payload(msg)
-            if data is not None:
-                return data
-        return None
-
-    async def _extract_payload(self, msg) -> Optional[dict]:
-        content = getattr(msg, "content", "") or ""
-        bot_user = getattr(self.bot, "user", None)
-        is_bot_message = bot_user is None or getattr(msg, "author", None) == bot_user
-        if not is_bot_message and "===BOTSTATS===" not in content:
+            log.exception("Impossible de charger les stats depuis #%s.", self.channel_name)
             return None
 
-        # Attachments first
-        for att in getattr(msg, "attachments", []) or []:
-            filename = getattr(att, "filename", "")
-            if not filename or not filename.endswith(".json"):
-                continue
-            try:
-                raw = await att.read()
-                data = json.loads(raw.decode("utf-8"))
-                self._msg = msg
-                self._etag = _json_digest(data)
-                return data
-            except Exception:
-                log.warning("Lecture JSON impossible depuis %s", filename, exc_info=True)
+        if not isinstance(payload, dict):
+            return None
 
-        if not content:
-            return None
-        match = CODE_BLOCK_RE.search(content.strip())
-        if not match:
-            return None
-        body = match.group("body").strip()
-        try:
-            data = json.loads(body)
-            self._msg = msg
-            self._etag = _json_digest(data)
-            return data
-        except Exception:
-            log.warning("Contenu JSON invalide dans le message de stats", exc_info=True)
-            return None
+        self._message_id = getattr(message, "id", None)
+        self._etag = _json_digest(payload)
+        self._last_save = time.monotonic()
+        return payload

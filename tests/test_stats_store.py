@@ -7,9 +7,13 @@ from itertools import count
 # Insert repo root in path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# Fake discord module for StatsStore
-fake_discord = sys.modules.setdefault("discord", types.ModuleType("discord"))
-fake_discord.Client = object
+try:
+    import discord as fake_discord
+    USING_REAL_DISCORD = True
+except ImportError:
+    fake_discord = sys.modules.setdefault("discord", types.ModuleType("discord"))
+    fake_discord.Client = object
+    USING_REAL_DISCORD = False
 
 
 class _Attachment:
@@ -45,6 +49,7 @@ class _Message:
 
 class _Channel:
     def __init__(self, name="console", messages=None, bot_user=None):
+        self.id = 123
         self.name = name
         self._messages = list(messages or [])
         self.bot_user = bot_user
@@ -94,12 +99,13 @@ class _File:
         self.filename = filename
 
 
-fake_discord.Message = _Message
-fake_discord.TextChannel = _Channel
-fake_discord.File = _File
-fake_discord.Forbidden = type("Forbidden", (Exception,), {})
-fake_discord.NotFound = type("NotFound", (Exception,), {})
-fake_discord.utils = _Utils
+if not USING_REAL_DISCORD:
+    fake_discord.Message = _Message
+    fake_discord.TextChannel = _Channel
+    fake_discord.File = _File
+    fake_discord.Forbidden = type("Forbidden", (Exception,), {})
+    fake_discord.NotFound = type("NotFound", (Exception,), {})
+    fake_discord.utils = _Utils
 
 from utils.stats_store import StatsStore
 
@@ -109,6 +115,7 @@ class _Bot:
         self._channel = channel
         self.user = object()
         channel.bot_user = self.user
+        self.guilds = [types.SimpleNamespace(text_channels=[channel])]
 
     def get_all_channels(self):
         return [self._channel]
@@ -125,7 +132,8 @@ def test_stats_store_save_and_load(tmp_path):
         assert saved is True
         assert len(chan._messages) == 1
         msg = chan._messages[0]
-        assert msg.content.startswith("```json")
+        assert msg.content.startswith("===BOTSTATS===")
+        assert msg.pinned is True
 
         # simulate reload with a fresh store
         new_store = StatsStore(bot)

@@ -62,7 +62,11 @@ def _parse_float_env(var_name: str, default: float) -> float:
 IASTAFF_TEMPERATURE = max(0.0, min(2.0, _parse_float_env("IASTAFF_TEMPERATURE", 0.4)))
 IASTAFF_SAFE_MENTIONS = os.getenv("IASTAFF_SAFE_MENTIONS", "1") != "0"
 IASTAFF_RULES_MODE = (os.getenv("IASTAFF_RULES_MODE") or "always").strip().lower()
-IASTAFF_CONFIRM_DESTRUCTIVE = (os.getenv("IASTAFF_CONFIRM_DESTRUCTIVE") or "0").strip().lower() not in {"0", "false", "off"}
+IASTAFF_CONFIRM_DESTRUCTIVE = (os.getenv("IASTAFF_CONFIRM_DESTRUCTIVE") or "1").strip().lower() not in {
+    "0",
+    "false",
+    "off",
+}
 
 
 def _parse_ttl_env(var_name: str, default: int) -> int:
@@ -85,6 +89,21 @@ SENSITIVE_TOOL_NAMES = {
     "stats_disable",
     "revoke_role",
     "run_bot_command",
+}
+
+IASTAFF_RUN_COMMAND_WHITELIST = {
+    item.strip().lower()
+    for item in (os.getenv("IASTAFF_RUN_COMMAND_WHITELIST") or "").split(",")
+    if item.strip()
+}
+
+IASTAFF_RUN_COMMAND_BLOCKLIST = {
+    "clear",
+    "iastaff",
+    "staffia",
+    "resetwarnings",
+    "stats reset",
+    "stats off",
 }
 
 
@@ -654,7 +673,10 @@ class IAStaff(commands.Cog):
             return
         for channel in self._resolve_morning_channels():
             try:
-                await channel.send(message)
+                await channel.send(
+                    _sanitize_discord_mentions(message),
+                    allowed_mentions=_allowed_mentions(),
+                )
             except Exception as exc:
                 log.warning("IAStaff morning greeting failure on %s: %s", getattr(channel, "name", channel.id), exc)
 
@@ -1908,6 +1930,18 @@ class IAStaff(commands.Cog):
                 raise RuntimeError("`keyword_args` doit être un objet.")
             pos_list = [str(arg) for arg in pos_args]
             kw_map = {str(k): str(v) for k, v in kw_args.items()}
+            normalized_command = " ".join(command_name.lower().split())
+            root_command = normalized_command.split(" ", 1)[0]
+
+            if normalized_command in IASTAFF_RUN_COMMAND_BLOCKLIST or root_command in IASTAFF_RUN_COMMAND_BLOCKLIST:
+                raise RuntimeError(f"Commande interdite via IA Staff: {command_name}")
+
+            if IASTAFF_RUN_COMMAND_WHITELIST and (
+                normalized_command not in IASTAFF_RUN_COMMAND_WHITELIST
+                and root_command not in IASTAFF_RUN_COMMAND_WHITELIST
+            ):
+                raise RuntimeError(f"Commande non autorisée via IA Staff: {command_name}")
+
             await invoke(command_name, *pos_list, **kw_map)
             summary = f"Commande `{command_name}` exécutée."
             if pos_list:

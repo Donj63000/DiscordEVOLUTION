@@ -10,9 +10,23 @@ from discord.ext import commands, tasks
 
 from utils.stats_store import StatsStore
 
-DATA_FILE = os.getenv("STATS_LOCAL_PATH", "stats_data.json")
-STATS_CHANNEL_NAME = os.getenv("STATS_CHANNEL", "console")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+DATA_FILE = os.getenv("STATS_LOCAL_PATH") or os.path.join(BASE_DIR, "stats_data.json")
+STATS_CHANNEL_NAME = os.getenv("STATS_CHANNEL", os.getenv("CHANNEL_CONSOLE", "console"))
 DEFAULT_MAX_LOGS = 2000
+
+STATS_STORE_CONTENT = (os.getenv("STATS_STORE_CONTENT", "0") or "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+try:
+    STATS_CONTENT_MAX_CHARS = max(int(os.getenv("STATS_CONTENT_MAX_CHARS", "300")), 0)
+except ValueError:
+    STATS_CONTENT_MAX_CHARS = 300
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +102,26 @@ def _merge_dicts(base: dict, incoming: dict) -> None:
 def now_iso() -> str:
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
+
+def _safe_message_content(content: str | None) -> str | None:
+    """
+    Ne stocke le contenu des messages que si STATS_STORE_CONTENT=1.
+
+    Par défaut, on conserve uniquement les métriques et IDs, pas le texte exact.
+    """
+    if not STATS_STORE_CONTENT:
+        return None
+
+    text = (content or "").replace("\x00", "").strip()
+    if not text:
+        return None
+
+    if STATS_CONTENT_MAX_CHARS and len(text) > STATS_CONTENT_MAX_CHARS:
+        return text[:STATS_CONTENT_MAX_CHARS] + "…"
+
+    return text
+
+
 class StatsCog(commands.Cog):
     """
     Commandes !stats on / !stats off (Staff) pour activer/désactiver la collecte
@@ -146,18 +180,28 @@ class StatsCog(commands.Cog):
 
     async def save_stats_data(self):
         stored = False
+
         if self.store:
             try:
                 stored = await self.store.save(self.stats_data)
             except Exception as exc:
-                print(f"[Stats] Erreur persistance #{STATS_CHANNEL_NAME} : {exc}")
+                log.warning("Stats: erreur persistance #%s : %s", STATS_CHANNEL_NAME, exc, exc_info=True)
+
         if stored:
             return
+
+        tmp_path = f"{DATA_FILE}.tmp"
         try:
-            with open(DATA_FILE, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(self.stats_data, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"[Stats] Erreur lors de la sauvegarde locale : {e}")
+            os.replace(tmp_path, DATA_FILE)
+        except Exception as exc:
+            log.warning("Stats: erreur lors de la sauvegarde locale %s : %s", DATA_FILE, exc, exc_info=True)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
 
     @tasks.loop(seconds=int(os.getenv("STATS_SAVE_INTERVAL", "900")))
     async def save_loop(self):
@@ -210,7 +254,7 @@ class StatsCog(commands.Cog):
             "author_id": user_id,
             "author_name": message.author.name,
             "roles": roles,
-            "content": message.content
+            "content": _safe_message_content(message.content)
         }
         self._append_log("messages_created", msg_log)
 
@@ -234,8 +278,8 @@ class StatsCog(commands.Cog):
             "channel_id": ch_id,
             "author_id": str(after.author.id),
             "author_name": after.author.name,
-            "old_content": before.content,
-            "new_content": after.content
+            "old_content": _safe_message_content(before.content),
+            "new_content": _safe_message_content(after.content)
         }
         self._append_log("messages_edited", edit_log)
 
@@ -259,7 +303,7 @@ class StatsCog(commands.Cog):
             "channel_id": ch_id,
             "author_id": str(message.author.id) if message.author else None,
             "author_name": message.author.name if message.author else None,
-            "content": message.content if message.content else None
+            "content": _safe_message_content(message.content)
         }
         self._append_log("messages_deleted", del_log)
 

@@ -9,6 +9,8 @@ import sqlite3
 import logging
 import time
 import socket
+from dataclasses import dataclass
+import ipaddress
 from urllib.parse import urlparse, urljoin
 
 import asyncio
@@ -26,18 +28,6 @@ import idna
 from asyncio import Semaphore
 
 # ---------------------------------------------------------------------------
-# 1) CONFIG LOGGER GLOBAL
-# ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,  # Pour déboguer davantage, passer en logging.DEBUG
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("defender_discord.log", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
-
-# ---------------------------------------------------------------------------
 # 2) CONSTANTES ET REGEX
 # ---------------------------------------------------------------------------
 URL_REGEX = re.compile(r"(https?://[^\s]+)", re.IGNORECASE)
@@ -51,6 +41,12 @@ BLOCK_PRIVATE_IPS = True      # Bloquer l'accès aux IP privées (SSRF)
 # ---------------------------------------------------------------------------
 # 3) LA COG DEFENDER
 # ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class HttpProbeResult:
+    status: int
+    headers: dict[str, str]
+
+
 class DefenderCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -62,7 +58,11 @@ class DefenderCog(commands.Cog):
         self.PHISHTANK_APP_KEY = os.getenv("PHISHTANK_APP_KEY")  # facultatif
 
         # Whitelist de domaines (à personnaliser si besoin)
-        self.LISTE_BLANCHE_DOMAINE = []
+        self.LISTE_BLANCHE_DOMAINE = [
+            domain.strip().lower().lstrip(".")
+            for domain in os.getenv("DEFENDER_DOMAIN_WHITELIST", "").split(",")
+            if domain.strip()
+        ]
 
         # Shortlinks potentiels
         self.SHORTLINK_DOMAINS = [
@@ -187,7 +187,6 @@ class DefenderCog(commands.Cog):
         if not found_urls:
             return  # aucune URL, on laisse simplement le Bot gérer les commandes
 
-        new_content = message.content
         results = []
         worst_status = None  # On stocke le plus mauvais statut (SÛR, INDÉTERMINÉ, DANGEREUX)
 
@@ -198,10 +197,6 @@ class DefenderCog(commands.Cog):
                     continue  # URL invalide ?
 
                 results.append((raw_url, statut, url_affiche))
-
-                # Si c'est un lien DANGEREUX, on remplace par un placeholder
-                if "DANGEREUX" in statut:
-                    new_content = new_content.replace(raw_url, "[dangerous link removed]")
 
                 # Calcul de la « sévérité »
                 severity = 0
@@ -226,15 +221,6 @@ class DefenderCog(commands.Cog):
         if not results:
             return  # aucune URL valide, on laisse le Bot gérer les commandes
 
-        # Édition du message si on a supprimé un lien dangereux
-        if new_content != message.content:
-            try:
-                await message.edit(content=new_content)
-            except discord.Forbidden:
-                self.logger.warning("Impossible d'éditer => permissions manquantes.")
-            except discord.HTTPException as e:
-                self.logger.warning(f"Erreur lors de l'édition du message: {e}")
-
         # Couleur globale en fonction du "plus mauvais statut"
         if worst_status == "DANGEREUX":
             final_color = 0xE74C3C
@@ -258,19 +244,13 @@ class DefenderCog(commands.Cog):
                 inline=False
             )
 
-        try:
-            await message.reply(embed=embed, mention_author=False)
-        except discord.HTTPException as exc:
-            # Si le message original n'existe plus (ex: supprimé avant la réponse),
-            # Discord retourne un "Unknown message" -> on bascule sur un envoi simple.
-            if getattr(exc, "code", None) == 50035 or "Unknown message" in str(exc):
-                self.logger.warning("Impossible de répondre directement (message introuvable), envoi dans le salon.")
-                try:
-                    await message.channel.send(embed=embed, mention_author=False)
-                except discord.HTTPException as sub_exc:
-                    self.logger.error("Echec de l'envoi Defender fallback: %s", sub_exc)
-            else:
-                self.logger.error("Echec de l'envoi Defender: %s", exc)
+        dangerous_detected = any("DANGEREUX" in statut for _original_url, statut, _url_affiche in results)
+
+        await self._send_scan_report(
+            message,
+            embed,
+            dangerous_detected=dangerous_detected,
+        )
 
     # -----------------------------------------------------------------------
     # 8) ANALYSE PRINCIPALE  (PhishTank, VirusTotal, etc.)
@@ -302,19 +282,17 @@ class DefenderCog(commands.Cog):
         if self.GOOGLE_SAFE_BROWSING_API_KEY:
             est_sure_sb, details_sb = await self.verifier_url_safe_browsing(url_nettoyee)
         else:
-            # Si aucune clé GSB => on suppose SÛR
-            est_sure_sb, details_sb = True, None
+            est_sure_sb, details_sb = None, None
 
         # ---------------------------------------------------------
         # D) FUSION DES VERDICTS
         # ---------------------------------------------------------
-        flags_danger = [(x is False) for x in (est_sure_pt, est_sure_vt, est_sure_sb)]
-        flags_sure   = [(x is True)  for x in (est_sure_pt, est_sure_vt, est_sure_sb)]
+        verdicts = [value for value in (est_sure_pt, est_sure_vt, est_sure_sb) if value is not None]
 
-        if any(flags_danger):
+        if any(value is False for value in verdicts):
             statut = "DANGEREUX ⚠️"
             color  = 0xE74C3C
-        elif all(flags_sure):
+        elif verdicts and all(value is True for value in verdicts):
             statut = "SÛR ✅"
             color  = 0x2ECC71
         else:
@@ -346,8 +324,8 @@ class DefenderCog(commands.Cog):
         # => Vous pouvez décider de forcer (True, None) si vous voulez ignorer PhishTank
         #    quand vous n’avez pas de clé. Exemple ci-dessous :
         if not self.PHISHTANK_APP_KEY:
-            self.logger.info("Pas de clé PhishTank => on suppose SÛR (par défaut).")
-            return True, None
+            self.logger.info("Pas de clé PhishTank => fournisseur désactivé.")
+            return None, None
 
         endpoint = "https://checkurl.phishtank.com/checkurl/"
         data = {"url": url, "format": "json", "app_key": self.PHISHTANK_APP_KEY}
@@ -384,8 +362,8 @@ class DefenderCog(commands.Cog):
         # IMPORTANT : si vous n’avez pas de clé API, renvoyez True, None
         # plutôt que None, None pour ne pas conclure Indéterminé
         if not self.VIRUSTOTAL_API_KEY:
-            self.logger.info("Pas de clé VirusTotal => on suppose SÛR (par défaut).")
-            return True, None
+            self.logger.info("Pas de clé VirusTotal => fournisseur désactivé.")
+            return None, None
 
         try:
             url_b64 = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
@@ -447,7 +425,7 @@ class DefenderCog(commands.Cog):
     # -----------------------------------------------------------------------
     async def verifier_url_safe_browsing(self, url: str):
         if not self.GOOGLE_SAFE_BROWSING_API_KEY:
-            return True, None
+            return None, None
 
         endpoint = "https://safebrowsing.googleapis.com/v4/threatMatches:find"
         payload = {
@@ -531,7 +509,7 @@ class DefenderCog(commands.Cog):
 
         # Bloquer IP privées ?
         if BLOCK_PRIVATE_IPS:
-            if self.is_private_or_local(puny_host):
+            if await self.is_private_or_local(puny_host):
                 self.logger.warning(f"Refus d'une IP/host interne => {url}")
                 return None, False
 
@@ -605,7 +583,7 @@ class DefenderCog(commands.Cog):
                         next_url = urljoin(current_url, next_url)
                     if BLOCK_PRIVATE_IPS:
                         host_only = urlparse(next_url).netloc.split(":")[0]
-                        if self.is_private_or_local(host_only):
+                        if await self.is_private_or_local(host_only):
                             self.logger.warning(f"Refus IP locale => {next_url}")
                             break
                     current_url = next_url
@@ -620,42 +598,63 @@ class DefenderCog(commands.Cog):
         self.cache_expanded_urls[short_url] = (current_url, now)
         return current_url
 
-    async def head_or_get(self, url: str, method: str = "HEAD"):
+    async def head_or_get(self, url: str, method: str = "HEAD") -> HttpProbeResult | None:
         try:
             async with async_timeout.timeout(5):
                 async with self.http_session.request(method, url, allow_redirects=False) as resp:
-                    return resp
-        except Exception as e:
-            self.logger.debug(f"{method} {url} échoue: {e}")
+                    return HttpProbeResult(status=resp.status, headers=dict(resp.headers))
+        except Exception as exc:
+            self.logger.debug("%s %s échoue: %s", method, url, exc)
             return None
 
     # -----------------------------------------------------------------------
     # 15) DÉTECTION IP PRIVÉE
     # -----------------------------------------------------------------------
-    def is_private_or_local(self, host: str) -> bool:
-        """Retourne True si la résolution du host donne une IP privée/locale."""
+    def _is_forbidden_ip(self, ip: ipaddress._BaseAddress) -> bool:
+        shared_cgnat = ipaddress.ip_network("100.64.0.0/10")
+        return (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+            or ip in shared_cgnat
+        )
+
+    async def is_private_or_local(self, host: str) -> bool:
+        """
+        Bloque les destinations locales/privées/réservées.
+
+        Retourne True en cas d'erreur DNS : mieux vaut bloquer un lien douteux
+        que créer une faille SSRF.
+        """
+        cleaned = (host or "").strip().strip("[]").lower()
+        if not cleaned:
+            return True
+
         try:
-            addr = socket.gethostbyname(host)
-        except socket.gaierror:
-            return False
-        except Exception:
+            literal_ip = ipaddress.ip_address(cleaned)
+            return self._is_forbidden_ip(literal_ip)
+        except ValueError:
+            pass
+
+        try:
+            infos = await asyncio.wait_for(
+                asyncio.get_running_loop().getaddrinfo(cleaned, None, type=socket.SOCK_STREAM),
+                timeout=3,
+            )
+        except Exception as exc:
+            self.logger.warning("Résolution DNS impossible pour %s: %s", cleaned, exc)
             return True
 
-        if addr.startswith("127.") or addr.startswith("10."):
-            return True
-        if addr.startswith("192.168."):
-            return True
-
-        octets = addr.split(".")
-        if len(octets) == 4:
-            first = int(octets[0])
-            second = int(octets[1])
-            # 172.16.x.x à 172.31.x.x
-            if first == 172 and 16 <= second <= 31:
+        for _family, _type, _proto, _canonname, sockaddr in infos:
+            try:
+                resolved_ip = ipaddress.ip_address(sockaddr[0])
+            except Exception:
                 return True
-
-        if addr == "0.0.0.0" or addr == "::1":
-            return True
+            if self._is_forbidden_ip(resolved_ip):
+                return True
 
         return False
 
@@ -673,6 +672,57 @@ class DefenderCog(commands.Cog):
             lambda m: f"{m.group(1).split('.')[0]}***.{'.'.join(m.group(1).split('.')[1:])}",
             msg
         )
+
+    async def _send_scan_report(
+        self,
+        message: discord.Message,
+        embed: discord.Embed,
+        *,
+        dangerous_detected: bool,
+    ) -> None:
+        if dangerous_detected:
+            deleted = False
+            try:
+                await message.delete()
+                deleted = True
+            except discord.Forbidden:
+                self.logger.warning("Defender: permission MANAGE_MESSAGES manquante pour supprimer un lien dangereux.")
+            except discord.HTTPException as exc:
+                self.logger.warning("Defender: suppression du message impossible: %s", exc)
+
+            prefix = (
+                f"⚠️ Message de {message.author.mention} supprimé : lien dangereux détecté."
+                if deleted
+                else f"⚠️ Lien dangereux détecté dans un message de {message.author.mention}, mais suppression impossible."
+            )
+
+            await message.channel.send(
+                prefix,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(
+                    users=[message.author],
+                    roles=False,
+                    everyone=False,
+                    replied_user=False,
+                ),
+            )
+            return
+
+        try:
+            await message.reply(
+                embed=embed,
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException as exc:
+            if getattr(exc, "code", None) == 50035 or "Unknown message" in str(exc):
+                self.logger.warning("Defender: reply impossible, fallback send.")
+                await message.channel.send(
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            else:
+                self.logger.error("Defender: échec envoi rapport: %s", exc)
 
     def creer_embed(self, url_affiche: str, statut: str, color: int) -> discord.Embed:
         embed = discord.Embed(
