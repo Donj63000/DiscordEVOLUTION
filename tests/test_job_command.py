@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import discord
 import pytest
 
 from job import JobCog, STAFF_ROLE_NAME
@@ -28,6 +29,12 @@ class FakeConsoleMessage:
 
     async def delete(self):
         self.deleted = True
+
+
+class FailingConsoleMessage(FakeConsoleMessage):
+    async def delete(self):
+        response = SimpleNamespace(status=500, reason="internal error", text="error")
+        raise discord.HTTPException(response, "delete failed")
 
 
 class FakeConsoleChannel:
@@ -154,6 +161,23 @@ async def test_clear_console_preserves_persistent_snapshots(job_cog):
     embed = ctx.sent_messages[-1].embed
     assert "Messages supprimés" in embed.description
     assert "**1**" in embed.description
+
+
+@pytest.mark.asyncio
+async def test_clear_console_ignores_delete_api_error(job_cog):
+    author = SimpleNamespace(id=555, display_name="Mod", roles=[SimpleNamespace(name=STAFF_ROLE_NAME)])
+    ctx = FakeContext(author)
+    failing = FailingConsoleMessage("debug impossible à supprimer")
+    stable = FakeConsoleMessage("===BOTJOBS===\n```json\n{}\n```")
+    channel = FakeConsoleChannel([failing, stable])
+    job_cog.get_console_channel = AsyncMock(return_value=channel)
+
+    await invoke_clear(job_cog, ctx, "console", "CONFIRMER")
+
+    embed = ctx.sent_messages[-1].embed
+    assert embed.title == "Nettoyage effectué"
+    assert "Messages supprimés : **0**" in embed.description
+    assert "conservés : **1**" in embed.description
 
 
 @pytest.mark.asyncio

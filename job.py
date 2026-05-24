@@ -10,6 +10,7 @@ import tempfile
 import hashlib, io
 import logging
 import time
+from contextlib import suppress
 import discord
 from discord.ext import commands, tasks
 from collections import defaultdict
@@ -189,8 +190,14 @@ class JobCog(commands.Cog):
         try:
             if not msg.pinned:
                 await msg.pin(reason="Jobs data snapshot")
-        except Exception as exc:
-            log.debug("Jobs: unable to pin console snapshot: %s", exc)
+        except discord.HTTPException as exc:
+            log.debug(
+                "Jobs: pin snapshot failed subcommand=job.pin guild_id=%s channel_id=%s message_id=%s action=pin error=%s",
+                getattr(msg.guild, "id", None),
+                getattr(msg.channel, "id", None),
+                msg.id,
+                exc,
+            )
 
     async def _parse_jobs_message(self, msg: discord.Message) -> bool:
         if msg.author != self.bot.user:
@@ -207,7 +214,7 @@ class JobCog(commands.Cog):
                     self.console_message_id = msg.id
                     self._console_last_sync = time.monotonic()
                     return True
-                except Exception as exc:
+                except (discord.HTTPException, UnicodeDecodeError, json.JSONDecodeError) as exc:
                     log.debug("Jobs: failed to parse attachment: %s", exc)
         if "```json" in content:
             try:
@@ -218,7 +225,7 @@ class JobCog(commands.Cog):
                 self.console_message_id = msg.id
                 self._console_last_sync = time.monotonic()
                 return True
-            except Exception as exc:
+            except (ValueError, json.JSONDecodeError) as exc:
                 log.debug("Jobs: failed to parse inline json: %s", exc)
         return False
 
@@ -233,7 +240,13 @@ class JobCog(commands.Cog):
                 return msg
         try:
             pinned = await ch.pins()
-        except Exception:
+        except discord.HTTPException as exc:
+            log.debug(
+                "Jobs: list pins failed subcommand=job.read_console guild_id=%s channel_id=%s action=read_pins error=%s",
+                getattr(ch.guild, "id", None),
+                ch.id,
+                exc,
+            )
             pinned = []
         for msg in pinned:
             if msg.author == self.bot.user and marker in (msg.content or ""):
@@ -292,7 +305,13 @@ class JobCog(commands.Cog):
                 self.console_message_id = None
             try:
                 pinned = await ch.pins()
-            except Exception:
+            except discord.HTTPException as exc:
+                log.debug(
+                    "Jobs: list pins failed subcommand=job.read_console guild_id=%s channel_id=%s action=read_pins error=%s",
+                    guild.id,
+                    ch.id,
+                    exc,
+                )
                 pinned = []
             for msg in pinned:
                 if await self._parse_jobs_message(msg):
@@ -332,12 +351,25 @@ class JobCog(commands.Cog):
                     message = last
                 else:
                     message = await ch.send(content)
-            except Exception:
+            except discord.HTTPException as exc:
+                log.debug(
+                    "Jobs: snapshot edit/send failed subcommand=job.snapshot guild_id=%s channel_id=%s message_id=%s action=edit_or_send error=%s",
+                    guild.id,
+                    ch.id,
+                    getattr(last, "id", None),
+                    exc,
+                )
                 if last:
                     try:
                         await last.delete()
-                    except:
-                        pass
+                    except discord.HTTPException as delete_exc:
+                        log.debug(
+                            "Jobs: snapshot delete fallback failed subcommand=job.delete guild_id=%s channel_id=%s message_id=%s action=delete error=%s",
+                            guild.id,
+                            ch.id,
+                            last.id,
+                            delete_exc,
+                        )
                 message = await ch.send(content)
             if message:
                 self.console_message_id = message.id
@@ -363,11 +395,24 @@ class JobCog(commands.Cog):
                         attachments=[discord.File(file_obj, filename="jobs_data.json")],
                     )
                     message = last
-                except Exception:
+                except discord.HTTPException as exc:
+                    log.debug(
+                        "Jobs: file snapshot edit failed subcommand=job.snapshot guild_id=%s channel_id=%s message_id=%s action=edit_attachment error=%s",
+                        guild.id,
+                        ch.id,
+                        last.id,
+                        exc,
+                    )
                     try:
                         await last.delete()
-                    except:
-                        pass
+                    except discord.HTTPException as delete_exc:
+                        log.debug(
+                            "Jobs: file snapshot delete fallback failed subcommand=job.delete guild_id=%s channel_id=%s message_id=%s action=delete error=%s",
+                            guild.id,
+                            ch.id,
+                            last.id,
+                            delete_exc,
+                        )
                     file_obj.seek(0)
                     message = await ch.send(
                         f"{header} (fichier)",
@@ -379,10 +424,8 @@ class JobCog(commands.Cog):
                     file=discord.File(file_obj, filename="jobs_data.json"),
                 )
         finally:
-            try:
+            with suppress(OSError):
                 file_obj.close()
-            except:
-                pass
         if message:
             self.console_message_id = message.id
             self._console_last_sync = time.monotonic()
@@ -498,7 +541,12 @@ class JobCog(commands.Cog):
 
         try:
             reply = await self.bot.wait_for("message", timeout=30.0, check=check)
-        except:
+        except asyncio.TimeoutError:
+            log.debug(
+                "Jobs: confirmation timeout subcommand=job.add guild_id=%s channel_id=%s action=wait_confirmation",
+                getattr(ctx.guild, "id", None),
+                getattr(ctx.channel, "id", None),
+            )
             e = discord.Embed(title="Commande annulée", description="Temps écoulé, commande annulée.", color=discord.Color.red())
             await self.send_logo_embed(ctx, e)
             return
@@ -525,8 +573,13 @@ class JobCog(commands.Cog):
             try:
                 async for m in g.fetch_members(limit=None):
                     union_ids.add(m.id)
-            except:
-                pass
+            except (discord.HTTPException, discord.Forbidden) as exc:
+                log.debug(
+                    "Jobs: member fetch failed subcommand=job.prune guild_id=%s channel_id=%s action=fetch_members error=%s",
+                    g.id,
+                    None,
+                    exc,
+                )
         return union_ids
 
     async def prune_jobs(self):
@@ -911,8 +964,14 @@ class JobCog(commands.Cog):
             try:
                 await msg.delete()
                 deleted_count += 1
-            except discord.HTTPException:
-                pass
+            except discord.HTTPException as exc:
+                log.debug(
+                    "Jobs: clear delete failed subcommand=clear.console guild_id=%s channel_id=%s message_id=%s action=delete error=%s",
+                    ctx.guild.id,
+                    channel.id,
+                    msg.id,
+                    exc,
+                )
         e = discord.Embed(
             title="Nettoyage effectué",
             description=(
