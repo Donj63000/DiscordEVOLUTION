@@ -219,3 +219,48 @@ async def test_on_member_remove_without_match_skips_persistence(job_cog):
     assert job_cog.jobs_data == initial_data
     job_cog.save_data_local.assert_not_called()
     job_cog.dump_data_to_console.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_initialize_data_blocks_local_fallback_when_disabled(monkeypatch, tmp_path):
+    local_file = tmp_path / "jobs_data.json"
+    local_file.write_text('{"123": {"name": "Local", "jobs": {"Mineur": 20}}}', encoding="utf-8")
+    monkeypatch.setattr("job.DATA_FILE", str(local_file))
+    monkeypatch.setattr("job.JOB_ALLOW_LOCAL_FALLBACK", False)
+
+    fake_bot = SimpleNamespace(guilds=[SimpleNamespace(id=1)], user=SimpleNamespace(id=777, name="bot"))
+    cog = JobCog(fake_bot)
+
+    async def fake_load_from_console(_guild):
+        return False
+
+    cog.load_from_console = fake_load_from_console
+    cog.migrate_legacy_keys = AsyncMock()
+
+    await cog.initialize_data()
+
+    assert cog.jobs_data == {}
+    cog.migrate_legacy_keys.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_initialize_data_uses_local_fallback_when_enabled(monkeypatch, tmp_path):
+    local_file = tmp_path / "jobs_data.json"
+    local_file.write_text('{"123": {"name": "Local", "jobs": {"Mineur": 20}}}', encoding="utf-8")
+    monkeypatch.setattr("job.DATA_FILE", str(local_file))
+    monkeypatch.setattr("job.JOB_ALLOW_LOCAL_FALLBACK", True)
+
+    fake_bot = SimpleNamespace(guilds=[SimpleNamespace(id=1)], user=SimpleNamespace(id=777, name="bot"))
+    cog = JobCog(fake_bot)
+
+    async def fake_load_from_console(_guild):
+        return False
+
+    cog.load_from_console = fake_load_from_console
+    cog.migrate_legacy_keys = AsyncMock()
+
+    await cog.initialize_data()
+
+    assert cog.jobs_data["123"]["name"] == "Local"
+    assert cog.jobs_data["123"]["jobs"]["Mineur"] == 20
+    cog.migrate_legacy_keys.assert_awaited_once_with()
