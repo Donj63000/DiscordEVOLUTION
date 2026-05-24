@@ -169,7 +169,7 @@ Le projet est pense pour une exploitation reelle sur Discord, pas juste pour du 
 | `#console` | C est la source de verite pour les donnees critiques. Utilisez les helpers de persistance au lieu d inventer des fichiers ad hoc. |
 | IA Staff | `IASTAFF_ENABLE_TOOLS=1` permet a l assistant d agir via son catalogue d outils. |
 | Organisation | Les variables `ORGANISATION_*` reglent le backend, les timeouts et les parametres de planification. |
-| Stockage | `DATABASE_URL` peut etre active pour certains usages, sinon le fallback par console reste la reference. |
+| Stockage | `DATABASE_URL` peut etre active pour certains usages, sinon le fallback par console reste la reference. `JOB_ALLOW_LOCAL_FALLBACK=1` autorise explicitement un secours local pour `jobs_data.json` en cas de console vide/indisponible. |
 | Secrets | Aucun token, cache runtime ou donnees sensibles ne doit etre committe. |
 
 Snapshots locaux typiques :

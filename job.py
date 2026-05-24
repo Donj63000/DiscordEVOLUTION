@@ -24,6 +24,7 @@ JOB_MIN_LEVEL = 1
 JOB_MAX_LEVEL = 100
 LOGO_FILENAME = "metier.png"
 LOGO_PATH = os.path.join(os.path.dirname(__file__), LOGO_FILENAME)
+JOB_ALLOW_LOCAL_FALLBACK = os.getenv("JOB_ALLOW_LOCAL_FALLBACK", "0") == "1"
 log = logging.getLogger(__name__)
 
 CONSOLE_PRESERVE_MARKERS = (
@@ -433,16 +434,36 @@ class JobCog(commands.Cog):
         return True
 
     async def initialize_data(self):
-        for g in self.bot.guilds:
-            ok = await self.load_from_console(g)
-            if ok:
+        console_loaded = False
+        for guild in self.bot.guilds:
+            if await self.load_from_console(guild):
+                console_loaded = True
                 break
+        if console_loaded:
+            log.debug("Jobs: initialize_data source=console status=loaded")
+        elif not self.jobs_data:
+            log.debug(
+                "Jobs: initialize_data source=console status=empty_or_unavailable local_fallback_allowed=%s",
+                JOB_ALLOW_LOCAL_FALLBACK,
+            )
         if not self.jobs_data and os.path.exists(DATA_FILE):
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    self.jobs_data = json.load(f)
-            except:
-                self.jobs_data = {}
+            if JOB_ALLOW_LOCAL_FALLBACK:
+                try:
+                    with open(DATA_FILE, "r", encoding="utf-8") as file_obj:
+                        self.jobs_data = json.load(file_obj)
+                    log.debug("Jobs: initialize_data source=local_file status=loaded file=%s", DATA_FILE)
+                except (OSError, json.JSONDecodeError) as exc:
+                    log.debug(
+                        "Jobs: initialize_data source=local_file status=load_failed file=%s error=%s",
+                        DATA_FILE,
+                        exc,
+                    )
+                    self.jobs_data = {}
+            else:
+                log.debug(
+                    "Jobs: initialize_data source=local_file status=blocked file=%s reason=fallback_disabled",
+                    DATA_FILE,
+                )
         await self.migrate_legacy_keys()
         self.initialized = True
 
