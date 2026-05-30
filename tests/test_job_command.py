@@ -22,7 +22,8 @@ class FakeContext:
 
 
 class FakeConsoleMessage:
-    def __init__(self, content="", *, pinned=False):
+    def __init__(self, content="", *, pinned=False, message_id=123):
+        self.id = message_id
         self.content = content
         self.pinned = pinned
         self.deleted = False
@@ -38,7 +39,8 @@ class FailingConsoleMessage(FakeConsoleMessage):
 
 
 class FakeConsoleChannel:
-    def __init__(self, messages):
+    def __init__(self, messages, channel_id=456):
+        self.id = channel_id
         self.messages = list(messages)
 
     async def history(self, limit=None, oldest_first=False):

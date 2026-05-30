@@ -2,9 +2,11 @@ import asyncio
 import json
 import logging
 import os
+from calendar import monthrange
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, time, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands, tasks
@@ -12,8 +14,46 @@ from discord.ext import commands, tasks
 from utils.channel_resolver import resolve_text_channel
 from utils.console_json_store import ConsoleJSONSnapshotStore
 
-CHECK_INTERVAL_HOURS = 168  # 1 semaine
-VOTE_DURATION_SECONDS = 300  # 5 minutes
+log = logging.getLogger(__name__)
+
+
+def _parse_int_env(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None and value < minimum:
+        return default
+    if maximum is not None and value > maximum:
+        return default
+    return value
+
+
+def _resolve_timezone(name: str):
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        log.warning("Timezone promotion invalide `%s`, fallback UTC.", name)
+        return timezone.utc
+
+
+VOTE_DURATION_SECONDS = _parse_int_env("UP_PROMOTION_VOTE_DURATION_SECONDS", 3600, minimum=1)
+PROMOTION_CAMPAIGN_DAY = _parse_int_env("UP_PROMOTION_CAMPAIGN_DAY", 15, minimum=1, maximum=31)
+PROMOTION_CAMPAIGN_HOUR = _parse_int_env("UP_PROMOTION_CAMPAIGN_HOUR", 20, minimum=0, maximum=23)
+PROMOTION_CAMPAIGN_TIMEZONE_NAME = os.getenv(
+    "UP_PROMOTION_CAMPAIGN_TIMEZONE",
+    os.getenv("UP_PROMOTION_CAMPAIGN_TZ", "Europe/Paris"),
+).strip() or "Europe/Paris"
+PROMOTION_CAMPAIGN_TIMEZONE = _resolve_timezone(PROMOTION_CAMPAIGN_TIMEZONE_NAME)
+PROMOTION_CAMPAIGN_TRIGGER_TIME = time(
+    hour=PROMOTION_CAMPAIGN_HOUR,
+    minute=0,
+    tzinfo=PROMOTION_CAMPAIGN_TIMEZONE,
+)
+PROMOTION_META_KEY = "_meta"
+LAST_CAMPAIGN_MONTH_KEY = "last_promotion_campaign_month"
+YES_VOTE_EMOJI = "\u2705"
+NO_VOTE_EMOJI = "\u274c"
 STAFF_ROLE_NAME = "Staff"
 VALID_MEMBER_ROLE_NAME = "Membre validé d'Evolution"
 INVITE_ROLE_NAME = "Invité"
@@ -25,8 +65,6 @@ MESSAGE_THRESHOLD = 20
 JOINED_THRESHOLD_DAYS = 6 * 30
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROMOTIONS_FILE = os.path.join(BASE_DIR, "promotions_data.json")
-
-log = logging.getLogger(__name__)
 
 
 class UpCog(commands.Cog):
@@ -121,11 +159,62 @@ class UpCog(commands.Cog):
         self.save_promotions_data_local()
         await self.dump_data_to_console()
 
+    def _metadata(self) -> dict:
+        metadata = self.promotions_data.get(PROMOTION_META_KEY)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            self.promotions_data[PROMOTION_META_KEY] = metadata
+        return metadata
+
+    def _campaign_month_key(self, now: datetime) -> str:
+        return now.strftime("%Y-%m")
+
+    def _effective_campaign_day(self, now: datetime) -> int:
+        return min(PROMOTION_CAMPAIGN_DAY, monthrange(now.year, now.month)[1])
+
+    def _current_campaign_datetime(self) -> datetime:
+        return datetime.now(tz=PROMOTION_CAMPAIGN_TIMEZONE)
+
+    def _promotion_campaign_due(self, now: datetime) -> bool:
+        if now.day < self._effective_campaign_day(now):
+            return False
+        return self._last_campaign_month() != self._campaign_month_key(now)
+
+    def _last_campaign_month(self) -> str | None:
+        metadata = self.promotions_data.get(PROMOTION_META_KEY)
+        if not isinstance(metadata, dict):
+            return None
+        value = metadata.get(LAST_CAMPAIGN_MONTH_KEY)
+        return value if isinstance(value, str) else None
+
+    def _mark_promotion_campaign_done(self, now: datetime) -> None:
+        self._metadata()[LAST_CAMPAIGN_MONTH_KEY] = self._campaign_month_key(now)
+
+    async def _run_monthly_promotion_campaign(self, now: datetime | None = None) -> bool:
+        current = now or self._current_campaign_datetime()
+        if not self._promotion_campaign_due(current):
+            log.debug(
+                "UpCog: monthly promotion campaign skipped (now=%s, last=%s).",
+                current.isoformat(),
+                self._last_campaign_month(),
+            )
+            return False
+        log.debug("UpCog: monthly promotion campaign start for %s.", self._campaign_month_key(current))
+        await self.scan_entire_history()
+        await self.verifier_membres_eligibles()
+        self._mark_promotion_campaign_done(current)
+        await self._persist_state()
+        log.debug("UpCog: monthly promotion campaign complete for %s.", self._campaign_month_key(current))
+        return True
+
     def _entry(self, user_id: int) -> dict:
         return self.promotions_data.setdefault(str(user_id), {})
 
     def get_promotion_status(self, user_id: int):
-        return self.promotions_data.get(str(user_id), {}).get("status")
+        entry = self.promotions_data.get(str(user_id), {})
+        if not isinstance(entry, dict):
+            return None
+        return entry.get("status")
 
     def set_promotion_status(self, user_id: int, status: str, *, clear_vote: bool = False):
         entry = self._entry(user_id)
@@ -134,7 +223,10 @@ class UpCog(commands.Cog):
             entry.pop("vote", None)
 
     def get_vote_info(self, user_id: int) -> Optional[dict]:
-        return self.promotions_data.get(str(user_id), {}).get("vote")
+        entry = self.promotions_data.get(str(user_id), {})
+        if not isinstance(entry, dict):
+            return None
+        return entry.get("vote")
 
     def set_vote_info(self, user_id: int, vote_info: Optional[dict]):
         entry = self._entry(user_id)
@@ -164,6 +256,8 @@ class UpCog(commands.Cog):
         now_ts = int(discord.utils.utcnow().timestamp())
         changed = False
         for user_id_str, entry in list(self.promotions_data.items()):
+            if not isinstance(entry, dict):
+                continue
             if entry.get("status") != "voting":
                 continue
             vote = entry.get("vote") or {}
@@ -208,6 +302,14 @@ class UpCog(commands.Cog):
         finally:
             self._vote_tasks.pop(user_id, None)
 
+    async def _delete_vote_message(self, vote_message: discord.Message, user_id: int) -> None:
+        try:
+            await vote_message.delete()
+        except discord.NotFound:
+            return
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log.warning("UpCog: unable to delete empty vote message for %s: %s", user_id, exc)
+
     async def _finalize_vote(self, user_id: int):
         entry = self.promotions_data.get(str(user_id), {})
         if entry.get("status") != "voting":
@@ -235,7 +337,6 @@ class UpCog(commands.Cog):
         try:
             vote_message = await staff_channel.fetch_message(message_id)
         except discord.NotFound:
-            await staff_channel.send(f"Le message de vote pour {member.mention} a disparu, vote reporté.")
             self.set_promotion_status(user_id, "postponed", clear_vote=True)
             await self._persist_state()
             return
@@ -248,16 +349,14 @@ class UpCog(commands.Cog):
         yes_count = 0
         no_count = 0
         for reaction in getattr(vote_message, "reactions", []) or []:
-            if str(reaction.emoji) == "✅":
+            if str(reaction.emoji) == YES_VOTE_EMOJI:
                 yes_count = max(reaction.count - 1, 0)
-            elif str(reaction.emoji) == "❌":
+            elif str(reaction.emoji) == NO_VOTE_EMOJI:
                 no_count = max(reaction.count - 1, 0)
 
         total_votes = yes_count + no_count
         if total_votes == 0:
-            await staff_channel.send(
-                f"Aucun vote exprimé pour {member.mention}, proposition reportée à la semaine prochaine."
-            )
+            await self._delete_vote_message(vote_message, user_id)
             self.set_promotion_status(user_id, "postponed", clear_vote=True)
             await self._persist_state()
             return
@@ -270,14 +369,12 @@ class UpCog(commands.Cog):
             return
         await self.promouvoir_veteran(staff_channel, member)
 
-    @tasks.loop(hours=CHECK_INTERVAL_HOURS)
+    @tasks.loop(time=PROMOTION_CAMPAIGN_TRIGGER_TIME)
     async def check_up_status(self):
         await self._ensure_initialized()
         if not self.initialized:
             return
-        await self.scan_entire_history()
-        await self.verifier_membres_eligibles()
-        await self._persist_state()
+        await self._run_monthly_promotion_campaign()
 
     async def scan_entire_history(self):
         self.user_message_count.clear()
@@ -369,8 +466,8 @@ class UpCog(commands.Cog):
             color=discord.Color.blue(),
         )
         vote_message = await staff_channel.send(embed=embed)
-        await vote_message.add_reaction("✅")
-        await vote_message.add_reaction("❌")
+        await vote_message.add_reaction(YES_VOTE_EMOJI)
+        await vote_message.add_reaction(NO_VOTE_EMOJI)
 
         now_ts = int(discord.utils.utcnow().timestamp())
         vote_info = {
