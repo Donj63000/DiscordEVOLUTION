@@ -5,100 +5,105 @@ from unittest.mock import AsyncMock
 import pytest
 
 import up
-from up import UpCog
+from up import PromotionOutcome, UpCog, VeteranPromotionButton
 
 
 class FakeHistory:
+    def __init__(self, messages=None):
+        self.messages = list(messages or [])
+
     def __aiter__(self):
         return self
 
     async def __anext__(self):
-        raise StopAsyncIteration
+        if not self.messages:
+            raise StopAsyncIteration
+        return self.messages.pop(0)
 
 
 class FakeChannel:
-    def __init__(self):
+    def __init__(self, messages=None, channel_id=123, name="general"):
+        self.id = channel_id
+        self.name = name
+        self.messages = messages or []
         self.history_calls = []
+        self.sent_messages = []
 
     def history(self, *args, **kwargs):
         self.history_calls.append((args, kwargs))
-        return FakeHistory()
+        return FakeHistory(self.messages)
+
+    async def send(self, *args, **kwargs):
+        message = SimpleNamespace(id=len(self.sent_messages) + 1000, edit=AsyncMock())
+        self.sent_messages.append({"args": args, "kwargs": kwargs, "message": message})
+        return message
 
 
 class FakeRole:
-    def __init__(self, name):
+    def __init__(self, name, position=1):
         self.name = name
         self.mention = f"@{name}"
+        self.position = position
 
-
-class FakeVoteMessage:
-    def __init__(self, message_id, reactions=None):
-        self.id = message_id
-        self.reactions = reactions or []
-        self.deleted = False
-
-    async def add_reaction(self, emoji):
-        self.reactions.append(SimpleNamespace(emoji=emoji, count=1))
-
-    async def delete(self):
-        self.deleted = True
-
-
-class FakeStaffChannel:
-    def __init__(self, channel_id=555):
-        self.id = channel_id
-        self.sent_messages = []
-        self.messages = {}
-
-    async def send(self, *args, **kwargs):
-        message = FakeVoteMessage(len(self.sent_messages) + 1000)
-        self.sent_messages.append({"args": args, "kwargs": kwargs, "message": message})
-        self.messages[message.id] = message
-        return message
-
-    async def fetch_message(self, message_id):
-        return self.messages[message_id]
+    def __lt__(self, other):
+        return self.position < getattr(other, "position", 0)
 
 
 class FakeMember:
-    def __init__(self, member_id, guild, joined_at):
+    def __init__(
+        self,
+        member_id,
+        guild=None,
+        joined_at=None,
+        *,
+        roles=None,
+        bot=False,
+        display_name=None,
+    ):
         self.id = member_id
         self.guild = guild
-        self.joined_at = joined_at
-        self.bot = False
+        self.joined_at = joined_at or datetime.now(timezone.utc)
+        self.bot = bot
         self.mention = f"<@{member_id}>"
-        self.display_name = f"Member {member_id}"
-        self.roles = [FakeRole(up.VALID_MEMBER_ROLE_NAME)]
+        self.display_name = display_name or f"Member {member_id}"
+        self.roles = roles if roles is not None else [FakeRole(up.VALID_MEMBER_ROLE_NAME)]
+        self.guild_permissions = SimpleNamespace(administrator=False, manage_roles=False)
+        self.top_role = FakeRole("Top", position=100)
+        self.display_avatar = SimpleNamespace(url="https://example.invalid/avatar.png")
+        self.added_roles = []
+
+    async def add_roles(self, role, *, reason=None):
+        self.roles.append(role)
+        self.added_roles.append({"role": role, "reason": reason})
+
+    def __str__(self):
+        return self.display_name
 
 
 class FakeGuild:
-    def __init__(self, members=None, staff_channel=None):
+    def __init__(self, members=None, text_channels=None, roles=None, me=None):
         self.id = 42
         self.members = members or []
-        self.roles = [FakeRole(up.STAFF_ROLE_NAME), FakeRole(up.VETERAN_ROLE_NAME)]
-        self.text_channels = []
-        self.staff_channel = staff_channel
+        self.roles = roles or [
+            FakeRole(up.STAFF_ROLE_NAME, position=10),
+            FakeRole(up.VETERAN_ROLE_NAME, position=20),
+        ]
+        self.text_channels = text_channels or []
+        self.me = me
         for member in self.members:
             member.guild = self
 
     def get_channel(self, channel_id):
-        if self.staff_channel and self.staff_channel.id == channel_id:
-            return self.staff_channel
-        return None
+        return next((channel for channel in self.text_channels if channel.id == channel_id), None)
 
     def get_member(self, member_id):
         return next((member for member in self.members if member.id == member_id), None)
 
-
-def make_initialized_cog(bot):
-    cog = UpCog(bot)
-    cog.initialized = True
-    cog._persist_state = AsyncMock()
-    return cog
-
-
-def campaign_dt(day):
-    return datetime(2026, 5, day, up.PROMOTION_CAMPAIGN_HOUR, 0, tzinfo=up.PROMOTION_CAMPAIGN_TIMEZONE)
+    async def fetch_member(self, member_id):
+        member = self.get_member(member_id)
+        if member is None:
+            raise up.discord.NotFound(response=None, message="missing")
+        return member
 
 
 class FakeTyping:
@@ -118,15 +123,33 @@ class FakeContext:
         return FakeTyping()
 
     async def send(self, *args, **kwargs):
-        self.sent_messages.append({"args": args, "kwargs": kwargs})
+        message = SimpleNamespace(id=len(self.sent_messages) + 2000, edit=AsyncMock())
+        self.sent_messages.append({"args": args, "kwargs": kwargs, "message": message})
+        return message
+
+
+def make_initialized_cog(bot):
+    cog = UpCog(bot)
+    cog.initialized = True
+    cog._persist_state = AsyncMock()
+    return cog
 
 
 @pytest.mark.asyncio
-async def test_scan_entire_history_uses_limits(monkeypatch):
+async def test_scan_entire_history_uses_limits_and_counts_messages(monkeypatch):
     monkeypatch.setenv("UP_SCAN_DAYS", "30")
     monkeypatch.setenv("UP_SCAN_LIMIT_PER_CHANNEL", "123")
+    monkeypatch.setenv("UP_SCAN_DELAY_SECONDS", "0")
 
-    channel = FakeChannel()
+    author = SimpleNamespace(id=777, bot=False)
+    bot_author = SimpleNamespace(id=888, bot=True)
+    channel = FakeChannel(
+        messages=[
+            SimpleNamespace(author=author),
+            SimpleNamespace(author=bot_author),
+            SimpleNamespace(author=author),
+        ]
+    )
     guild = SimpleNamespace(text_channels=[channel])
     bot = SimpleNamespace(guilds=[guild])
     cog = UpCog(bot)
@@ -137,132 +160,61 @@ async def test_scan_entire_history_uses_limits(monkeypatch):
     _, kwargs = channel.history_calls[0]
     assert kwargs["limit"] == 123
     assert isinstance(kwargs["after"], datetime)
+    assert cog.user_message_count[str(author.id)] == 2
+    assert str(bot_author.id) not in cog.user_message_count
 
 
 @pytest.mark.asyncio
-async def test_monthly_campaign_disabled_by_default_is_silent(monkeypatch):
-    monkeypatch.delenv("UP_PROMOTION_AUTO_VOTES", raising=False)
-    cog = make_initialized_cog(SimpleNamespace(guilds=[]))
-    cog.scan_entire_history = AsyncMock()
-    cog.verifier_membres_eligibles = AsyncMock()
+async def test_post_ready_init_cleans_legacy_vote_state_silently():
+    cog = UpCog(SimpleNamespace(guilds=[]))
+    cog.promotions_data = {
+        "101": {"status": "voting", "vote": {"message_id": 1}},
+        "202": {"status": "promoted", "vote": {"message_id": 2}},
+    }
+    cog.load_promotions_data = AsyncMock()
+    cog._persist_state = AsyncMock()
 
-    ran = await cog._run_monthly_promotion_campaign(campaign_dt(15))
+    await cog._post_ready_init()
 
-    assert ran is False
-    cog.scan_entire_history.assert_not_awaited()
-    cog.verifier_membres_eligibles.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_monthly_campaign_skips_before_configured_day(monkeypatch):
-    monkeypatch.setenv("UP_PROMOTION_AUTO_VOTES", "1")
-    cog = make_initialized_cog(SimpleNamespace(guilds=[]))
-    cog.scan_entire_history = AsyncMock()
-    cog.verifier_membres_eligibles = AsyncMock()
-
-    ran = await cog._run_monthly_promotion_campaign(campaign_dt(14))
-
-    assert ran is False
-    cog.scan_entire_history.assert_not_awaited()
-    cog.verifier_membres_eligibles.assert_not_awaited()
-    assert up.PROMOTION_META_KEY not in cog.promotions_data
+    assert cog.initialized is True
+    assert cog.promotions_data["101"] == {"status": "postponed"}
+    assert cog.promotions_data["202"] == {"status": "promoted"}
+    cog._persist_state.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_monthly_campaign_runs_from_configured_day_once(monkeypatch):
-    monkeypatch.setenv("UP_PROMOTION_AUTO_VOTES", "1")
-    cog = make_initialized_cog(SimpleNamespace(guilds=[]))
-    cog.scan_entire_history = AsyncMock()
-    cog.verifier_membres_eligibles = AsyncMock()
+def test_automatic_vote_api_is_removed():
+    cog = UpCog(SimpleNamespace(guilds=[]))
 
-    ran = await cog._run_monthly_promotion_campaign(campaign_dt(15))
-
-    assert ran is True
-    cog.scan_entire_history.assert_awaited_once()
-    cog.verifier_membres_eligibles.assert_awaited_once()
-    assert cog.promotions_data[up.PROMOTION_META_KEY][up.LAST_CAMPAIGN_MONTH_KEY] == "2026-05"
+    assert not hasattr(cog, "_run_monthly_promotion_campaign")
+    assert not hasattr(cog, "lancer_vote")
+    assert not hasattr(cog, "_finalize_vote")
+    assert not hasattr(cog, "check_up_status")
+    assert not hasattr(up, "UP_PROMOTION_AUTO_VOTES")
 
 
 @pytest.mark.asyncio
-async def test_monthly_campaign_does_not_rerun_already_processed_month(monkeypatch):
-    monkeypatch.setenv("UP_PROMOTION_AUTO_VOTES", "1")
-    cog = make_initialized_cog(SimpleNamespace(guilds=[]))
-    cog.promotions_data = {up.PROMOTION_META_KEY: {up.LAST_CAMPAIGN_MONTH_KEY: "2026-05"}}
-    cog.scan_entire_history = AsyncMock()
-    cog.verifier_membres_eligibles = AsyncMock()
-
-    ran = await cog._run_monthly_promotion_campaign(campaign_dt(20))
-
-    assert ran is False
-    cog.scan_entire_history.assert_not_awaited()
-    cog.verifier_membres_eligibles.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_monthly_campaign_posts_all_eligible_members(monkeypatch):
-    monkeypatch.setenv("UP_PROMOTION_AUTO_VOTES", "1")
-    now_local = campaign_dt(15)
-    now_utc = now_local.astimezone(timezone.utc)
+async def test_verifier_membres_eligibles_returns_candidates_without_sending_messages(monkeypatch):
+    now_utc = datetime(2026, 5, 15, 18, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(up.discord.utils, "utcnow", lambda: now_utc)
 
-    staff_channel = FakeStaffChannel()
-    guild = FakeGuild(staff_channel=staff_channel)
-    members = [
-        FakeMember(101, guild, now_utc - timedelta(days=up.JOINED_THRESHOLD_DAYS + 1)),
-        FakeMember(202, guild, now_utc - timedelta(days=up.JOINED_THRESHOLD_DAYS + 1)),
-    ]
-    guild.members = members
-    bot = SimpleNamespace(
-        guilds=[guild],
-        get_guild=lambda guild_id: guild if guild_id == guild.id else None,
-    )
-    cog = make_initialized_cog(bot)
-    cog._schedule_vote_finalization = lambda user_id: None
-
-    async def scan_history():
-        for member in members:
-            cog.user_message_count[str(member.id)] = up.MESSAGE_THRESHOLD
-
-    cog.scan_entire_history = AsyncMock(side_effect=scan_history)
-    monkeypatch.setattr(up, "resolve_text_channel", lambda *args, **kwargs: staff_channel)
-
-    ran = await cog._run_monthly_promotion_campaign(now_local)
-
-    assert ran is True
-    assert len(staff_channel.sent_messages) == 2
-    assert cog.get_promotion_status(101) == "voting"
-    assert cog.get_promotion_status(202) == "voting"
-    for member in members:
-        vote = cog.get_vote_info(member.id)
-        assert vote["ends_at_ts"] == vote["started_at_ts"] + 3600
-
-
-@pytest.mark.asyncio
-async def test_verifier_membres_eligibles_is_silent_by_default(monkeypatch):
-    monkeypatch.delenv("UP_PROMOTION_AUTO_VOTES", raising=False)
-    now_utc = campaign_dt(15).astimezone(timezone.utc)
-    monkeypatch.setattr(up.discord.utils, "utcnow", lambda: now_utc)
-
-    staff_channel = FakeStaffChannel()
-    guild = FakeGuild(staff_channel=staff_channel)
+    announcement_channel = FakeChannel(name=up.ANNONCE_CHANNEL_NAME)
+    guild = FakeGuild(text_channels=[announcement_channel])
     member = FakeMember(404, guild, now_utc - timedelta(days=up.JOINED_THRESHOLD_DAYS + 1))
     guild.members = [member]
     bot = SimpleNamespace(guilds=[guild])
     cog = make_initialized_cog(bot)
     cog.user_message_count[str(member.id)] = up.MESSAGE_THRESHOLD
-    monkeypatch.setattr(up, "resolve_text_channel", lambda *args, **kwargs: staff_channel)
 
     candidates = await cog.verifier_membres_eligibles()
 
     assert [candidate["member"].id for candidate in candidates] == [member.id]
-    assert staff_channel.sent_messages == []
-    assert cog.get_promotion_status(member.id) is None
+    assert announcement_channel.sent_messages == []
     cog._persist_state.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_veteran_command_lists_candidates_without_launching_votes(monkeypatch):
-    now_utc = campaign_dt(15).astimezone(timezone.utc)
+async def test_veteran_command_lists_candidates_with_promotion_buttons(monkeypatch):
+    now_utc = datetime(2026, 5, 15, 18, 0, tzinfo=timezone.utc)
     monkeypatch.setattr(up.discord.utils, "utcnow", lambda: now_utc)
 
     guild = FakeGuild()
@@ -270,7 +222,6 @@ async def test_veteran_command_lists_candidates_without_launching_votes(monkeypa
     guild.members = [member]
     bot = SimpleNamespace(guilds=[guild])
     cog = make_initialized_cog(bot)
-    cog.lancer_vote = AsyncMock()
 
     async def scan_history(guild_arg):
         assert guild_arg is guild
@@ -282,49 +233,84 @@ async def test_veteran_command_lists_candidates_without_launching_votes(monkeypa
     await cog.veteran_command.callback(cog, ctx)
 
     assert len(ctx.sent_messages) == 1
-    embed = ctx.sent_messages[0]["kwargs"]["embed"]
+    sent = ctx.sent_messages[0]
+    embed = sent["kwargs"]["embed"]
+    view = sent["kwargs"]["view"]
     assert embed.title == "Candidats Vétéran"
     assert member.mention in embed.description
-    assert "27 messages" in embed.description
-    cog.lancer_vote.assert_not_awaited()
+    assert "27 message(s)" in embed.description
+    assert len(view.children) == 1
+    assert isinstance(view.children[0], VeteranPromotionButton)
+    assert view.children[0].label == "Promouvoir 01 · Member 505"
+    assert view.message is sent["message"]
     cog._persist_state.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_empty_vote_deletes_message_without_staff_followup(monkeypatch):
-    monkeypatch.setattr(up.discord, "TextChannel", FakeStaffChannel)
-    vote_message = FakeVoteMessage(
-        9001,
-        reactions=[
-            SimpleNamespace(emoji=up.YES_VOTE_EMOJI, count=1),
-            SimpleNamespace(emoji=up.NO_VOTE_EMOJI, count=1),
-        ],
+async def test_promouvoir_veteran_assigns_role_persists_and_announces(monkeypatch):
+    now_utc = datetime(2026, 5, 15, 18, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(up.discord.utils, "utcnow", lambda: now_utc)
+
+    announcement_channel = FakeChannel(name=up.ANNONCE_CHANNEL_NAME)
+    veteran_role = FakeRole(up.VETERAN_ROLE_NAME, position=20)
+    guild = FakeGuild(text_channels=[announcement_channel], roles=[veteran_role])
+    member = FakeMember(606, guild, now_utc - timedelta(days=up.JOINED_THRESHOLD_DAYS + 5))
+    promoted_by = FakeMember(
+        707,
+        guild,
+        now_utc,
+        roles=[FakeRole(up.STAFF_ROLE_NAME)],
+        display_name="Staff 707",
     )
-    staff_channel = FakeStaffChannel(channel_id=777)
-    staff_channel.messages[vote_message.id] = vote_message
-    guild = FakeGuild(staff_channel=staff_channel)
-    member = FakeMember(303, guild, datetime.now(timezone.utc) - timedelta(days=up.JOINED_THRESHOLD_DAYS + 1))
-    guild.members = [member]
-    bot = SimpleNamespace(
-        guilds=[guild],
-        get_guild=lambda guild_id: guild if guild_id == guild.id else None,
-    )
+    guild.members = [member, promoted_by]
+    bot = SimpleNamespace(guilds=[guild])
     cog = make_initialized_cog(bot)
-    cog.set_promotion_status(member.id, "voting")
-    cog.set_vote_info(
-        member.id,
-        {
-            "guild_id": guild.id,
-            "staff_channel_id": staff_channel.id,
-            "message_id": vote_message.id,
-            "started_at_ts": 1,
-            "ends_at_ts": 2,
+
+    outcome = await cog.promouvoir_veteran(
+        member,
+        promoted_by,
+        candidate_snapshot={
+            "message_count": up.MESSAGE_THRESHOLD + 3,
+            "join_days": up.JOINED_THRESHOLD_DAYS + 5,
         },
     )
 
-    await cog._finalize_vote(member.id)
+    assert isinstance(outcome, PromotionOutcome)
+    assert outcome.ok is True
+    assert outcome.disable_button is True
+    assert outcome.announcement_sent is True
+    assert veteran_role in member.roles
+    assert member.added_roles[0]["reason"] == "Promotion Vétéran via !veteran par Staff 707 (707)"
+    assert cog.promotions_data[str(member.id)]["status"] == "promoted"
+    assert cog.promotions_data[str(member.id)]["promoted_by"] == promoted_by.id
+    assert cog.promotions_data[str(member.id)]["message_count_at_promotion"] == up.MESSAGE_THRESHOLD + 3
+    assert len(announcement_channel.sent_messages) == 1
+    assert announcement_channel.sent_messages[0]["kwargs"]["embed"].title == "🏅 Nouveau Vétéran"
+    cog._persist_state.assert_awaited_once()
 
-    assert vote_message.deleted is True
-    assert staff_channel.sent_messages == []
-    assert cog.get_promotion_status(member.id) == "postponed"
-    assert cog.get_vote_info(member.id) is None
+
+@pytest.mark.asyncio
+async def test_promouvoir_veteran_refuses_when_announcement_channel_is_missing(monkeypatch):
+    now_utc = datetime(2026, 5, 15, 18, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(up.discord.utils, "utcnow", lambda: now_utc)
+
+    veteran_role = FakeRole(up.VETERAN_ROLE_NAME, position=20)
+    guild = FakeGuild(roles=[veteran_role])
+    member = FakeMember(808, guild, now_utc - timedelta(days=up.JOINED_THRESHOLD_DAYS + 5))
+    promoted_by = FakeMember(909, guild, now_utc, roles=[FakeRole(up.STAFF_ROLE_NAME)])
+    bot = SimpleNamespace(guilds=[guild])
+    cog = make_initialized_cog(bot)
+
+    outcome = await cog.promouvoir_veteran(
+        member,
+        promoted_by,
+        candidate_snapshot={
+            "message_count": up.MESSAGE_THRESHOLD,
+            "join_days": up.JOINED_THRESHOLD_DAYS,
+        },
+    )
+
+    assert outcome.ok is False
+    assert "Canal d'annonces introuvable" in outcome.message
+    assert veteran_role not in member.roles
+    cog._persist_state.assert_not_awaited()
