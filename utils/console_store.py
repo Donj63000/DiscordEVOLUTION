@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import logging
+import os
 import discord
 
 from utils.channel_resolver import resolve_text_channel
@@ -10,12 +11,24 @@ log = logging.getLogger(__name__)
 CODEBLOCK = "```event"
 
 
+def _read_bool_env(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
+
 class ConsoleStore:
     """Petite « base » : chaque événement est sauvegardé dans #console."""
 
-    def __init__(self, bot: discord.Client, channel_name: str = "console"):
+    def __init__(self, bot: discord.Client, channel_name: str = "console", pin_messages: bool | None = None):
         self.bot = bot
         self.channel_name = channel_name
+        self.pin_messages = (
+            _read_bool_env("CONSOLE_PIN_EVENTS", _read_bool_env("CONSOLE_PIN_SNAPSHOTS", False))
+            if pin_messages is None
+            else pin_messages
+        )
         self._cache: dict[int, dict] = {}          # event_id -> dict enrichi + _msg
 
     # ------------------------------------------------------------------ #
@@ -89,10 +102,11 @@ class ConsoleStore:
             if chan is None:
                 return                          # persistance désactivée
             msg = await chan.send(json_block)
-            try:
-                await msg.pin(reason="Persistance événements")
-            except discord.Forbidden:
-                log.warning("Impossible d'épingler le message #%s (permissions).", self.channel_name)
+            if self.pin_messages:
+                try:
+                    await msg.pin(reason="Persistance événements")
+                except discord.Forbidden:
+                    log.warning("Impossible d'épingler le message #%s (permissions).", self.channel_name)
             data["_msg"] = msg
             cache[eid] = data
 

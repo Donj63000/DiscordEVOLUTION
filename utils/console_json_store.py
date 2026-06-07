@@ -16,6 +16,13 @@ from utils.discord_history import fetch_channel_history, fetch_channel_message
 log = logging.getLogger(__name__)
 
 
+def _read_bool_env(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
+
 class ConsoleJSONSnapshotStore:
     """Generic JSON snapshot persistence backed by the Discord #console channel."""
 
@@ -30,7 +37,7 @@ class ConsoleJSONSnapshotStore:
         channel_name_env: str = "CHANNEL_CONSOLE",
         history_limit_env: str = "CONSOLE_HISTORY_LIMIT",
         history_limit_default: int = 200,
-        pin_messages: bool = True,
+        pin_messages: Optional[bool] = None,
     ) -> None:
         self.bot = bot
         self.marker = marker
@@ -40,7 +47,11 @@ class ConsoleJSONSnapshotStore:
         self.channel_name_env = channel_name_env
         self.history_limit_env = history_limit_env
         self.history_limit_default = history_limit_default
-        self.pin_messages = pin_messages
+        self.pin_messages = (
+            _read_bool_env("CONSOLE_PIN_SNAPSHOTS", False)
+            if pin_messages is None
+            else pin_messages
+        )
 
     def _history_limit(self) -> int:
         try:
@@ -250,9 +261,22 @@ class ConsoleJSONSnapshotStore:
             tmp.close()
             if existing is not None:
                 try:
-                    await existing.delete()
+                    await existing.edit(
+                        content=f"{header} (fichier)",
+                        attachments=[discord.File(tmp.name, filename=self.filename)],
+                    )
+                    await self._ensure_pinned(existing)
+                    return existing
                 except Exception:
-                    pass
+                    log.debug(
+                        "File snapshot edit failed for %s; retrying with new message.",
+                        self.marker,
+                        exc_info=True,
+                    )
+                    try:
+                        await existing.delete()
+                    except Exception:
+                        pass
             message = await target_channel.send(
                 f"{header} (fichier)",
                 file=discord.File(tmp.name, filename=self.filename),

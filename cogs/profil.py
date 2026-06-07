@@ -29,6 +29,13 @@ PROFILES_FILENAME = os.getenv("PROFILES_FILENAME", "profiles_data.json")
 PROFILES_MARKER = os.getenv("PROFILES_MARKER", "===BOTPROFILES===")
 HISTORY_SCAN_LIMIT = int(os.getenv("CONSOLE_HISTORY_LIMIT", "300"))
 
+
+def _read_bool_env(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
 # ============
 # Alias de classes ÉTENDUS (corrige l'erreur "Enu")
 # ============
@@ -368,8 +375,23 @@ class LadderSnapshotStore:
 
     async def load(self, guild_id: int) -> dict:
         ch = await self._get_console_channel(guild_id)
-        pins = await ch.pins()
-        for m in pins:
+        seen: set[int] = set()
+        try:
+            messages = list(await ch.pins())
+        except Exception:
+            messages = []
+        for msg in messages:
+            msg_id = getattr(msg, "id", None)
+            if msg_id is not None:
+                seen.add(msg_id)
+        async for msg in ch.history(limit=HISTORY_SCAN_LIMIT, oldest_first=False):
+            msg_id = getattr(msg, "id", None)
+            if msg_id in seen:
+                continue
+            messages.append(msg)
+            if msg_id is not None:
+                seen.add(msg_id)
+        for m in messages:
             if self.MARKER in (m.content or "") and m.attachments:
                 for att in m.attachments:
                     if att.filename == self.FILENAME:
@@ -381,12 +403,29 @@ class LadderSnapshotStore:
         ch = await self._get_console_channel(guild_id)
         blob = {"updated_at": datetime.now(timezone.utc).isoformat(), "ranking": ranking}
         b = json.dumps(blob, ensure_ascii=False, indent=2).encode("utf-8")
-        file = discord.File(io.BytesIO(b), filename=self.FILENAME)
-        msg = await ch.send(content=f"{self.MARKER} (fichier)", file=file)
-        try:
-            await msg.pin()
-        except Exception:
-            pass
+        last = None
+        async for msg in ch.history(limit=HISTORY_SCAN_LIMIT, oldest_first=False):
+            if self.MARKER in (msg.content or ""):
+                last = msg
+                break
+        if last:
+            try:
+                await last.edit(
+                    content=f"{self.MARKER} (fichier)",
+                    attachments=[discord.File(io.BytesIO(b), filename=self.FILENAME)],
+                )
+                return
+            except Exception:
+                pass
+        msg = await ch.send(
+            content=f"{self.MARKER} (fichier)",
+            file=discord.File(io.BytesIO(b), filename=self.FILENAME),
+        )
+        if _read_bool_env("CONSOLE_PIN_SNAPSHOTS", False):
+            try:
+                await msg.pin()
+            except Exception:
+                pass
 
 # ==================
 # Parseur %stats%

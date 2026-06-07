@@ -101,6 +101,26 @@ def campaign_dt(day):
     return datetime(2026, 5, day, up.PROMOTION_CAMPAIGN_HOUR, 0, tzinfo=up.PROMOTION_CAMPAIGN_TIMEZONE)
 
 
+class FakeTyping:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class FakeContext:
+    def __init__(self, guild):
+        self.guild = guild
+        self.sent_messages = []
+
+    def typing(self):
+        return FakeTyping()
+
+    async def send(self, *args, **kwargs):
+        self.sent_messages.append({"args": args, "kwargs": kwargs})
+
+
 @pytest.mark.asyncio
 async def test_scan_entire_history_uses_limits(monkeypatch):
     monkeypatch.setenv("UP_SCAN_DAYS", "30")
@@ -120,7 +140,22 @@ async def test_scan_entire_history_uses_limits(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_monthly_campaign_skips_before_configured_day():
+async def test_monthly_campaign_disabled_by_default_is_silent(monkeypatch):
+    monkeypatch.delenv("UP_PROMOTION_AUTO_VOTES", raising=False)
+    cog = make_initialized_cog(SimpleNamespace(guilds=[]))
+    cog.scan_entire_history = AsyncMock()
+    cog.verifier_membres_eligibles = AsyncMock()
+
+    ran = await cog._run_monthly_promotion_campaign(campaign_dt(15))
+
+    assert ran is False
+    cog.scan_entire_history.assert_not_awaited()
+    cog.verifier_membres_eligibles.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_monthly_campaign_skips_before_configured_day(monkeypatch):
+    monkeypatch.setenv("UP_PROMOTION_AUTO_VOTES", "1")
     cog = make_initialized_cog(SimpleNamespace(guilds=[]))
     cog.scan_entire_history = AsyncMock()
     cog.verifier_membres_eligibles = AsyncMock()
@@ -134,7 +169,8 @@ async def test_monthly_campaign_skips_before_configured_day():
 
 
 @pytest.mark.asyncio
-async def test_monthly_campaign_runs_from_configured_day_once():
+async def test_monthly_campaign_runs_from_configured_day_once(monkeypatch):
+    monkeypatch.setenv("UP_PROMOTION_AUTO_VOTES", "1")
     cog = make_initialized_cog(SimpleNamespace(guilds=[]))
     cog.scan_entire_history = AsyncMock()
     cog.verifier_membres_eligibles = AsyncMock()
@@ -148,7 +184,8 @@ async def test_monthly_campaign_runs_from_configured_day_once():
 
 
 @pytest.mark.asyncio
-async def test_monthly_campaign_does_not_rerun_already_processed_month():
+async def test_monthly_campaign_does_not_rerun_already_processed_month(monkeypatch):
+    monkeypatch.setenv("UP_PROMOTION_AUTO_VOTES", "1")
     cog = make_initialized_cog(SimpleNamespace(guilds=[]))
     cog.promotions_data = {up.PROMOTION_META_KEY: {up.LAST_CAMPAIGN_MONTH_KEY: "2026-05"}}
     cog.scan_entire_history = AsyncMock()
@@ -163,6 +200,7 @@ async def test_monthly_campaign_does_not_rerun_already_processed_month():
 
 @pytest.mark.asyncio
 async def test_monthly_campaign_posts_all_eligible_members(monkeypatch):
+    monkeypatch.setenv("UP_PROMOTION_AUTO_VOTES", "1")
     now_local = campaign_dt(15)
     now_utc = now_local.astimezone(timezone.utc)
     monkeypatch.setattr(up.discord.utils, "utcnow", lambda: now_utc)
@@ -197,6 +235,59 @@ async def test_monthly_campaign_posts_all_eligible_members(monkeypatch):
     for member in members:
         vote = cog.get_vote_info(member.id)
         assert vote["ends_at_ts"] == vote["started_at_ts"] + 3600
+
+
+@pytest.mark.asyncio
+async def test_verifier_membres_eligibles_is_silent_by_default(monkeypatch):
+    monkeypatch.delenv("UP_PROMOTION_AUTO_VOTES", raising=False)
+    now_utc = campaign_dt(15).astimezone(timezone.utc)
+    monkeypatch.setattr(up.discord.utils, "utcnow", lambda: now_utc)
+
+    staff_channel = FakeStaffChannel()
+    guild = FakeGuild(staff_channel=staff_channel)
+    member = FakeMember(404, guild, now_utc - timedelta(days=up.JOINED_THRESHOLD_DAYS + 1))
+    guild.members = [member]
+    bot = SimpleNamespace(guilds=[guild])
+    cog = make_initialized_cog(bot)
+    cog.user_message_count[str(member.id)] = up.MESSAGE_THRESHOLD
+    monkeypatch.setattr(up, "resolve_text_channel", lambda *args, **kwargs: staff_channel)
+
+    candidates = await cog.verifier_membres_eligibles()
+
+    assert [candidate["member"].id for candidate in candidates] == [member.id]
+    assert staff_channel.sent_messages == []
+    assert cog.get_promotion_status(member.id) is None
+    cog._persist_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_veteran_command_lists_candidates_without_launching_votes(monkeypatch):
+    now_utc = campaign_dt(15).astimezone(timezone.utc)
+    monkeypatch.setattr(up.discord.utils, "utcnow", lambda: now_utc)
+
+    guild = FakeGuild()
+    member = FakeMember(505, guild, now_utc - timedelta(days=up.JOINED_THRESHOLD_DAYS + 5))
+    guild.members = [member]
+    bot = SimpleNamespace(guilds=[guild])
+    cog = make_initialized_cog(bot)
+    cog.lancer_vote = AsyncMock()
+
+    async def scan_history(guild_arg):
+        assert guild_arg is guild
+        cog.user_message_count[str(member.id)] = up.MESSAGE_THRESHOLD + 7
+
+    cog.scan_entire_history = AsyncMock(side_effect=scan_history)
+    ctx = FakeContext(guild)
+
+    await cog.veteran_command.callback(cog, ctx)
+
+    assert len(ctx.sent_messages) == 1
+    embed = ctx.sent_messages[0]["kwargs"]["embed"]
+    assert embed.title == "Candidats Vétéran"
+    assert member.mention in embed.description
+    assert "27 messages" in embed.description
+    cog.lancer_vote.assert_not_awaited()
+    cog._persist_state.assert_not_awaited()
 
 
 @pytest.mark.asyncio

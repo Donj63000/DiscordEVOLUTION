@@ -64,7 +64,10 @@ class StatsStore:
             channel_name_env="CHANNEL_CONSOLE",
             history_limit_env="STATS_CONSOLE_HISTORY_LIMIT",
             history_limit_default=max(_read_int_env("CONSOLE_HISTORY_LIMIT", 300), 50),
-            pin_messages=_read_bool_env("STATS_PIN_MESSAGES", True),
+            pin_messages=_read_bool_env(
+                "STATS_PIN_MESSAGES",
+                _read_bool_env("CONSOLE_PIN_SNAPSHOTS", False),
+            ),
         )
 
     async def save(self, data: dict[str, Any]) -> bool:

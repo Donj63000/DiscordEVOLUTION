@@ -29,6 +29,17 @@ def _parse_int_env(name: str, default: int, *, minimum: int | None = None, maxim
     return value
 
 
+def _parse_bool_env(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _auto_promotion_votes_enabled() -> bool:
+    return _parse_bool_env("UP_PROMOTION_AUTO_VOTES", False)
+
+
 def _resolve_timezone(name: str):
     try:
         return ZoneInfo(name)
@@ -109,9 +120,12 @@ class UpCog(commands.Cog):
             log.debug("UpCog: init start")
             await self.load_promotions_data()
             self.initialized = True
-            await self._resume_pending_votes()
+            if _auto_promotion_votes_enabled():
+                await self._resume_pending_votes()
+            else:
+                await self._silence_pending_votes()
             log.debug("UpCog: init complete (entries=%s)", len(self.promotions_data))
-        if not self.check_up_status.is_running():
+        if _auto_promotion_votes_enabled() and not self.check_up_status.is_running():
             self.check_up_status.start()
 
     async def _ensure_initialized(self):
@@ -191,6 +205,9 @@ class UpCog(commands.Cog):
         self._metadata()[LAST_CAMPAIGN_MONTH_KEY] = self._campaign_month_key(now)
 
     async def _run_monthly_promotion_campaign(self, now: datetime | None = None) -> bool:
+        if not _auto_promotion_votes_enabled():
+            log.debug("UpCog: monthly promotion campaign disabled.")
+            return False
         current = now or self._current_campaign_datetime()
         if not self._promotion_campaign_due(current):
             log.debug(
@@ -275,6 +292,21 @@ class UpCog(commands.Cog):
             else:
                 self._schedule_vote_finalization(user_id)
         if changed:
+            await self._persist_state()
+
+    async def _silence_pending_votes(self):
+        changed = False
+        for user_id_str, entry in list(self.promotions_data.items()):
+            if not isinstance(entry, dict) or entry.get("status") != "voting":
+                continue
+            try:
+                user_id = int(user_id_str)
+            except (TypeError, ValueError):
+                continue
+            self.set_promotion_status(user_id, "postponed", clear_vote=True)
+            changed = True
+        if changed:
+            log.debug("UpCog: pending promotion votes silenced.")
             await self._persist_state()
 
     def _schedule_vote_finalization(self, user_id: int):
@@ -376,7 +408,7 @@ class UpCog(commands.Cog):
             return
         await self._run_monthly_promotion_campaign()
 
-    async def scan_entire_history(self):
+    async def scan_entire_history(self, guild: discord.Guild | None = None):
         self.user_message_count.clear()
         try:
             scan_days = int(os.getenv("UP_SCAN_DAYS", "180"))
@@ -393,8 +425,9 @@ class UpCog(commands.Cog):
             after = discord.utils.utcnow() - timedelta(days=scan_days)
         channel_delay = max(float(os.getenv("UP_SCAN_DELAY_SECONDS", "0.2")), 0.0)
         history_retries = max(int(os.getenv("UP_SCAN_RETRIES", "2")), 0)
-        for guild in getattr(self.bot, "guilds", []) or []:
-            for channel in getattr(guild, "text_channels", []) or []:
+        guilds = [guild] if guild is not None else list(getattr(self.bot, "guilds", []) or [])
+        for target_guild in guilds:
+            for channel in getattr(target_guild, "text_channels", []) or []:
                 attempt = 0
                 while True:
                     try:
@@ -416,9 +449,63 @@ class UpCog(commands.Cog):
                 if channel_delay > 0:
                     await asyncio.sleep(channel_delay)
 
-    async def verifier_membres_eligibles(self):
+    def _has_role(self, member: discord.Member, role_name: str) -> bool:
+        return any(getattr(role, "name", None) == role_name for role in getattr(member, "roles", []) or [])
+
+    def _join_days(self, member: discord.Member) -> int:
+        joined_at = getattr(member, "joined_at", None)
+        if joined_at is None:
+            return 0
+        if joined_at.tzinfo is None:
+            joined_at = joined_at.replace(tzinfo=timezone.utc)
+        return max((discord.utils.utcnow() - joined_at).days, 0)
+
+    def _eligible_veteran_record(self, member: discord.Member) -> Optional[dict]:
+        if getattr(member, "bot", False):
+            return None
+        status = self.get_promotion_status(member.id)
+        if status in {"promoted", "refused", "voting"}:
+            return None
+        if status not in {"postponed", None}:
+            return None
+        join_days = self._join_days(member)
+        msg_count = self.user_message_count.get(str(member.id), 0)
+        if join_days < JOINED_THRESHOLD_DAYS or msg_count < MESSAGE_THRESHOLD:
+            return None
+        if not self._has_role(member, VALID_MEMBER_ROLE_NAME):
+            return None
+        if self._has_role(member, INVITE_ROLE_NAME) or self._has_role(member, VETERAN_ROLE_NAME):
+            return None
+        return {
+            "member": member,
+            "join_days": join_days,
+            "message_count": msg_count,
+            "status": status,
+        }
+
+    def _collect_veteran_candidates(self, guild: discord.Guild) -> list[dict]:
+        candidates: list[dict] = []
+        for member in getattr(guild, "members", []) or []:
+            record = self._eligible_veteran_record(member)
+            if record is not None:
+                candidates.append(record)
+        candidates.sort(
+            key=lambda item: (
+                -int(item["message_count"]),
+                -int(item["join_days"]),
+                getattr(item["member"], "display_name", "").casefold(),
+            )
+        )
+        return candidates
+
+    async def verifier_membres_eligibles(self) -> list[dict]:
         await self._ensure_initialized()
+        all_candidates: list[dict] = []
         for guild in getattr(self.bot, "guilds", []) or []:
+            candidates = self._collect_veteran_candidates(guild)
+            all_candidates.extend(candidates)
+            if not _auto_promotion_votes_enabled():
+                continue
             staff_channel = resolve_text_channel(
                 guild,
                 id_env="STAFF_CHANNEL_ID",
@@ -427,30 +514,79 @@ class UpCog(commands.Cog):
             )
             if not staff_channel:
                 continue
-            for member in getattr(guild, "members", []) or []:
-                if getattr(member, "bot", False):
-                    continue
-                join_days = 0
-                if getattr(member, "joined_at", None):
-                    join_days = (discord.utils.utcnow() - member.joined_at).days
-                has_valid_role = any(getattr(r, "name", None) == VALID_MEMBER_ROLE_NAME for r in member.roles)
-                has_invite_role = any(getattr(r, "name", None) == INVITE_ROLE_NAME for r in member.roles)
-                has_veteran_role = any(getattr(r, "name", None) == VETERAN_ROLE_NAME for r in member.roles)
-                msg_count = self.user_message_count.get(str(member.id), 0)
-                status = self.get_promotion_status(member.id)
-                if status in ["promoted", "refused", "voting"]:
-                    continue
-                if status not in ["postponed", None]:
-                    continue
-                if (
-                    join_days >= JOINED_THRESHOLD_DAYS
-                    and has_valid_role
-                    and not has_invite_role
-                    and msg_count >= MESSAGE_THRESHOLD
-                    and not has_veteran_role
-                ):
-                    await self.lancer_vote(staff_channel, member)
-        await self._persist_state()
+            for candidate in candidates:
+                await self.lancer_vote(staff_channel, candidate["member"])
+        if _auto_promotion_votes_enabled():
+            await self._persist_state()
+        return all_candidates
+
+    def _candidate_line(self, index: int, candidate: dict) -> str:
+        member = candidate["member"]
+        status = " - reporte" if candidate.get("status") == "postponed" else ""
+        return (
+            f"`{index:02}` {member.mention} - "
+            f"{candidate['message_count']} messages, "
+            f"{candidate['join_days']} jours d'anciennete{status}"
+        )
+
+    def _chunk_candidate_lines(self, lines: list[str], max_chars: int = 3800) -> list[list[str]]:
+        chunks: list[list[str]] = []
+        current: list[str] = []
+        current_len = 0
+        for line in lines:
+            line_len = len(line) + 1
+            if current and current_len + line_len > max_chars:
+                chunks.append(current)
+                current = []
+                current_len = 0
+            current.append(line)
+            current_len += line_len
+        if current:
+            chunks.append(current)
+        return chunks
+
+    @commands.has_role(STAFF_ROLE_NAME)
+    @commands.command(name="veteran", aliases=["vétéran"])
+    async def veteran_command(self, ctx: commands.Context):
+        if ctx.guild is None:
+            await ctx.send("Commande disponible uniquement sur le serveur.")
+            return
+
+        async with ctx.typing():
+            await self._ensure_initialized()
+            await self.scan_entire_history(ctx.guild)
+            candidates = self._collect_veteran_candidates(ctx.guild)
+
+        if not candidates:
+            embed = discord.Embed(
+                title="Candidats Vétéran",
+                description="Aucun membre ne remplit les critères de promotion pour le moment.",
+                color=discord.Color.blue(),
+            )
+            embed.set_footer(
+                text=f"Seuils: {JOINED_THRESHOLD_DAYS} jours d'anciennete, {MESSAGE_THRESHOLD} messages."
+            )
+            await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            return
+
+        lines = [self._candidate_line(index, candidate) for index, candidate in enumerate(candidates, start=1)]
+        chunks = self._chunk_candidate_lines(lines)
+        total_pages = len(chunks)
+        footer = (
+            f"{len(candidates)} candidat(s) - "
+            f"seuils: {JOINED_THRESHOLD_DAYS} jours d'anciennete, {MESSAGE_THRESHOLD} messages."
+        )
+        for page_index, chunk in enumerate(chunks, start=1):
+            title = "Candidats Vétéran"
+            if total_pages > 1:
+                title = f"{title} ({page_index}/{total_pages})"
+            embed = discord.Embed(
+                title=title,
+                description="\n".join(chunk),
+                color=discord.Color.blue(),
+            )
+            embed.set_footer(text=footer)
+            await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def lancer_vote(self, staff_channel: discord.TextChannel, member: discord.Member):
         if self.get_promotion_status(member.id) == "voting":

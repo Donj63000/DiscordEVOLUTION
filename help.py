@@ -165,6 +165,8 @@ class HelpCog(commands.Cog):
                 "__**!event**__\n"
                 "> Lance une discussion privée pour planifier un événement.\n"
                 "> Après validation, un événement Discord programmé est créé et annoncé dans #organisation (mention Membre validé).\n\n"
+                "__**!veteran**__\n"
+                "> Liste les membres qui peuvent passer Vétéran, sans lancer de vote automatique.\n\n"
                 "__**!recrutement <pseudo>**__\n"
                 "> Ajoute un nouveau joueur dans la base.\n\n"
                 "__**!membre del <pseudo>**__\n"

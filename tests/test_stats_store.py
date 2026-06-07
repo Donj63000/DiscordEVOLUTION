@@ -36,9 +36,11 @@ class _Message:
         self.pinned = False
         self.deleted = False
 
-    async def edit(self, *, content=None):
+    async def edit(self, *, content=None, attachments=None):
         if content is not None:
             self.content = content
+        if attachments is not None:
+            self.attachments = list(attachments)
 
     async def delete(self):
         self.deleted = True
@@ -65,6 +67,12 @@ class _Channel:
     async def pins(self):
         return [m for m in self._messages if getattr(m, "pinned", False)]
 
+    async def fetch_message(self, message_id):
+        for msg in self._messages:
+            if msg.id == message_id and not msg.deleted:
+                return msg
+        raise fake_discord.NotFound
+
     async def send(self, content, *, file=None):
         attachments = []
         if file is not None:
@@ -73,6 +81,11 @@ class _Channel:
             if isinstance(path, str) and os.path.exists(path):
                 with open(path, "rb") as fh:
                     data = fh.read()
+            elif hasattr(path, "read"):
+                position = path.tell()
+                path.seek(0)
+                data = path.read()
+                path.seek(position)
             attachments.append(_Attachment(getattr(file, "filename", ""), data))
         msg = _Message(content, author=self.bot_user, attachments=attachments)
         self._messages.insert(0, msg)
@@ -121,7 +134,9 @@ class _Bot:
         return [self._channel]
 
 
-def test_stats_store_save_and_load(tmp_path):
+def test_stats_store_save_and_load(tmp_path, monkeypatch):
+    monkeypatch.delenv("STATS_PIN_MESSAGES", raising=False)
+    monkeypatch.delenv("CONSOLE_PIN_SNAPSHOTS", raising=False)
     chan = _Channel()
     bot = _Bot(chan)
     store = StatsStore(bot)
@@ -133,12 +148,56 @@ def test_stats_store_save_and_load(tmp_path):
         assert len(chan._messages) == 1
         msg = chan._messages[0]
         assert msg.content.startswith("===BOTSTATS===")
-        assert msg.pinned is True
+        assert msg.pinned is False
 
         # simulate reload with a fresh store
         new_store = StatsStore(bot)
         loaded = loop.run_until_complete(new_store.load())
         assert loaded == {"val": 1}
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+
+def test_stats_store_can_pin_when_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("STATS_PIN_MESSAGES", "1")
+    chan = _Channel()
+    bot = _Bot(chan)
+    store = StatsStore(bot)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        saved = loop.run_until_complete(store.save({"val": 1}))
+        assert saved is True
+        assert chan._messages[0].pinned is True
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+
+def test_stats_store_edits_existing_file_snapshot(tmp_path, monkeypatch):
+    monkeypatch.delenv("STATS_PIN_MESSAGES", raising=False)
+    monkeypatch.delenv("CONSOLE_PIN_SNAPSHOTS", raising=False)
+    chan = _Channel()
+    bot = _Bot(chan)
+    store = StatsStore(bot)
+    store.min_interval = 0
+    first_payload = {f"k{i}": "x" * 80 for i in range(40)}
+    second_payload = {**first_payload, "changed": "yes"}
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        assert loop.run_until_complete(store.save(first_payload)) is True
+        first_message = chan._messages[0]
+        assert len(chan._messages) == 1
+        assert first_message.attachments[0].filename == "stats_data.json"
+
+        assert loop.run_until_complete(store.save(second_payload)) is True
+
+        assert len(chan._messages) == 1
+        assert chan._messages[0] is first_message
+        assert first_message.deleted is False
+        assert first_message.attachments[0].filename == "stats_data.json"
     finally:
         loop.close()
         asyncio.set_event_loop(None)
