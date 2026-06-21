@@ -63,6 +63,7 @@ MAX_OUTPUT_TOKENS = int(os.getenv('ORGANISATION_MAX_OUTPUT_TOKENS', '1200'))
 TEMPERATURE = float(os.getenv('ORGANISATION_TEMPERATURE', '0.35'))
 ORGANISATION_MAX_TURNS = int(os.getenv('ORGANISATION_MAX_TURNS', '8'))
 ORGANISATION_PLANNER_TEMP = float(os.getenv('ORGANISATION_PLANNER_TEMP', '0.25'))
+ORGANISATION_TEMP_ROLE_GRACE_SECONDS = int(os.getenv('ORGANISATION_TEMP_ROLE_GRACE_SECONDS', '7200'))
 BACKEND_MODE = (os.getenv('ORGANISATION_BACKEND', 'auto') or 'auto').strip().lower()
 if BACKEND_MODE not in {'auto', 'responses', 'chat'}:
     BACKEND_MODE = 'auto'
@@ -77,6 +78,7 @@ ANNOUNCE_SCHEMA = {'name': 'OrganisationAnnouncement', 'schema': {'type': 'objec
 PLANNER_SCHEMA = {'name': 'OrganisationPlanner', 'schema': {'type': 'object', 'additionalProperties': False, 'required': ['status', 'next_question', 'collected', 'summary'], 'properties': {'status': {'type': 'string'}, 'next_question': {'type': ['string', 'null']}, 'collected': {'type': 'object'}, 'summary': {'type': ['string', 'null']}}}}
 _JSON_BLOCK_RE = re.compile('```(?:json)?\\s*(?P<body>.+?)```', re.DOTALL | re.IGNORECASE)
 _ID_RE = re.compile('\\d+')
+_ROLE_NAME_UNSAFE_RE = re.compile(r'[\r\n\t]+')
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
@@ -295,15 +297,19 @@ class OrganisationEvent:
     going: Set[int] = field(default_factory=set)
     maybe: Set[int] = field(default_factory=set)
     status: str = 'active'
-    schema_version: int = 1
+    schema_version: int = 2
     console_message_id: Optional[int] = None
+    role_id: Optional[int] = None
+    role_name: str = ''
+    cleanup_ts: Optional[int] = None
+    cleanup_status: str = 'pending'
 
     def to_json(self) -> Dict[str, Any]:
-        return {'schema_version': self.schema_version, 'id': self.id, 'guild_id': self.guild_id, 'channel_id': self.channel_id, 'message_id': self.message_id, 'author_id': self.author_id, 'created_at_iso': self.created_at_iso, 'activity': self.activity, 'date_time': self.date_time, 'date_ts': self.date_ts, 'location': self.location, 'seats': self.seats, 'details': self.details, 'title': self.title, 'body': self.body, 'cta': self.cta, 'mentions': list(self.mentions or []), 'going': sorted(self.going), 'maybe': sorted(self.maybe), 'status': self.status, 'console_message_id': self.console_message_id}
+        return {'schema_version': self.schema_version, 'id': self.id, 'guild_id': self.guild_id, 'channel_id': self.channel_id, 'message_id': self.message_id, 'author_id': self.author_id, 'created_at_iso': self.created_at_iso, 'activity': self.activity, 'date_time': self.date_time, 'date_ts': self.date_ts, 'location': self.location, 'seats': self.seats, 'details': self.details, 'title': self.title, 'body': self.body, 'cta': self.cta, 'mentions': list(self.mentions or []), 'going': sorted(self.going), 'maybe': sorted(self.maybe), 'status': self.status, 'console_message_id': self.console_message_id, 'role_id': self.role_id, 'role_name': self.role_name, 'cleanup_ts': self.cleanup_ts, 'cleanup_status': self.cleanup_status}
 
     @classmethod
     def from_json(cls, data: Dict[str, Any]) -> 'OrganisationEvent':
-        return cls(id=str(data.get('id') or ''), guild_id=int(data.get('guild_id') or 0), channel_id=int(data.get('channel_id') or 0), message_id=int(data.get('message_id') or 0), author_id=int(data.get('author_id') or 0), created_at_iso=str(data.get('created_at_iso') or ''), activity=str(data.get('activity') or ''), date_time=str(data.get('date_time') or ''), date_ts=int(data['date_ts']) if data.get('date_ts') is not None else None, location=str(data.get('location') or ''), seats=int(data.get('seats') or 0), details=str(data.get('details') or ''), title=str(data.get('title') or ''), body=str(data.get('body') or ''), cta=str(data.get('cta') or '') if data.get('cta') is not None else '', mentions=list(data.get('mentions') or []), going=set((int(x) for x in data.get('going') or [] if str(x).isdigit())), maybe=set((int(x) for x in data.get('maybe') or [] if str(x).isdigit())), status=str(data.get('status') or 'active'), schema_version=int(data.get('schema_version') or 1), console_message_id=int(data['console_message_id']) if data.get('console_message_id') else None)
+        return cls(id=str(data.get('id') or ''), guild_id=int(data.get('guild_id') or 0), channel_id=int(data.get('channel_id') or 0), message_id=int(data.get('message_id') or 0), author_id=int(data.get('author_id') or 0), created_at_iso=str(data.get('created_at_iso') or ''), activity=str(data.get('activity') or ''), date_time=str(data.get('date_time') or ''), date_ts=int(data['date_ts']) if data.get('date_ts') is not None else None, location=str(data.get('location') or ''), seats=int(data.get('seats') or 0), details=str(data.get('details') or ''), title=str(data.get('title') or ''), body=str(data.get('body') or ''), cta=str(data.get('cta') or '') if data.get('cta') is not None else '', mentions=list(data.get('mentions') or []), going=set((int(x) for x in data.get('going') or [] if str(x).isdigit())), maybe=set((int(x) for x in data.get('maybe') or [] if str(x).isdigit())), status=str(data.get('status') or 'active'), schema_version=int(data.get('schema_version') or 1), console_message_id=int(data['console_message_id']) if data.get('console_message_id') else None, role_id=int(data['role_id']) if data.get('role_id') else None, role_name=str(data.get('role_name') or ''), cleanup_ts=int(data['cleanup_ts']) if data.get('cleanup_ts') is not None else None, cleanup_status=str(data.get('cleanup_status') or 'pending'))
 
 class OrganisationCog(commands.Cog):
 
@@ -319,6 +325,7 @@ class OrganisationCog(commands.Cog):
         self._supports_temperature = True
         self._temperature_mode = 'inference_config'
         self._pending_update_tasks: Dict[int, asyncio.Task] = {}
+        self._cleanup_tasks: Dict[int, asyncio.Task] = {}
         self._restore_task: Optional[asyncio.Task] = None
 
     async def cog_load(self) -> None:
@@ -333,6 +340,12 @@ class OrganisationCog(commands.Cog):
             except Exception:
                 pass
         self._pending_update_tasks.clear()
+        for t in list(self._cleanup_tasks.values()):
+            try:
+                t.cancel()
+            except Exception:
+                pass
+        self._cleanup_tasks.clear()
 
     def _is_staff(self, member: discord.Member) -> bool:
         try:
@@ -442,11 +455,225 @@ class OrganisationCog(commands.Cog):
                     continue
                 if not event.console_message_id:
                     event.console_message_id = msg.id
+                if event.status == 'expired' and event.cleanup_status == 'expired':
+                    continue
                 self._events[event.message_id] = event
+                self._schedule_role_cleanup(event)
                 loaded += 1
             except Exception:
                 continue
         return loaded
+
+    def _now_ts(self) -> int:
+        return int(datetime.now(tz=timezone.utc).timestamp())
+
+    def _cleanup_timestamp(self, date_ts: int) -> int:
+        return int(date_ts) + max(0, ORGANISATION_TEMP_ROLE_GRACE_SECONDS)
+
+    def _bot_member(self, guild: discord.Guild) -> Optional[discord.Member]:
+        me = getattr(guild, 'me', None)
+        if me is not None:
+            return me
+        bot_user = getattr(self.bot, 'user', None)
+        if bot_user is None:
+            return None
+        get_member = getattr(guild, 'get_member', None)
+        if callable(get_member):
+            return get_member(bot_user.id)
+        return None
+
+    def _has_manage_roles(self, member: Optional[discord.Member]) -> bool:
+        if member is None:
+            return True
+        permissions = getattr(member, 'guild_permissions', None)
+        return bool(
+            getattr(permissions, 'administrator', False)
+            or getattr(permissions, 'manage_roles', False)
+        )
+
+    def _can_create_roles(self, guild: discord.Guild) -> Tuple[bool, str]:
+        me = self._bot_member(guild)
+        if not self._has_manage_roles(me):
+            return (False, "Je n'ai pas la permission `Gérer les rôles`.")
+        return (True, '')
+
+    def _can_manage_role(self, guild: discord.Guild, role: discord.Role) -> Tuple[bool, str]:
+        me = self._bot_member(guild)
+        if not self._has_manage_roles(me):
+            return (False, "Je n'ai pas la permission `Gérer les rôles`.")
+        if me is None:
+            return (True, '')
+        top_role = getattr(me, 'top_role', None)
+        if top_role is None:
+            return (True, '')
+        try:
+            if role < top_role:
+                return (True, '')
+            return (False, f"Mon rôle Discord doit être au-dessus du rôle `{getattr(role, 'name', 'event')}`.")
+        except TypeError:
+            role_position = getattr(role, 'position', None)
+            top_position = getattr(top_role, 'position', None)
+            if role_position is not None and top_position is not None and role_position >= top_position:
+                return (False, f"Mon rôle Discord doit être au-dessus du rôle `{getattr(role, 'name', 'event')}`.")
+        return (True, '')
+
+    def _normalise_temp_role_name(self, activity: str) -> str:
+        name = _ROLE_NAME_UNSAFE_RE.sub(' ', activity or '')
+        name = re.sub(r'\s+', ' ', name).strip()
+        name = name.replace('@everyone', 'everyone').replace('@here', 'here')
+        if not name:
+            name = 'Sortie'
+        return f'Event {name}'[:100].strip()
+
+    def _unique_temp_role_name(self, guild: discord.Guild, draft: OrganisationDraft) -> str:
+        base = self._normalise_temp_role_name(draft.activity)
+        names = {str(getattr(role, 'name', '')).lower() for role in getattr(guild, 'roles', []) or []}
+        if base.lower() not in names:
+            return base
+        suffixes = [draft.id] + [str(i) for i in range(2, 100)]
+        for suffix in suffixes:
+            marker = f' {suffix}'
+            candidate = f'{base[:100 - len(marker)]}{marker}'.strip()
+            if candidate.lower() not in names:
+                return candidate
+        return f'{base[:91]} {uuid.uuid4().hex[:8]}'.strip()
+
+    async def _create_temp_role_for_draft(self, guild: discord.Guild, draft: OrganisationDraft) -> Tuple[Optional[discord.Role], str]:
+        ok, reason = self._can_create_roles(guild)
+        if not ok:
+            return (None, reason)
+        role_name = self._unique_temp_role_name(guild, draft)
+        try:
+            role = await guild.create_role(
+                name=role_name,
+                mentionable=True,
+                reason=f'Sortie organisation {draft.id}',
+            )
+        except discord.Forbidden:
+            return (None, "Je n'ai pas la permission de créer le rôle temporaire.")
+        except discord.HTTPException as exc:
+            return (None, f'Erreur Discord création rôle: {exc}')
+        except Exception as exc:
+            return (None, f'Erreur création rôle: {exc}')
+        ok, reason = self._can_manage_role(guild, role)
+        if ok:
+            return (role, '')
+        await self._delete_temp_role(guild, role, reason='Rollback rôle sortie organisation non assignable')
+        return (None, reason)
+
+    async def _delete_temp_role(self, guild: discord.Guild, role: discord.Role, *, reason: str) -> bool:
+        ok, why = self._can_manage_role(guild, role)
+        if not ok:
+            log.warning('Organisation: role delete refused role_id=%s reason=%s', getattr(role, 'id', None), why)
+            return False
+        try:
+            await role.delete(reason=reason)
+            return True
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log.warning('Organisation: role delete failed role_id=%s err=%s', getattr(role, 'id', None), exc)
+        except Exception as exc:
+            log.warning('Organisation: role delete failed role_id=%s err=%s', getattr(role, 'id', None), exc)
+        return False
+
+    def _member_has_role(self, member: discord.Member, role: discord.Role) -> bool:
+        role_id = getattr(role, 'id', None)
+        return any(getattr(existing, 'id', None) == role_id for existing in getattr(member, 'roles', []) or [])
+
+    async def _resolve_member(self, guild: discord.Guild, user_id: int, member: Optional[discord.Member]=None) -> Optional[discord.Member]:
+        if member is not None and getattr(member, 'id', None) == user_id:
+            return member
+        get_member = getattr(guild, 'get_member', None)
+        if callable(get_member):
+            found = get_member(user_id)
+            if found is not None:
+                return found
+        fetch_member = getattr(guild, 'fetch_member', None)
+        if callable(fetch_member):
+            try:
+                return await fetch_member(user_id)
+            except Exception:
+                return None
+        return None
+
+    async def _sync_member_temp_role(
+        self,
+        event: OrganisationEvent,
+        user_id: int,
+        should_have_role: bool,
+        *,
+        member: Optional[discord.Member]=None,
+    ) -> bool:
+        if not event.role_id:
+            return False
+        guild = self.bot.get_guild(event.guild_id)
+        if not guild:
+            return False
+        role = guild.get_role(event.role_id)
+        if role is None:
+            log.warning('Organisation: rôle temporaire introuvable event_id=%s role_id=%s', event.id, event.role_id)
+            return False
+        ok, reason = self._can_manage_role(guild, role)
+        if not ok:
+            log.warning('Organisation: rôle temporaire non assignable event_id=%s role_id=%s reason=%s', event.id, event.role_id, reason)
+            return False
+        target = await self._resolve_member(guild, user_id, member=member)
+        if target is None:
+            log.debug('Organisation: membre introuvable pour sync rôle event_id=%s user_id=%s', event.id, user_id)
+            return False
+        has_role = self._member_has_role(target, role)
+        try:
+            if should_have_role and not has_role:
+                await target.add_roles(role, reason=f'Inscription sortie organisation {event.id}')
+                return True
+            if not should_have_role and has_role:
+                await target.remove_roles(role, reason=f'Désinscription sortie organisation {event.id}')
+                return True
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log.warning('Organisation: sync rôle échouée event_id=%s user_id=%s err=%s', event.id, user_id, exc)
+        except Exception as exc:
+            log.warning('Organisation: sync rôle échouée event_id=%s user_id=%s err=%s', event.id, user_id, exc)
+        return False
+
+    def _schedule_role_cleanup(self, event: OrganisationEvent) -> None:
+        if not event.role_id or not event.cleanup_ts or event.cleanup_status == 'expired':
+            return
+        existing = self._cleanup_tasks.get(event.message_id)
+        if existing and not existing.done():
+            return
+
+        async def _runner():
+            try:
+                delay = max(0, int(event.cleanup_ts) - self._now_ts())
+                if delay:
+                    await asyncio.sleep(delay)
+                await self._cleanup_expired_event_role(event)
+            finally:
+                self._cleanup_tasks.pop(event.message_id, None)
+        self._cleanup_tasks[event.message_id] = asyncio.create_task(_runner())
+
+    async def _cleanup_expired_event_role(self, event: OrganisationEvent) -> None:
+        guild = self.bot.get_guild(event.guild_id)
+        deleted = True
+        if guild and event.role_id:
+            role = guild.get_role(event.role_id)
+            if role is not None:
+                deleted = await self._delete_temp_role(
+                    guild,
+                    role,
+                    reason=f'Fin sortie organisation {event.id}',
+                )
+            else:
+                log.debug('Organisation: rôle déjà absent au cleanup event_id=%s role_id=%s', event.id, event.role_id)
+        elif not guild:
+            log.warning('Organisation: guild introuvable au cleanup event_id=%s guild_id=%s', event.id, event.guild_id)
+            deleted = False
+        event.status = 'expired'
+        event.cleanup_status = 'expired' if deleted else 'failed'
+        self._events.pop(event.message_id, None)
+        try:
+            await self._save_event_to_console(event)
+        except Exception as exc:
+            log.warning('Organisation: sauvegarde cleanup échouée event_id=%s err=%s', event.id, exc)
 
     async def _restore_when_ready(self) -> None:
         try:
@@ -489,6 +716,8 @@ class OrganisationCog(commands.Cog):
         if event.cta:
             desc_lines.append(event.cta)
         desc_lines.append(f'Inscription : réagis avec {EMOJI_GOING} (présent), {EMOJI_MAYBE} (peut-être), {EMOJI_NO} (non).')
+        if event.role_id and event.cleanup_ts:
+            desc_lines.append(f'Rôle temporaire : <@&{event.role_id}> attribué aux inscrits {EMOJI_GOING} jusqu’à <t:{int(event.cleanup_ts)}:t>.')
         embed = discord.Embed(title=title, description='\n'.join(desc_lines)[:4096], color=discord.Color.blurple())
         seats_label = str(event.seats) if event.seats else '∞'
         embed.add_field(name=f'Inscrits {EMOJI_GOING} ({len(event.going)}/{seats_label})', value=_truncate_list_mentions(event.going), inline=False)
@@ -903,31 +1132,44 @@ class OrganisationCog(commands.Cog):
         view = self._PreviewView(self, interaction.user.id)
         mention_text = draft.mentions_raw.strip() or '(aucune)'
         channel_text = draft.channel_override.strip() or ORGANISATION_CHANNEL_NAME
-        msg = f'✅ **Brouillon `{draft.id}` prêt.**\n• Salon: `{channel_text}`\n• Mentions: `{mention_text}`\nTu peux **Publier**, **Ajuster**, **Options**, ou **Régénérer**.'
+        msg = f'✅ **Brouillon `{draft.id}` prêt.**\n• Salon: `{channel_text}`\n• Mentions: `{mention_text}`\n• Rôle temporaire: créé à la publication et attribué aux inscrits {EMOJI_GOING}\nTu peux **Publier**, **Ajuster**, **Options**, ou **Régénérer**.'
         await interaction.followup.send(msg, embed=embed, view=view, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     async def _publish_draft(self, interaction: discord.Interaction, draft: OrganisationDraft) -> Tuple[bool, str]:
         guild = interaction.guild
         if guild is None:
             return (False, 'guild manquant')
+        if not draft.date_ts and draft.date_time:
+            dt = parse_fr_datetime(draft.date_time)
+            draft.date_ts = int(dt.timestamp()) if dt else None
+        if not draft.date_ts:
+            return (False, "date/heure invalide: précise une date compréhensible, ex. `samedi 21h` ou `27/09 21h`.")
+        cleanup_ts = self._cleanup_timestamp(draft.date_ts)
+        if cleanup_ts <= self._now_ts():
+            return (False, "date/heure trop ancienne: le rôle temporaire serait déjà expiré.")
         channel = self._find_organisation_channel(guild, override=draft.channel_override)
         if not channel:
             return (False, f'Salon #{ORGANISATION_CHANNEL_NAME} introuvable (ou override invalide).')
-        me = guild.me or guild.get_member(self.bot.user.id) if self.bot.user else None
+        me = self._bot_member(guild)
         if me:
             perms = channel.permissions_for(me)
             if not perms.send_messages:
                 return (False, f"Je n'ai pas la permission d'écrire dans #{channel.name}.")
             if not perms.embed_links:
                 return (False, f"Je n'ai pas la permission d'envoyer des embeds dans #{channel.name}.")
+        role, role_error = await self._create_temp_role_for_draft(guild, draft)
+        if role is None:
+            return (False, role_error)
         mentions = _parse_mentions(draft.mentions_raw, guild)
         allowed_mentions = _build_allowed_mentions(guild, mentions)
         content = ' '.join(mentions) if mentions else None
-        event = OrganisationEvent(id=draft.id, guild_id=guild.id, channel_id=channel.id, message_id=0, author_id=draft.author_id, created_at_iso=_now_iso(), activity=draft.activity, date_time=draft.date_time, date_ts=draft.date_ts, location=draft.location, seats=draft.seats, details=draft.details, title=draft.title, body=draft.body, cta=draft.cta, mentions=mentions, going=set(), maybe=set())
+        event = OrganisationEvent(id=draft.id, guild_id=guild.id, channel_id=channel.id, message_id=0, author_id=draft.author_id, created_at_iso=_now_iso(), activity=draft.activity, date_time=draft.date_time, date_ts=draft.date_ts, location=draft.location, seats=draft.seats, details=draft.details, title=draft.title, body=draft.body, cta=draft.cta, mentions=mentions, going=set(), maybe=set(), role_id=role.id, role_name=role.name, cleanup_ts=cleanup_ts, cleanup_status='pending')
         embed = self._build_event_embed(event)
+        msg = None
         try:
             msg = await channel.send(content=content, embed=embed, allowed_mentions=allowed_mentions)
         except Exception as exc:
+            await self._delete_temp_role(guild, role, reason='Rollback échec publication sortie organisation')
             return (False, f'Erreur Discord envoi message: {exc}')
         event.message_id = msg.id
         self._events[msg.id] = event
@@ -941,6 +1183,14 @@ class OrganisationCog(commands.Cog):
         saved = await self._save_event_to_console(event)
         if not saved:
             log.warning("Organisation: impossible de sauvegarder l'événement %s dans #console", event.id)
+            self._events.pop(msg.id, None)
+            try:
+                await msg.delete(reason='Rollback sauvegarde sortie organisation impossible')
+            except Exception:
+                pass
+            await self._delete_temp_role(guild, role, reason='Rollback sauvegarde sortie organisation impossible')
+            return (False, "sauvegarde #console impossible: publication annulée pour éviter un rôle non restaurable.")
+        self._schedule_role_cleanup(event)
         return (True, '')
 
     @commands.Cog.listener()
@@ -954,8 +1204,17 @@ class OrganisationCog(commands.Cog):
         uid = payload.user_id
         if emoji not in OUTING_EMOJIS:
             return
+        had_temp_role = uid in event.going
         changed = self._apply_reaction(event, emoji=emoji, user_id=uid, add=True)
         if changed:
+            should_have_temp_role = uid in event.going
+            if had_temp_role != should_have_temp_role:
+                await self._sync_member_temp_role(
+                    event,
+                    uid,
+                    should_have_temp_role,
+                    member=getattr(payload, 'member', None),
+                )
             self._schedule_event_update(event)
         asyncio.create_task(self._try_cleanup_member_reactions(event, payload=payload, keep_emoji=emoji))
 
@@ -970,8 +1229,12 @@ class OrganisationCog(commands.Cog):
         uid = payload.user_id
         if emoji not in OUTING_EMOJIS:
             return
+        had_temp_role = uid in event.going
         changed = self._apply_reaction(event, emoji=emoji, user_id=uid, add=False)
         if changed:
+            should_have_temp_role = uid in event.going
+            if had_temp_role != should_have_temp_role:
+                await self._sync_member_temp_role(event, uid, should_have_temp_role)
             self._schedule_event_update(event)
 
     def _apply_reaction(self, event: OrganisationEvent, *, emoji: str, user_id: int, add: bool) -> bool:
