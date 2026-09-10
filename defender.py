@@ -24,6 +24,7 @@ import discord
 import idna
 from cryptography.fernet import Fernet, InvalidToken
 from discord.ext import commands
+from utils.slash_support import delete_invocation_message
 
 log = logging.getLogger("Defender")
 
@@ -395,7 +396,7 @@ class DefenderCog(commands.Cog):
     async def scan_command(self, ctx: commands.Context, *, url: str | None = None) -> None:
         if _env_bool("DEFENDER_SCAN_DELETE_COMMAND", True):
             try:
-                await ctx.message.delete()
+                await delete_invocation_message(ctx)
             except (discord.Forbidden, discord.HTTPException):
                 pass
 

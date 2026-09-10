@@ -22,9 +22,11 @@ class HelpCog(commands.Cog):
     async def aide_command(self, ctx: commands.Context):
         """Affiche la liste complète des commandes du bot."""
         embed = discord.Embed(
-            title="Liste des Commandes du Bot Evolution By Coca©",
+            title="Evolution BOT — Commandes et guides",
             description=(
-                "Bienvenue sur le bot de la guilde **Evolution** !\n\n"
+                "Bienvenue sur **Evolution BOT** !\n\n"
+                "Tape `/` dans Discord et choisis **Evolution BOT** pour retrouver les commandes "
+                "avec leurs champs et suggestions. Les commandes `!` restent disponibles.\n\n"
                 "Voici un récapitulatif de toutes les commandes disponibles, "
                 "classées par catégories. Pour toute question ou besoin d’aide, "
                 "n’hésitez pas à contacter un membre du Staff."
@@ -125,6 +127,33 @@ class HelpCog(commands.Cog):
         )
 
         embed.add_field(
+            name="Encyclopédie Dofus Rétro",
+            value=(
+                "`/objet` : caractéristiques et image d'un objet.\n"
+                "`/recette` : ingrédients et quantités pour une fabrication.\n"
+                "`/equipement` : type, niveaux minimum/maximum et nom.\n"
+                "`/monstre` : statistiques et résistances par niveau.\n"
+                "Suggestions de noms, retour aux résultats et quantité de recette modifiable.\n"
+                "Aussi avec `!` : `!objet Gelano`, `!recette 3 Gelano`, "
+                "`!equipement coiffe 100`, `!monstre Bouftou Royal`."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Démarrer avec les commandes /",
+            value=(
+                "`/job ajouter` : choisis ton métier et ton niveau.\n"
+                "`/job mes-metiers` : consulte tes métiers.\n"
+                "`/membre principal` : enregistre ton personnage.\n"
+                "`/profil modifier` : complète ton profil avec le guide.\n"
+                "`/activite liste` : découvre les prochaines sorties.\n"
+                "`/ticket` : contacte le Staff en privé."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
             name=":bar_chart: Commandes Sondage",
             value=(
                 "__**!sondage <Titre> ; <Choix1> ; ... ; temps=JJ:HH:MM>**__\n"
@@ -178,7 +207,7 @@ class HelpCog(commands.Cog):
 
         embed.set_footer(
             text=(
-                "Pour réafficher cette liste à tout moment, utilisez !aide ou !help.\n"
+                "Pour réafficher cette liste : /aide, !aide ou !help.\n"
                 "Besoin d’aide ? Contactez un membre du Staff !"
             )
         )

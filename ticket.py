@@ -8,6 +8,7 @@ import datetime
 
 import discord
 from discord.ext import commands
+from utils.slash_support import delete_invocation_message, notify_private_workflow
 
 from utils.channel_resolver import resolve_text_channel
 from utils.ticket_text import (
@@ -128,7 +129,7 @@ class TicketCog(commands.Cog):
 
         user = ctx.author
         try:
-            await ctx.message.delete()
+            await delete_invocation_message(ctx)
         except discord.Forbidden:
             log.debug("Impossible de supprimer le message !ticket de %s", user)
 
@@ -155,6 +156,8 @@ class TicketCog(commands.Cog):
             open_tickets.discard(user.id)
             await ctx.send(f"{user.mention}, impossible de créer le ticket car tu bloques les messages privés.")
             return
+
+        await notify_private_workflow(ctx)
 
         def check_dm(message: discord.Message) -> bool:
             return message.author == user and isinstance(message.channel, discord.DMChannel)

@@ -14,6 +14,8 @@ from alive import keep_alive
 from collections import deque
 from utils.channel_resolver import resolve_text_channel
 from utils.discord_history import fetch_channel_history, fetch_channel_message
+from utils.slash_support import EvolutionCommandTree
+from utils.bot_branding import sync_bot_branding
 
 load_dotenv()
 
@@ -50,6 +52,7 @@ class EvoBot(commands.Bot):
             command_prefix=os.getenv("BOT_PREFIX", "!"),
             intents=intents,
             allowed_mentions=discord.AllowedMentions.none(),
+            tree_cls=EvolutionCommandTree,
         )
         self.token = token
         self.INSTANCE_ID = os.getenv("RENDER_INSTANCE_ID") or os.getenv("INSTANCE_ID") or uuid.uuid4().hex
@@ -60,6 +63,7 @@ class EvoBot(commands.Bot):
         self._seen_order = deque()
         self._seen_max = 2048
         self._console_checked = False
+        self._branding_attempted = False
 
         orig = self.process_commands
 
@@ -141,6 +145,7 @@ class EvoBot(commands.Bot):
             "welcome",
             "member_guard",
             "calcul",
+            "dofus_wiki",
             "perco",
             "avis",
             "organisation",
@@ -170,6 +175,9 @@ class EvoBot(commands.Bot):
 
         await self._load_iastaff_anywhere()
 
+        if not await self._safe_load("slash_commands"):
+            failed_required.append("slash_commands")
+
         if failed_required:
             logging.error("Extensions critiques non chargées: %s", ", ".join(failed_required))
             raise RuntimeError(f"Extensions critiques non chargées: {', '.join(failed_required)}")
@@ -180,7 +188,7 @@ class EvoBot(commands.Bot):
         logging.info("Commandes prefix enregistrées: %s", cmds)
 
     async def _sync_app_commands(self) -> None:
-        if not env_bool("SYNC_SLASH_COMMANDS", False):
+        if not env_bool("SYNC_SLASH_COMMANDS", True):
             logging.info("Sync slash commands désactivée (SYNC_SLASH_COMMANDS=0).")
             return
 
@@ -386,6 +394,9 @@ class EvoBot(commands.Bot):
                 os._exit(0)
             self._singleton_ready = True
             asyncio.create_task(self.heartbeat_loop())
+        if not self._branding_attempted and env_bool("SYNC_BOT_IDENTITY", True):
+            self._branding_attempted = True
+            await sync_bot_branding(self)
 
 
 bot = EvoBot()
@@ -413,7 +424,23 @@ async def on_command_error(ctx: commands.Context, error: Exception):
 
     if isinstance(original, commands.BadArgument):
         await ctx.reply(
-            "Argument invalide. Vérifie la commande avec `!aide`.",
+            "Argument invalide. Vérifie la commande avec `/aide` ou `!aide`.",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+
+    if isinstance(original, commands.CommandOnCooldown):
+        await ctx.reply(
+            f"Réessaie dans {original.retry_after:.0f} seconde(s).",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+
+    if isinstance(original, commands.MaxConcurrencyReached):
+        await ctx.reply(
+            "Une commande est déjà en cours. Attends qu’elle se termine avant de réessayer.",
             mention_author=False,
             allowed_mentions=discord.AllowedMentions.none(),
         )

@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import discord
 from discord.ext import commands
+from utils.slash_support import delete_invocation_message
 
 from utils.channel_resolver import resolve_text_channel
 from utils.openai_config import (
@@ -677,7 +678,7 @@ class AnnonceCog(commands.Cog):
             try:
                 perms = ctx.channel.permissions_for(ctx.guild.me) if ctx.guild.me else None
                 if perms and perms.manage_messages:
-                    await ctx.message.delete()
+                    await delete_invocation_message(ctx)
             except Exception:
                 pass
 

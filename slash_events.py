@@ -2,8 +2,8 @@
 """
 Slash‑command cog : événements (inscriptions) et votes à réactions.
 
-• /event type:outing … → embed stylé + réactions ✅ ❔ ❌ + MAJ dynamique
-• /event type:poll   … → bulletin de vote numéroté, décompte automatique
+• /event-rapide type:outing … → embed stylé + réactions ✅ ❔ ❌ + MAJ dynamique
+• /event-rapide type:poll   … → bulletin de vote numéroté, décompte automatique
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ class Poll:
 
 
 class SlashEventCog(commands.Cog):
-    """Gestion slash‑commands /event pour sorties et votes."""
+    """Gestion slash‑commands /event-rapide pour sorties et votes."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -68,7 +68,7 @@ class SlashEventCog(commands.Cog):
 
     # ================================ COMMAND =============================== #
 
-    @app_commands.command(name="event", description="Propose une sortie ou un vote")
+    @app_commands.command(name="event-rapide", description="Proposer une sortie simple ou un vote à réactions.")
     @app_commands.describe(
         type="outing = inscription, poll = vote",
         titre="Intitulé ou (pour un vote) liste d'options séparées par |",

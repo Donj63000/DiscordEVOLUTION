@@ -55,6 +55,7 @@ def _ensure_utils() -> None:
 
 _ensure_utils()
 from discord.ext import commands, tasks
+from utils.slash_support import delete_invocation_message, notify_private_workflow
 from zoneinfo import ZoneInfo
 
 from models import EventData
@@ -321,7 +322,7 @@ class EventConversationCog(commands.Cog):
             return await ctx.reply("Cette commande doit être utilisée dans un serveur.")
 
         try:
-            await ctx.message.delete(delay=0)
+            await delete_invocation_message(ctx, delay=0)
         except discord.HTTPException:
             pass
 
@@ -330,6 +331,7 @@ class EventConversationCog(commands.Cog):
             "Décris ton événement en **plusieurs messages** puis tape `terminé`.\n"
             "*(15 min d’inactivité ⇒ annulation)*"
         )
+        await notify_private_workflow(ctx)
 
         # ----- collecte DM -----
         transcript: List[str] = []

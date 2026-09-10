@@ -13,6 +13,7 @@ from typing import Dict, Optional, Tuple
 
 import discord
 from discord.ext import commands
+from utils.slash_support import notify_private_workflow
 from discord.utils import get
 
 # ============
@@ -1009,6 +1010,7 @@ class ProfilCog(commands.Cog):
                 f"On va remplir: **Nom**, **Niveau**, **Classe**, **Alignement**, **%stats%** (coller le texte). "
                 f"Tu peux annuler à tout moment avec `annuler`."
             )
+            await notify_private_workflow(ctx)
             return dm, True
         except discord.Forbidden:
             await ctx.reply("Je ne peux pas t'envoyer de DM. On continue ici (ton texte `%stats%` sera visible dans ce salon).")

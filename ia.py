@@ -40,6 +40,7 @@ except Exception:
 
 import discord
 from discord.ext import commands, tasks
+from utils.slash_support import delete_invocation_message, notify_private_workflow
 try:
     from google import genai
     from google.genai import types as genai_types
@@ -324,6 +325,7 @@ class IACog(commands.Cog):
                 try:
                     dm = ctx.author.dm_channel or await ctx.author.create_dm()
                     await dm.send("✅ Session IA déjà active. Tu peux continuer ici en MP.")
+                    await notify_private_workflow(ctx)
                 except Exception:
                     await ctx.reply("✅ Session IA déjà active (MP).", mention_author=False)
                 return
@@ -339,11 +341,14 @@ class IACog(commands.Cog):
                 return
             if ctx.guild:
                 try:
-                    await ctx.message.delete()
+                    await delete_invocation_message(ctx)
                 except Exception:
                     pass
                 try:
-                    await ctx.channel.send(f"📩 {ctx.author.mention} je t’ai ouvert une **conversation privée**. Regarde tes MP.", delete_after=8)
+                    if getattr(ctx, "interaction", None) is not None:
+                        await notify_private_workflow(ctx)
+                    else:
+                        await ctx.channel.send(f"📩 {ctx.author.mention} je t’ai ouvert une **conversation privée**. Regarde tes MP.", delete_after=8)
                 except Exception:
                     pass
 
@@ -471,7 +476,7 @@ class IACog(commands.Cog):
         joined = "".join(f"{x.author.display_name}: {x.content}\n" for x in messages)
         pr = f"{st}\n{joined}"
         try:
-            await ctx.message.delete()
+            await delete_invocation_message(ctx)
         except:
             pass
         if time.time() < self.quota_exceeded_until:
@@ -531,7 +536,7 @@ class IACog(commands.Cog):
         st = "Tu es EvolutionBOT, crée une annonce sympathique sans trop d'humour et commence par '@everyone'."
         pr = f"{st}\n{user_message}"
         try:
-            await ctx.message.delete()
+            await delete_invocation_message(ctx)
         except:
             pass
         try:
@@ -570,7 +575,7 @@ class IACog(commands.Cog):
         st = "Tu es EvolutionBOT, rédige une annonce de PL claire et motivante."
         pr = f"{st}\n\n{user_message}"
         try:
-            await ctx.message.delete()
+            await delete_invocation_message(ctx)
         except:
             pass
         try:

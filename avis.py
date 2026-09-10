@@ -9,6 +9,7 @@ from typing import Optional
 
 import discord
 from discord.ext import commands
+from utils.slash_support import delete_invocation_message, notify_private_workflow
 from discord.utils import utcnow
 
 log = logging.getLogger("avis")
@@ -195,7 +196,7 @@ class AvisFeedback(commands.Cog):
             return
 
         try:
-            await ctx.message.delete(delay=None)
+            await delete_invocation_message(ctx, delay=None)
         except (discord.Forbidden, discord.HTTPException):
             pass
 
@@ -245,6 +246,7 @@ class AvisFeedback(commands.Cog):
         except discord.HTTPException:
             pass
 
+        await notify_private_workflow(ctx)
         self.active_sessions.add(ctx.author.id)
         try:
             feedback_text = await self._collect_dm_feedback(ctx.author)

@@ -6,6 +6,7 @@ from datetime import timedelta
 
 import discord
 from discord.ext import commands, tasks
+from utils.slash_support import delete_invocation_message
 
 from utils.channel_resolver import resolve_text_channel
 from utils.console_json_store import ConsoleJSONSnapshotStore
@@ -190,7 +191,7 @@ class SondageCog(commands.Cog):
         for i in range(len(choices)):
             await sondage_message.add_reaction(ALPHABET_EMOJIS[i])
         try:
-            await ctx.message.delete()
+            await delete_invocation_message(ctx)
         except Exception:
             pass
 

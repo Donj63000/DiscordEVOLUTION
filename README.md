@@ -185,6 +185,101 @@ Snapshots locaux typiques :
 
 ## Commandes cles
 
+### Menu Discord avec `/`
+
+Toutes les commandes des modules charges disposent d'un acces dans le menu `/`.
+Tapez `/` dans un salon du serveur, selectionnez **Evolution BOT**, puis utilisez les
+champs proposes. Les commandes historiques avec `!` restent disponibles et utilisent
+les memes validations, permissions, cooldowns et sauvegardes dans `#console`.
+
+| Commande slash | Utilisation |
+| --- | --- |
+| `/aide` | Guides et exemples pour demarrer. |
+| `/objet`, `/recette` | Fiche d'objet et ingrédients multipliés par la quantité demandée. |
+| `/equipement`, `/monstre` | Équipements par type, tranche de niveaux et nom ; bestiaire par niveau. |
+| `/job ajouter` | Metier avec suggestions, puis niveau entre 1 et 100. |
+| `/job mes-metiers`, `/job joueur` | Vos metiers ou ceux du membre selectionne. |
+| `/membre principal`, `/membre ajouter-mule` | Personnage principal et mules. |
+| `/profil modifier`, `/profil voir` | Parcours guide et consultation de profils. |
+| `/profil importer` | Importer les `%stats%` depuis le lien ou l'ID d'un message du salon courant. |
+| `/activite creer`, `/activite rejoindre` | Champs separes pour l'activite et suggestions d'identifiants. |
+| `/sondage` | Question, choix separes par `|`, duree optionnelle `JJ:HH:MM`. |
+| `/event` | Meme parcours prive et persistant que `!event`, reserve au Staff. |
+| `/event-rapide` | Ancien `/event` : sortie simple ou vote a reactions. |
+| `/organisation`, `/annonce`, `/perco` | Formulaires et commandes slash deja disponibles. |
+| `/stats`, `/accueil`, `/clear` | Sous-commandes expliquees directement dans Discord. |
+
+Les commandes des modules optionnels apparaissent seulement si ces modules sont charges.
+Les restrictions Staff restent controlees lors de l'execution. Le Staff peut aussi regler
+leur visibilite dans **Parametres du serveur > Integrations > Evolution BOT**.
+
+### Encyclopédie Dofus Rétro
+
+Les quatre recherches utilisent l'[API communautaire du wiki Rétro](https://github.com/Brizze0001/dofus-retro-wiki-api),
+sans clé supplémentaire. Les noms sont suggérés pendant la saisie. Les résultats multiples
+et les équipements disposent d'un menu de sélection et de pages, sans plafond silencieux
+de 100 résultats. Les variantes de monstres sont distinguées dans les suggestions.
+Les fiches permettent de revenir à la page de résultats précédente ; les objets proposent
+leur recette et un formulaire pour modifier la quantité, entre 1 et 10 000 exemplaires.
+La navigation est réservée à l'auteur et expire après trois minutes sans interaction,
+puis les liens vers le wiki restent utilisables.
+
+Exemples : `/objet nom:Gelano`, `/recette objet:Gelano quantite:3`,
+`/equipement type:Chapeau niveau:100`, `/monstre nom:Bouftou Royal`.
+Les champs facultatifs `niveau_min` et `nom` précisent la recherche d'équipements :
+`/equipement type:Chapeau niveau:100 niveau_min:40 nom:bouftou`.
+Les variantes avec `!` restent disponibles : `!objet Gelano`, `!recette 3 Gelano`,
+`!recette Gelano`, `!equipement coiffe 100`, `!monstre Bouftou Royal`.
+Pour les mêmes filtres : `!equipement coiffe 100 40 bouftou`.
+Les catégories de plusieurs mots doivent être entre guillemets avec `!`, par exemple
+`!equipement "Sac à dos" 100 40 bouftou`. Les synonymes courants, comme « coiffe »,
+« bottes » et « dagues », sont également proposés dans les suggestions slash.
+
+Les catalogues sont préchargés sans bloquer le démarrage. Les suggestions consultent
+uniquement le cache mémoire. Pendant son chargement, un nom déjà saisi peut être validé
+pour lancer la recherche directement. `DOFUS_WIKI_CACHE_TTL=3600` règle sa durée et
+`DOFUS_WIKI_TIMEOUT=10` borne chaque requête HTTP. Les téléchargements identiques sont
+partagés, avec deux requêtes simultanées maximum. En cas de panne, une copie en cache de
+moins de 24 heures reste consultable et est signalée comme telle. Aucun catalogue du wiki
+ni aucune donnée de guilde ne sont écrits dans un nouveau fichier local.
+
+Les identifiants de l'index des monstres ne sont pas fiables : le bot suit le lien JSON
+de la fiche choisie puis vérifie son URL, son nom et son identifiant. Les caractéristiques
+manquantes restent indiquées comme non renseignées. Une recette vide signifie qu'elle
+n'est pas renseignée, sans conclure que l'objet est impossible à fabriquer. Cette source
+ne fournit pas de prix HDV, de tables de drop ou d'inventaires de joueurs.
+Les objets sans niveau restent consultables par nom ; ils ne sont pas inclus dans
+un filtre de niveau d'équipement faute de pouvoir vérifier ce critère.
+
+### Activation et identite Discord
+
+1. Deployer les fichiers, dont `assets/evolution-bot.png`, puis redemarrer le bot.
+2. Garder `SYNC_SLASH_COMMANDS=1` (valeur par defaut). Pour un serveur de developpement,
+   renseigner `SYNC_SLASH_GUILD_ID` ; sinon laisser vide pour les commandes globales.
+3. Verifier que l'installation du bot autorise les scopes `bot` et `applications.commands`,
+   et que les membres ont la permission **Utiliser les commandes d'application**.
+4. Dans **Discord Developer Portal > application > General Information**, definir le nom
+   de l'application a **Evolution BOT**. Ce nom n'est pas modifiable par l'API du bot.
+
+Avec `SYNC_BOT_IDENTITY=1`, le bot applique automatiquement son nom d'utilisateur
+`BOT_DISPLAY_NAME=Evolution BOT`, son avatar et l'icone de l'application a partir de
+`BOT_AVATAR_PATH=assets/evolution-bot.png`, apres acquisition du verrou de l'instance active.
+Le logo fourni est conserve sans modification. Les empreintes appliquees sont conservees
+dans le snapshot `===BOTBRANDING===` de `#console`, afin de ne pas reenvoyer les images
+a chaque redemarrage. Ce snapshot est protege par `/clear console`.
+La synchronisation de l'identite est reportee si `#console` est indisponible ; une erreur
+d'avatar ou d'icone n'empeche pas les commandes de fonctionner.
+
+Le nom et l'icone affiches a cote des commandes sont geres par Discord a partir de
+l'identite de l'application et du bot, pas par les descriptions des commandes.
+La propagation des commandes globales et de l'identite peut prendre un delai cote Discord.
+
+References : [commandes d'application](https://docs.discord.com/developers/interactions/application-commands),
+[identite de l'application](https://docs.discord.com/developers/resources/application),
+[nom du bot](https://support-dev.discord.com/hc/en-us/articles/6129090215959-How-Do-I-Change-My-Bot-s-Name).
+
+### Commandes avec le prefixe `!`
+
 | Commande | Ce que ca fait |
 | --- | --- |
 | `!ticket <objet>` | Ouvre un ticket prive et organise l echange staff. |

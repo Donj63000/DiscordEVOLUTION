@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 
 CONSOLE_PRESERVE_MARKERS = (
     "===BOTLOCK===",
+    "===BOTBRANDING===",
     "===BOTSTATS===",
     "===BOTJOBS===",
     "===PLAYERSDATA===",
@@ -167,6 +168,7 @@ class JobCog(commands.Cog):
         self.console_message_id = None
         self._console_last_sync = 0.0
         self._console_sync_lock = asyncio.Lock()
+        self._job_submissions: dict[tuple[int | None, int, int], asyncio.Event] = {}
         self._console_sync_ttl = max(float(os.getenv("JOB_CONSOLE_SYNC_TTL", "30")), 0.0)
         self._console_history_limit = max(
             int(os.getenv("JOB_CONSOLE_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
@@ -178,6 +180,14 @@ class JobCog(commands.Cog):
         if not self.auto_prune.is_running():
             self.auto_prune.start()
         await self.prune_jobs()
+
+    def cog_unload(self):
+        """Je ferme les confirmations en cours quand le module est déchargé."""
+        log.debug("Jobs: unload action=close_confirmations count=%s", len(self._job_submissions))
+        for superseded in self._job_submissions.values():
+            superseded.set()
+        self._job_submissions.clear()
+        self.auto_prune.cancel()
 
     async def get_console_channel(self, guild: discord.Guild):
         return resolve_text_channel(
@@ -543,7 +553,50 @@ class JobCog(commands.Cog):
         scored.sort(key=lambda x: (x[0], normalize_string(x[1])))
         return [j for _, j in scored[:limit]]
 
-    async def confirm_job_creation_flow(self, ctx, job_name: str, level: int, author_id: str, author_name: str):
+    async def _wait_for_job_confirmation(self, ctx, superseded: asyncio.Event | None):
+        """J'arrête l'attente dès qu'une nouvelle saisie remplace cette demande."""
+        def check(message: discord.Message):
+            return (
+                message.author.id == ctx.author.id
+                and message.channel.id == ctx.channel.id
+                and message.content.lower() in {"oui", "non", "cancel"}
+                and (superseded is None or not superseded.is_set())
+            )
+
+        if superseded is None:
+            return await self.bot.wait_for("message", timeout=30.0, check=check)
+        if superseded.is_set():
+            return None
+
+        reply_waiter = asyncio.ensure_future(
+            self.bot.wait_for("message", timeout=30.0, check=check)
+        )
+        replacement_waiter = asyncio.create_task(superseded.wait())
+        try:
+            await asyncio.wait(
+                (reply_waiter, replacement_waiter), return_when=asyncio.FIRST_COMPLETED
+            )
+            if superseded.is_set():
+                return None
+            return reply_waiter.result()
+        finally:
+            for waiter in (reply_waiter, replacement_waiter):
+                if not waiter.done():
+                    waiter.cancel()
+            await asyncio.gather(reply_waiter, replacement_waiter, return_exceptions=True)
+
+    async def confirm_job_creation_flow(
+        self,
+        ctx,
+        job_name: str,
+        level: int,
+        author_id: str,
+        author_name: str,
+        *,
+        superseded: asyncio.Event | None = None,
+    ):
+        if superseded is not None and superseded.is_set():
+            return
         if level < JOB_MIN_LEVEL or level > JOB_MAX_LEVEL:
             e = discord.Embed(title="Niveau invalide", description=f"Le niveau doit être compris entre {JOB_MIN_LEVEL} et {JOB_MAX_LEVEL}.", color=discord.Color.red())
             await self.send_logo_embed(ctx, e)
@@ -557,19 +610,30 @@ class JobCog(commands.Cog):
         e = discord.Embed(title="Confirmation", description=prompt, color=discord.Color.orange())
         await self.send_logo_embed(ctx, e)
 
-        def check(m: discord.Message):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["oui", "non", "cancel"]
-
         try:
-            reply = await self.bot.wait_for("message", timeout=30.0, check=check)
+            reply = await self._wait_for_job_confirmation(ctx, superseded)
         except asyncio.TimeoutError:
+            if superseded is not None and superseded.is_set():
+                return
             log.debug(
-                "Jobs: confirmation timeout subcommand=job.add guild_id=%s channel_id=%s action=wait_confirmation",
+                "Jobs: confirmation timeout subcommand=job.add guild_id=%s channel_id=%s "
+                "author_id=%s action=wait_confirmation",
                 getattr(ctx.guild, "id", None),
                 getattr(ctx.channel, "id", None),
+                author_id,
             )
-            e = discord.Embed(title="Commande annulée", description="Temps écoulé, commande annulée.", color=discord.Color.red())
+            e = discord.Embed(
+                title="Confirmation expirée",
+                description=(
+                    f"Temps écoulé : la création du métier **{job_name}** au niveau "
+                    f"**{level}** pour **{author_name}** est annulée."
+                ),
+                color=discord.Color.red(),
+            )
             await self.send_logo_embed(ctx, e)
+            return
+
+        if reply is None or (superseded is not None and superseded.is_set()):
             return
 
         if reply.content.lower() in ["cancel", "non"]:
@@ -652,11 +716,49 @@ class JobCog(commands.Cog):
             self.save_data_local()
             await self.dump_data_to_console(member.guild)
 
+    @staticmethod
+    def _is_job_level_submission(args: tuple[str, ...]) -> bool:
+        if len(args) < 2 or args[0].lower() in {"liste", "me", "del"}:
+            return False
+        if args[0].lower() == "add" and len(args) < 3:
+            return False
+        try:
+            level = int(args[-1])
+        except ValueError:
+            return False
+        return JOB_MIN_LEVEL <= level <= JOB_MAX_LEVEL
+
     @commands.command(name="job")
     async def job_command(self, ctx, *args):
+        """Je remplace la saisie précédente avant tout chargement ou envoi Discord."""
+        if not self._is_job_level_submission(args):
+            await self._execute_job_command(ctx, *args)
+            return
+
+        key = (getattr(ctx.guild, "id", None), ctx.channel.id, ctx.author.id)
+        superseded = asyncio.Event()
+        previous = self._job_submissions.get(key)
+        self._job_submissions[key] = superseded
+        if previous is not None:
+            previous.set()
+        log.debug(
+            "Jobs: submission guild_id=%s channel_id=%s author_id=%s "
+            "action=begin_submission replaced=%s",
+            *key,
+            previous is not None,
+        )
+        try:
+            await self._execute_job_command(ctx, *args, superseded=superseded)
+        finally:
+            if self._job_submissions.get(key) is superseded:
+                self._job_submissions.pop(key)
+
+    async def _execute_job_command(self, ctx, *args, superseded: asyncio.Event | None = None):
         if not self.initialized:
             await self.initialize_data()
         await self.load_from_console(ctx.guild)
+        if superseded is not None and superseded.is_set():
+            return
 
         author = ctx.author
         author_id = str(author.id)
@@ -765,6 +867,8 @@ class JobCog(commands.Cog):
 
         if len(args) >= 3 and args[0].lower() == "add":
             await self.load_from_console(ctx.guild)
+            if superseded is not None and superseded.is_set():
+                return
             *job_name_tokens, level_str = args[1:]
             job_input = " ".join(job_name_tokens)
             try:
@@ -779,7 +883,9 @@ class JobCog(commands.Cog):
                 return
             canonical = self.resolve_job_name(job_input)
             if canonical is None:
-                await self.confirm_job_creation_flow(ctx, job_input, level_int, author_id, author_name)
+                await self.confirm_job_creation_flow(
+                    ctx, job_input, level_int, author_id, author_name, superseded=superseded
+                )
                 return
             if author_id not in self.jobs_data:
                 self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
@@ -817,6 +923,8 @@ class JobCog(commands.Cog):
 
         if len(args) >= 2 and args[0].lower() not in ["liste", "me", "add", "del"]:
             await self.load_from_console(ctx.guild)
+            if superseded is not None and superseded.is_set():
+                return
             *job_name_tokens, level_str = args
             job_input = " ".join(job_name_tokens)
             try:
@@ -830,7 +938,9 @@ class JobCog(commands.Cog):
                     return
                 canonical = self.resolve_job_name(job_input)
                 if canonical is None:
-                    await self.confirm_job_creation_flow(ctx, job_input, level_int, author_id, author_name)
+                    await self.confirm_job_creation_flow(
+                        ctx, job_input, level_int, author_id, author_name, superseded=superseded
+                    )
                 else:
                     author_jobs = self.jobs_data.get(author_id, {"name": author_name, "jobs": {}})
                     author_jobs["name"] = author_name
