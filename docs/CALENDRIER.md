@@ -245,7 +245,7 @@ le code ; il n'annule pas les inscriptions effectuées entre-temps.
 8. Redémarrer le bot, rouvrir `/calendrier` et vérifier le rechargement des données
    et les inscriptions sauvegardées. Les anciennes sessions ne sont pas persistantes.
 
-## Validation de la livraison
+## Validation de la préparation du patch
 
 Les quatre nouveaux fichiers de tests contiennent **115 cas exécutés avec succès**.
 La sélection calendrier + activités + tests slash exécutables dans l'environnement
@@ -269,6 +269,38 @@ pytest 9.0.2 et pytest-asyncio 1.3.0. Il ne reproduit donc pas intégralement le
 versions épinglées ni la matrice Python 3.11/3.12 de la CI du projet. Les échanges
 réseau Discord sont simulés dans les tests ; aucun essai sur un serveur Discord
 réel n'a été effectué. Relance la suite complète et la recette avant production.
+
+## Validation dans le dépôt le 11 septembre 2026
+
+L'application du patch a été vérifiée sur la branche principale au commit
+`d904fde`. Les empreintes Git des douze fichiers livrés correspondent exactement
+à celles du patch fourni ; aucune correction fonctionnelle n'a été nécessaire.
+
+| Vérification locale | Résultat |
+| --- | --- |
+| Suite complète avant application | 454 réussis, 1 ignoré |
+| Calendrier, activités, rappels et commandes slash après application | 214 réussis |
+| Suite complète après application | 569 réussis, 1 ignoré |
+| Compilation des sources et des tests | Réussie |
+| Inspection des PNG de février 2021, septembre 2026 et août 2026 | Validée |
+
+Les images vérifiées couvrent les mois de quatre, cinq et six semaines, les titres
+longs, plusieurs activités le même jour et l'indicateur de débordement `+N`.
+Les tests supplémentaires apportent 115 cas, sans retrait de tests existants.
+
+La validation locale utilise Windows, Python 3.13.14, pytest 8.3.5 et
+pytest-asyncio 0.26.0. La suite complète applique aussi
+`-W error::pytest.PytestDeprecationWarning`, comme la CI. Les avertissements de
+dépréciation existants restent visibles ; aucun échec de test n'a été ignoré.
+
+Sur cet ordinateur, l'ancien répertoire temporaire pytest et son cache présentent
+des erreurs de permissions. Les tests utilisent donc `-p no:cacheprovider` et
+`--basetemp` avec un nouveau répertoire temporaire dédié à chaque exécution,
+sans modifier les permissions ni les données du projet.
+
+La CI Python 3.11/3.12 doit réussir sur le commit à publier avant l'avancement de
+`main`. Les tests Discord utilisent des simulations : cette validation ne vaut
+pas recette sur un serveur réel ni confirmation du redéploiement du bot.
 
 ## Références techniques
 
