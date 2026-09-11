@@ -14,8 +14,9 @@ from typing import Dict, Optional
 import discord
 
 from discord.ext import commands, tasks
-from datetime import datetime, timedelta, date
+from datetime import datetime, date, timezone
 from utils.channel_resolver import resolve_text_channel
+from utils.datetime_utils import PARIS
 from utils.discord_history import fetch_channel_history
 
 logging.basicConfig(level=logging.INFO)
@@ -78,6 +79,14 @@ def parse_date_time(date_str, time_str):
         return datetime(int(y), int(m), int(d), int(h), int(mi))
     except ValueError:
         return None
+
+
+def _activity_datetime_utc(value: datetime) -> datetime:
+    """Je convertis les horaires des activités en UTC, avec Paris pour les dates sans fuseau."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=PARIS)
+    return value.astimezone(timezone.utc)
+
 
 def parse_date_time_via_regex(line):
     """
@@ -164,7 +173,7 @@ class CalendrierView(discord.ui.View):
         self.author_id = author.id
         self.events = events
         self.bg_image = bg_image
-        self.highlight_date = highlight or datetime.now().date()
+        self.highlight_date = highlight or datetime.now(PARIS).date()
         self.year = self.highlight_date.year
         self.month = self.highlight_date.month
         self.message: Optional[discord.Message] = None
@@ -523,13 +532,13 @@ class ActiviteCog(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def check_events_loop(self):
-        """Boucle d'auto-nettoyage (passe toutes les 5 minutes)."""
+        """Je vérifie les rappels et nettoie les activités passées toutes les cinq minutes."""
         if not self.bot.is_ready():
             return
         if not self.initialized:
             return
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         org_channel = None
         for guild in self.bot.guilds:
             candidate = self._resolve_organisation_channel(guild)
@@ -549,10 +558,10 @@ class ActiviteCog(commands.Cog):
             if e_data["cancelled"]:
                 continue
             evt = ActiviteData.from_dict(e_data)
-            time_left = (evt.date_obj - now).total_seconds()
+            time_left = (_activity_datetime_utc(evt.date_obj) - now).total_seconds()
 
-            # Si l'activité est passée
-            if time_left < 0:
+            if time_left <= 0:
+                logger.debug("Activite nettoyage event_id=%s time_left_seconds=%.0f", k, time_left)
                 if evt.role_id:
                     rr = org_channel.guild.get_role(evt.role_id)
                     if rr:
@@ -563,17 +572,23 @@ class ActiviteCog(commands.Cog):
                 to_delete.append(k)
                 continue
 
-            # Rappel 24h
-            if not evt.reminder_24_sent and 0 < time_left <= 24*3600:
-                await self.envoyer_rappel(org_channel, evt, "24h")
-                e_data["reminder_24_sent"] = True
-                modified = True
+            reminder_type = None
+            if time_left <= 3600:
+                if not evt.reminder_1_sent:
+                    reminder_type = "1h"
+            elif time_left <= 24 * 3600 and not evt.reminder_24_sent:
+                reminder_type = "24h"
 
-            # Rappel 1h
-            if not evt.reminder_1_sent and 0 < time_left <= 3600:
-                await self.envoyer_rappel(org_channel, evt, "1h")
-                e_data["reminder_1_sent"] = True
-                modified = True
+            if reminder_type is not None:
+                logger.debug(
+                    "Activite rappel selectionne event_id=%s echeance=%s time_left_seconds=%.0f",
+                    k, reminder_type, time_left,
+                )
+                if await self.envoyer_rappel(org_channel, evt, reminder_type):
+                    e_data["reminder_24_sent"] = True
+                    if reminder_type == "1h":
+                        e_data["reminder_1_sent"] = True
+                    modified = True
 
         # Suppression des events passés
         for kdel in to_delete:
@@ -583,19 +598,27 @@ class ActiviteCog(commands.Cog):
         if modified:
             await self.save_data_local()
             if org_channel and org_channel.guild:
+                logger.debug("Activite rappels: publication du snapshot dans la console")
                 await self.dump_data_to_console_no_ctx(org_channel.guild)
 
-    async def envoyer_rappel(self, channel, e: ActiviteData, t: str):
-        mention = f"<@&{e.role_id}>" if e.role_id else ""
-        ds = e.date_obj.strftime("%d/%m/%Y à %H:%M")
-        if t == "24h":
-            msg = f"⏰ **Rappel 24h** : {e.titre} démarre dans 24h.\n{mention}\nDébut le {ds}."
-        else:
-            msg = f"⏰ **Rappel 1h** : {e.titre} démarre dans 1h.\n{mention}\nDébut le {ds}."
+    async def envoyer_rappel(self, channel, e: ActiviteData, t: str) -> bool:
+        """J'envoie le rappel avec son délai Discord et confirme la réussite de l'envoi."""
+        start_utc = _activity_datetime_utc(e.date_obj)
+        ds = start_utc.astimezone(PARIS).strftime("%d/%m/%Y à %H:%M")
+        lines = [f"⏰ **Rappel** : {e.titre}"]
+        if e.role_id:
+            lines.append(f"<@&{e.role_id}>")
+        lines.append(f"Début le {ds} (heure de Paris) • <t:{int(start_utc.timestamp())}:R>")
         try:
-            await channel.send(msg)
+            await channel.send("\n".join(lines))
         except Exception as ex:
-            logger.warning(f"Impossible d'envoyer rappel : {ex}")
+            logger.warning(
+                "Activite rappel echoue event_id=%s echeance=%s: %s", e.id, t, ex,
+                exc_info=True,
+            )
+            return False
+        logger.debug("Activite rappel envoye event_id=%s echeance=%s", e.id, t)
+        return True
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -739,19 +762,19 @@ class ActiviteCog(commands.Cog):
         if "events" not in self.activities_data:
             return await ctx.send("Aucune activité enregistrée.")
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         upcoming = []
         for k, ev_dict in self.activities_data["events"].items():
             if ev_dict["cancelled"]:
                 continue
             e = ActiviteData.from_dict(ev_dict)
-            if e.date_obj > now:
+            if _activity_datetime_utc(e.date_obj) > now:
                 upcoming.append(e)
         if not upcoming:
             return await ctx.send("Aucune activité à venir.")
 
         # Tri chronologique
-        upcoming.sort(key=lambda x: x.date_obj)
+        upcoming.sort(key=lambda x: _activity_datetime_utc(x.date_obj))
 
         events_per_page = 10
         pages = []
@@ -964,11 +987,15 @@ class ActiviteCog(commands.Cog):
         if not dt:
             return await ctx.send("Date invalide.")
 
+        date_changed = _activity_datetime_utc(e.date_obj) != _activity_datetime_utc(dt)
+        if date_changed:
+            e.reminder_24_sent = False
+            e.reminder_1_sent = False
+        logger.debug(
+            "Activite modification event_id=%s rappels_reinitialises=%s", event_id, date_changed,
+        )
         e.date_obj = dt
         e.description = nd
-        # On réinitialise éventuellement les rappels (si on veut)
-        e.reminder_24_sent = False
-        e.reminder_1_sent = False
 
         self.activities_data["events"][event_id] = e.to_dict()
 
@@ -1002,7 +1029,7 @@ class ActiviteCog(commands.Cog):
                 for key, value in self.activities_data["events"].items()
             }
 
-        highlight = datetime.now().date()
+        highlight = datetime.now(PARIS).date()
         view = CalendrierView(ctx.author, events, bg, highlight)
         file_cal = view.build_file()
         message = await ctx.send(
