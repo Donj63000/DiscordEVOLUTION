@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 
@@ -117,12 +118,15 @@ async def invoke_from_slash(
         reference = parse_message_reference(
             message_reference, guild_id=interaction.guild_id, channel_id=interaction.channel_id
         )
-    if target in PRIVATE_WORKFLOWS:
+    private_response = target in PRIVATE_WORKFLOWS or (
+        target == "calendrier" and bool((values or {}).get("prive", False))
+    )
+    if private_response:
         await interaction.response.defer(thinking=True, ephemeral=True)
     else:
         await interaction.response.defer(thinking=True)
     ctx = await SlashContext.from_interaction(interaction)
-    ctx.private_response = target in PRIVATE_WORKFLOWS
+    ctx.private_response = private_response
     ctx.command = command
     ctx.invoked_with = command.name
     ctx.invoked_parents = [parent.name for parent in reversed(command.parents)]
@@ -141,6 +145,11 @@ async def invoke_from_slash(
         "Slash: invoke target=%s guild_id=%s channel_id=%s user_id=%s",
         target, interaction.guild_id, interaction.channel_id, interaction.user.id,
     )
+    return await _invoke_checked_context(bot, command, ctx)
+
+
+async def _invoke_checked_context(bot, command, ctx):
+    """Use the same dispatch, global checks and command hooks for both interaction types."""
     bot.dispatch("command", ctx)
     try:
         if not await bot.can_run(ctx, call_once=True):
@@ -157,3 +166,41 @@ async def invoke_from_slash(
         if ctx.response_count == 0:
             await ctx.send("Commande terminée.")
     return ctx
+
+
+class ComponentContext(SlashContext):
+    """Send command receipts privately without pinging users, roles or everyone."""
+
+    async def send(self, content=None, **kwargs):
+        kwargs["ephemeral"] = True
+        kwargs["allowed_mentions"] = discord.AllowedMentions.none()
+        return await super().send(content, **kwargs)
+
+
+async def invoke_from_component(
+    bot: commands.Bot, interaction: discord.Interaction, target: str, arguments: str,
+) -> SlashContext | None:
+    """Run a prefix command as the clicking member, never as the bot message's author."""
+    command = bot.get_command(target)
+    if command is None or interaction.guild is None or interaction.message is None:
+        message = "Cette action est temporairement indisponible. Relance /calendrier."
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+        return None
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+    message = copy.copy(interaction.message)
+    message.author = interaction.user
+    message.content = f"/{target} {arguments}"
+    message.mentions = [interaction.user]
+    ctx = ComponentContext(
+        bot=bot, message=message, view=StringView(arguments),
+        interaction=interaction, prefix="/", command=command,
+        invoked_with=command.name, invoked_parents=[p.name for p in reversed(command.parents)],
+    )
+    ctx.private_response = True
+    log.debug("Calendar: invoke target=%s guild_id=%s user_id=%s",
+              target, interaction.guild_id, interaction.user.id)
+    return await _invoke_checked_context(bot, command, ctx)

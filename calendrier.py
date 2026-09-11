@@ -1,179 +1,193 @@
+"""Opaque, bounded Pillow rendering for the optional monthly overview."""
+
+from __future__ import annotations
+
+import asyncio
 import calendar
+import hashlib
+import importlib.util
 import io
+import logging
+from collections import OrderedDict
 from datetime import date
-from typing import Dict, Iterable, Optional
+from pathlib import Path
+from typing import Iterable
 
-import matplotlib
+from PIL import Image, ImageDraw, ImageFont
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from utils.calendar_data import CalendarEvent, MONTH_NAMES_FR, one_line, snapshot_events
 
-LARGEUR_FIG = 14
-HAUTEUR_FIG = 20
-BOITE_TABLEAU = [0.05, 0.1, 0.9, 0.7]
-ECHELLE_CELLULE_X = 1.2
-ECHELLE_CELLULE_Y = 3.0
-TAILLE_POLICE = 14
-LIMITE_WRAP_TEXTE = 30
-ESPACEMENT_TITRE = 5
-RESOLUTION_DPI = 120
-
-COULEUR_ENTETE = "#111827"
-COULEUR_ENTETE_TEXTE = "#F9FAFB"
-COULEUR_JOUR_EVENEMENT = "#DBEAFE"
-COULEUR_JOUR_AUJOURDHUI = "#2563EB"
-
-MONTH_NAMES_FR = [
-    "",
-    "Janvier",
-    "Février",
-    "Mars",
-    "Avril",
-    "Mai",
-    "Juin",
-    "Juillet",
-    "Août",
-    "Septembre",
-    "Octobre",
-    "Novembre",
-    "Décembre",
-]
-
-def wrap_text(tx: str, mx: int = 25) -> str:
-    ls = []
-    for ori in tx.split('\n'):
-        l = ori.strip()
-        while len(l) > mx:
-            ci = l.rfind(' ', 0, mx)
-            if ci == -1:
-                ci = mx
-            ls.append(l[:ci])
-            l = l[ci:].strip()
-        ls.append(l)
-    return "\n".join(x for x in ls if x)
+log = logging.getLogger(__name__)
+WIDTH = 1120
+MARGIN = 28
+GAP = 8
+CELL_WIDTH = 145
+CELL_HEIGHT = 132
+GRID_TOP = 168
+BACKGROUND = "#141923"
+SURFACE = "#202735"
+WEEKEND = "#252C3B"
+TEXT = "#F4F6FC"
+MUTED = "#BAC5DA"
+ACCENT = "#99ABFF"
+ACTIVITY = "#32436C"
 
 
-def _format_event_lines(events: Iterable) -> Dict[int, list[str]]:
-    """Prépare les lignes à afficher pour chaque jour."""
+def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+    """Use installed fonts only; never download assets on a command path."""
+    filename = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    candidates = [filename]
+    spec = importlib.util.find_spec("matplotlib")
+    if spec is not None and spec.origin:
+        candidates.append(str(Path(spec.origin).parent / "mpl-data" / "fonts" / "ttf" / filename))
+    for candidate in candidates:
+        try:
+            return ImageFont.truetype(candidate, size)
+        except OSError:
+            continue
+    log.debug("Calendar: using Pillow fallback font")
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
 
-    def _format_hour(dt):
-        return dt.strftime("%Hh") if dt.minute == 0 else dt.strftime("%Hh%M")
 
-    grouped: Dict[int, list[str]] = {}
-    for event in events:
-        titre = event.titre.strip() if getattr(event, "titre", None) else "Sans titre"
-        hour = _format_hour(event.date_obj)
-        line = f"• {hour} {titre}"
-        grouped.setdefault(event.date_obj.day, []).append(wrap_text(line, LIMITE_WRAP_TEXTE))
-    return grouped
+def fit_text(draw: ImageDraw.ImageDraw, text: str, font, width: int) -> str:
+    """Ellipsize using measured pixels, including unbroken user-provided titles."""
+    text = one_line(text, 1000)
+    if draw.textlength(text, font=font) <= width:
+        return text
+    suffix = "…"
+    left, right = 0, len(text)
+    while left < right:
+        mid = (left + right + 1) // 2
+        if draw.textlength(text[:mid] + suffix, font=font) <= width:
+            left = mid
+        else:
+            right = mid - 1
+    return text[:left].rstrip() + suffix
 
 
-def gen_cal(data_events, bg, annee: int, mois: int, highlight_date: Optional[date] = None):
-    """
-    Génère une image PNG représentant un calendrier mensuel.
+def render_month(
+    events: Iterable[CalendarEvent], year: int, month: int, today: date | None = None,
+) -> bytes:
+    """Render at most two summaries per day; the paginated text remains authoritative."""
+    weeks = calendar.Calendar(firstweekday=0).monthdayscalendar(year, month)
+    height = GRID_TOP + len(weeks) * (CELL_HEIGHT + GAP) + 66
+    image = Image.new("RGB", (WIDTH, height), BACKGROUND)
+    draw = ImageDraw.Draw(image)
+    small, body, bold = _font(16), _font(18), _font(18, True)
+    time_font = _font(13, True)
+    day_font, title_font = _font(28, True), _font(36, True)
+    grouped: dict[int, list[CalendarEvent]] = {}
+    ordered = sorted(events, key=lambda event: (event.timestamp, event.id))
+    for event in ordered:
+        if (event.day.year, event.day.month) == (year, month):
+            grouped.setdefault(event.day.day, []).append(event)
 
-    Args:
-        data_events: mapping d'événements `ActiviteData`.
-        bg: image de fond optionnelle (numpy array).
-        annee: année ciblée.
-        mois: mois ciblé (1-12).
-        highlight_date: date à mettre en avant (généralement la date du jour).
-    """
+    draw.rounded_rectangle((28, 25, 66, 63), radius=11, fill=ACCENT)
+    draw.text((39, 30), "E", font=_font(25, True), fill=BACKGROUND)
+    draw.text((80, 29), "EVOLUTION  /  ACTIVITÉS", font=bold, fill=MUTED)
+    draw.text((28, 75), f"{MONTH_NAMES_FR[month]} {year}", font=title_font, fill=TEXT)
+    count = sum(len(day_events) for day_events in grouped.values())
+    count_text = f"{count} activité{'s' if count != 1 else ''}"
+    draw.text((WIDTH - 28 - draw.textlength(count_text, font=bold), 90),
+              count_text, font=bold, fill=ACCENT)
 
-    highlight_day = None
-    if highlight_date and highlight_date.year == annee and highlight_date.month == mois:
-        highlight_day = highlight_date.day
+    for col, label in enumerate(("LUN", "MAR", "MER", "JEU", "VEN", "SAM", "DIM")):
+        x = MARGIN + col * (CELL_WIDTH + GAP)
+        draw.text((x + 12, 140), label, font=bold, fill=MUTED)
 
-    events_in_month = [
-        evt
-        for evt in data_events.values()
-        if not evt.cancelled and evt.date_obj.year == annee and evt.date_obj.month == mois
-    ]
-    events_in_month.sort(key=lambda evt: evt.date_obj)
-
-    day_lines = _format_event_lines(events_in_month)
-
-    cal = calendar.Calendar(firstweekday=0)
-    weeks = cal.monthdayscalendar(annee, mois)
-
-    labs = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
-    table_txt = [labs]
-    for row in weeks:
-        row_cells = []
-        for d in row:
-            if d == 0:
-                row_cells.append("")
-            else:
-                tcell = str(d)
-                if d in day_lines:
-                    for event_line in day_lines[d]:
-                        tcell += "\n" + event_line
-                tcell = wrap_text(tcell, LIMITE_WRAP_TEXTE)
-                row_cells.append(tcell)
-        table_txt.append(row_cells)
-
-    fig = plt.figure(figsize=(LARGEUR_FIG, HAUTEUR_FIG), facecolor="none")
-    ax = fig.add_subplot(111)
-    ax.set_axis_off()
-    if bg is not None:
-        ax.imshow(bg, extent=[0, 1, 0, 1], zorder=0)
-
-    labs = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
-    table = ax.table(
-        cellText=table_txt,
-        loc='center',
-        cellLoc='center',
-        zorder=1,
-        bbox=BOITE_TABLEAU
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(TAILLE_POLICE)
-    table.scale(ECHELLE_CELLULE_X, ECHELLE_CELLULE_Y)
-    # Ligne d'entête
-    for idx in range(len(labs)):
-        header = table[0, idx]
-        header.set_facecolor(COULEUR_ENTETE)
-        header.set_edgecolor("#1F2937")
-        text = header.get_text()
-        text.set_color(COULEUR_ENTETE_TEXTE)
-        text.set_weight('bold')
-        text.set_clip_on(True)
-        text.set_wrap(False)
-
-    event_days = set(day_lines)
-    for row_idx, week in enumerate(weeks, start=1):
-        for col_idx, day in enumerate(week):
-            cell = table[row_idx, col_idx]
-            cell.set_edgecolor("lightgray")
-            cell.set_linewidth(0.5)
-            txt = cell.get_text()
-            txt.set_clip_on(True)
-            txt.set_wrap(True)
-
-            if day == 0:
-                cell.set_facecolor("none")
+    for row, week in enumerate(weeks):
+        for col, day in enumerate(week):
+            x = MARGIN + col * (CELL_WIDTH + GAP)
+            y = GRID_TOP + row * (CELL_HEIGHT + GAP)
+            if not day:
                 continue
+            is_today = today == date(year, month, day)
+            draw.rounded_rectangle(
+                (x, y, x + CELL_WIDTH, y + CELL_HEIGHT), radius=12,
+                fill=WEEKEND if col >= 5 else SURFACE,
+                outline=ACCENT if is_today else None, width=2,
+            )
+            if is_today:
+                draw.rounded_rectangle((x + 9, y + 8, x + 53, y + 47), radius=10, fill=ACCENT)
+            draw.text((x + 13, y + 8), str(day), font=day_font,
+                      fill=BACKGROUND if is_today else TEXT)
+            items = grouped.get(day, [])
+            if len(items) > 2:
+                more = f"+{len(items) - 2}"
+                count_width = draw.textlength(more, font=time_font)
+                draw.text((x + CELL_WIDTH - 12 - count_width, y + 19), more,
+                          font=time_font, fill=ACCENT)
+            elif items:
+                draw.ellipse((x + CELL_WIDTH - 21, y + 20, x + CELL_WIDTH - 13, y + 28),
+                             fill=ACCENT)
+            for index, event in enumerate(items[:2]):
+                line_y = y + 50 + index * 40
+                draw.rounded_rectangle(
+                    (x + 8, line_y, x + CELL_WIDTH - 8, line_y + 36), radius=5, fill=ACTIVITY,
+                )
+                draw.text((x + 12, line_y + 1), f"{event.starts_at:%H:%M}",
+                          font=time_font, fill=MUTED)
+                draw.text((x + 12, line_y + 16),
+                          fit_text(draw, event.title, small, CELL_WIDTH - 24),
+                          font=small, fill=TEXT)
 
-            if highlight_day and day == highlight_day:
-                cell.set_facecolor(COULEUR_JOUR_AUJOURDHUI)
-                txt.set_color("#FFFFFF")
-            elif day in event_days:
-                cell.set_facecolor(COULEUR_JOUR_EVENEMENT)
-                txt.set_color("#111827")
-            else:
-                cell.set_facecolor("none")
-                txt.set_color("#111827")
+    legend_y = height - 45
+    draw.rounded_rectangle((28, legend_y, 45, legend_y + 17), radius=4, outline=ACCENT, width=2)
+    draw.text((54, legend_y - 2), "Aujourd’hui", font=body, fill=TEXT)
+    draw.ellipse((208, legend_y + 5, 216, legend_y + 13), fill=ACCENT)
+    draw.text((229, legend_y - 2), "Activité", font=body, fill=TEXT)
+    draw.text((370, legend_y - 2), "Heure de Paris · Détails complets dans la liste Discord",
+              font=small, fill=MUTED)
+    output = io.BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    image.close()
+    return output.getvalue()
 
-    ax.set_title(
-        MONTH_NAMES_FR[mois] + " " + str(annee),
-        fontsize=16,
-        fontweight='bold',
-        pad=ESPACEMENT_TITRE
-    )
 
-    plt.tight_layout()
-    buffer = io.BytesIO()
-    plt.savefig(buffer, format='png', dpi=RESOLUTION_DPI, transparent=True)
-    buffer.seek(0)
-    plt.close(fig)
-    return buffer
+def gen_cal(data_events, bg, annee: int, mois: int, highlight_date: date | None = None):
+    """Compatibility entry point; the decorative background is deliberately ignored."""
+    snapshot = snapshot_events(data_events)
+    return io.BytesIO(render_month(snapshot.events, annee, mois, highlight_date))
+
+
+class MonthlyRenderer:
+    """Bound CPU concurrency and memory; cached bytes never share open file handles."""
+
+    def __init__(self, max_entries: int = 24, max_bytes: int = 8 * 1024 * 1024):
+        self.max_entries = max_entries
+        self.max_bytes = max_bytes
+        self._cache: OrderedDict[tuple, bytes] = OrderedDict()
+        self._size = 0
+        self._semaphore = asyncio.Semaphore(2)
+
+    async def render(
+        self, events: tuple[CalendarEvent, ...], year: int, month: int, today: date,
+    ) -> bytes:
+        visible = tuple(event for event in events
+                        if (event.day.year, event.day.month) == (year, month))
+        signature = hashlib.sha256()
+        for event in visible:
+            fields = (event.id, one_line(event.title, 1000), event.starts_at.isoformat())
+            signature.update(repr(fields).encode("utf-8"))
+        key = (year, month, today, signature.digest())
+        async with self._semaphore:
+            cached = self._cache.get(key)
+            if cached is not None:
+                self._cache.move_to_end(key)
+                log.debug("Calendar: monthly render cache hit year=%s month=%s", year, month)
+                return cached
+            result = await asyncio.to_thread(render_month, visible, year, month, today)
+            if self.max_entries > 0 and len(result) <= self.max_bytes:
+                previous = self._cache.pop(key, None)
+                if previous is not None:
+                    self._size -= len(previous)
+                self._cache[key] = result
+                self._size += len(result)
+                while len(self._cache) > self.max_entries or self._size > self.max_bytes:
+                    _, evicted = self._cache.popitem(last=False)
+                    self._size -= len(evicted)
+            log.debug("Calendar: rendered year=%s month=%s bytes=%s", year, month, len(result))
+            return result

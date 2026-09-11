@@ -18,6 +18,9 @@ from datetime import datetime, date, timezone
 from utils.channel_resolver import resolve_text_channel
 from utils.datetime_utils import PARIS
 from utils.discord_history import fetch_channel_history
+from calendrier import MonthlyRenderer
+from utils.calendar_data import GROUP_CAPACITY, CalendarState, parse_anchor
+from utils.calendar_view import CalendrierView as AgendaView, close_files
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -61,7 +64,7 @@ SINGLE_EVENT_EMOJI = "✅"
 UNSUB_EMOJI = "❌"
 
 # Taille maximum d'un groupe
-MAX_GROUP_SIZE = 8
+MAX_GROUP_SIZE = GROUP_CAPACITY
 
 # Verrou asynchrone pour sécuriser la sauvegarde (écritures concurrentes)
 save_lock = asyncio.Lock()
@@ -159,178 +162,13 @@ class ActiviteData:
         return o
 
 
-class CalendrierView(discord.ui.View):
-    """Vue interactive pour naviguer dans le calendrier des activités."""
+class CalendrierView(AgendaView):
+    """Keep the historical import and the activity module's Paris clock."""
 
-    def __init__(
-        self,
-        author: discord.abc.User,
-        events: Dict[str, ActiviteData],
-        bg_image,
-        highlight: Optional[date] = None,
-    ) -> None:
-        super().__init__(timeout=180)
-        self.author_id = author.id
-        self.events = events
-        self.bg_image = bg_image
-        self.highlight_date = highlight or datetime.now(PARIS).date()
-        self.year = self.highlight_date.year
-        self.month = self.highlight_date.month
-        self.message: Optional[discord.Message] = None
-        self._sync_button_states()
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("clock", lambda: datetime.now(PARIS))
+        super().__init__(*args, **kwargs)
 
-    def _sync_button_states(self) -> None:
-        same_month = (
-            self.highlight_date is not None
-            and self.year == self.highlight_date.year
-            and self.month == self.highlight_date.month
-        )
-        for child in self.children:
-            if isinstance(child, discord.ui.Button) and child.label == "Aujourd'hui":
-                child.disabled = same_month
-
-    def _events_count_current_month(self) -> int:
-        return sum(
-            1
-            for evt in self.events.values()
-            if not evt.cancelled
-            and evt.date_obj.year == self.year
-            and evt.date_obj.month == self.month
-        )
-
-    def build_content(self) -> str:
-        count = self._events_count_current_month()
-        if count == 0:
-            info = "Aucun événement prévu pour ce mois."
-        elif count == 1:
-            info = "1 événement prévu pour ce mois."
-        else:
-            info = f"{count} événements prévus pour ce mois."
-        return (
-            f"Calendrier des activités – {MONTH_NAMES_FR[self.month]} {self.year}\n"
-            f"{info}\n"
-            "Utilise les boutons ci-dessous pour naviguer."
-        )
-
-    def build_file(self) -> discord.File:
-        from calendrier import gen_cal
-
-        buffer = gen_cal(
-            self.events,
-            self.bg_image,
-            self.year,
-            self.month,
-            highlight_date=self.highlight_date,
-        )
-        return discord.File(fp=buffer, filename="calendrier.png")
-
-    def _step_month(self, delta: int) -> None:
-        self.month += delta
-        while self.month < 1:
-            self.month += 12
-            self.year -= 1
-        while self.month > 12:
-            self.month -= 12
-            self.year += 1
-        self._sync_button_states()
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
-                "Seule la personne qui a demandé le calendrier peut utiliser ces boutons.",
-                ephemeral=True,
-            )
-            return False
-        if self.message is None:
-            self.message = interaction.message
-        return True
-
-    async def on_timeout(self) -> None:
-        for child in self.children:
-            child.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except discord.HTTPException:
-                pass
-
-    async def _refresh(self, interaction: discord.Interaction) -> None:
-        self._sync_button_states()
-        file = self.build_file()
-        content = self.build_content()
-        try:
-            if interaction.response.is_done():
-                await interaction.edit_original_response(
-                    content=content,
-                    attachments=[file],
-                    view=self,
-                )
-            else:
-                await interaction.response.edit_message(
-                    content=content,
-                    attachments=[file],
-                    view=self,
-                )
-        except discord.HTTPException:
-            pass
-
-    @discord.ui.button(emoji="⬅️", style=discord.ButtonStyle.secondary)
-    async def previous_month(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        self._step_month(-1)
-        await self._refresh(interaction)
-
-    @discord.ui.button(label="Aujourd'hui", style=discord.ButtonStyle.primary)
-    async def go_today(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        if (
-            self.highlight_date
-            and self.year == self.highlight_date.year
-            and self.month == self.highlight_date.month
-        ):
-            await interaction.response.send_message(
-                "Nous sommes déjà sur le mois en cours.",
-                ephemeral=True,
-            )
-            return
-        self.year = self.highlight_date.year
-        self.month = self.highlight_date.month
-        self._sync_button_states()
-        await self._refresh(interaction)
-
-    @discord.ui.button(emoji="➡️", style=discord.ButtonStyle.secondary)
-    async def next_month(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        self._step_month(1)
-        await self._refresh(interaction)
-
-    @discord.ui.button(emoji="🗑️", style=discord.ButtonStyle.danger)
-    async def close(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        for child in self.children:
-            child.disabled = True
-        try:
-            await interaction.response.defer()
-        except discord.HTTPException:
-            pass
-        if self.message:
-            try:
-                await self.message.delete()
-            except discord.HTTPException:
-                pass
-        self.stop()
 
 class ActiviteCog(commands.Cog):
     """
@@ -343,6 +181,7 @@ class ActiviteCog(commands.Cog):
             "events": {}
         }
         self.initialized = False
+        self.calendar_renderer = MonthlyRenderer()
 
         # Suivi des messages (IDs) pour la liste paginée et les events uniques
         self.liste_message_map = {}
@@ -876,10 +715,12 @@ class ActiviteCog(commands.Cog):
         e = ActiviteData.from_dict(e_dict)
         if e.cancelled:
             return await ctx.send("Activité annulée.")
-        if len(e.participants) >= MAX_GROUP_SIZE:
-            return await ctx.send("Groupe complet.")
         if ctx.author.id in e.participants:
             return await ctx.send("Déjà inscrit.")
+        if _activity_datetime_utc(e.date_obj) <= datetime.now(timezone.utc):
+            return await ctx.send("Le début de cette activité est déjà passé.")
+        if len(e.participants) >= MAX_GROUP_SIZE:
+            return await ctx.send("Groupe complet.")
 
         e.participants.append(ctx.author.id)
         self.activities_data["events"][args] = e.to_dict()
@@ -1009,35 +850,92 @@ class ActiviteCog(commands.Cog):
         )
 
     @commands.command(name="calendrier")
-    async def afficher_calendrier(self, ctx):
-        """Affiche le calendrier mensuel via une vue interactive (boutons)."""
+    @commands.guild_only()
+    @commands.cooldown(1, 5, commands.BucketType.member)
+    async def afficher_calendrier(
+        self, ctx, vue: str = "semaine", date: str = "",
+        filtre: str = "toutes", prive: bool = False,
+    ):
+        """Affiche l'agenda hebdomadaire ou mensuel des activités à jour."""
         if not self.initialized:
-            return await ctx.send("Données en cours de chargement.")
-
+            return await ctx.send("Données en cours de chargement. Réessaie dans quelques secondes.")
+        if prive and getattr(ctx, "interaction", None) is None:
+            return await ctx.send("Pour une vue privée, utilise `/calendrier prive:True`.")
         try:
-            import matplotlib.image as mpimg
+            today = datetime.now(PARIS).date()
+            state = CalendarState(parse_anchor(date, today), vue.lower(), filtre.lower())
+        except ValueError as exc:
+            return await ctx.send(str(exc))
 
-            bg = mpimg.imread("calendrier1.png")
-        except Exception as e:
-            logger.info(f"Impossible de charger 'calendrier1.png': {e}")
-            bg = None
+        guild = getattr(ctx, "guild", None)
+        guilds = getattr(self.bot, "guilds", ())
+        if guild is not None and len(guilds) > 1:
+            source_guild = next(
+                (candidate for candidate in guilds
+                 if self._resolve_console_channel(candidate) is not None), None,
+            )
+            if source_guild is None or source_guild.id != guild.id:
+                return await ctx.send(
+                    "Les activités de ce bot sont rattachées au serveur de sa console. "
+                    "Le calendrier n’est pas disponible ici."
+                )
 
-        events: Dict[str, ActiviteData] = {}
-        if "events" in self.activities_data:
-            events = {
-                key: ActiviteData.from_dict(value)
-                for key, value in self.activities_data["events"].items()
-            }
+        can_attach = True
+        channel = getattr(ctx, "channel", None)
+        me = getattr(guild, "me", None)
+        if channel is not None and me is not None:
+            permissions = channel.permissions_for(me)
+            if not permissions.embed_links:
+                return await ctx.send(
+                    "Il me manque la permission « Intégrer des liens » pour afficher l’agenda."
+                )
+            can_attach = permissions.attach_files
 
-        highlight = datetime.now(PARIS).date()
-        view = CalendrierView(ctx.author, events, bg, highlight)
-        file_cal = view.build_file()
-        message = await ctx.send(
-            content=view.build_content(),
-            file=file_cal,
-            view=view,
+        view = CalendrierView(
+            ctx.author, {}, source=lambda: self.activities_data.get("events", {}),
+            state=state, guild=guild, renderer=self.calendar_renderer,
+            action=self._calendar_activity_action, attach_files=can_attach,
+            attachment_limit=min(getattr(guild, "filesize_limit", 8 * 1024 * 1024), 8 * 1024 * 1024),
         )
-        view.message = message
+        files = []
+        try:
+            embed, files = await view.build_payload()
+            try:
+                message = await ctx.send(
+                    embed=embed, files=files, view=view,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                if not files:
+                    raise
+                logger.debug("Calendar: attachment send failed; retrying as text", exc_info=True)
+                embed.set_image(url=None)
+                embed.add_field(
+                    name="Aperçu indisponible",
+                    value="Discord a refusé l’image. La liste et les menus restent disponibles.",
+                    inline=False,
+                )
+                message = await ctx.send(
+                    embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none(),
+                )
+            view.message = message
+            logger.debug("Calendar: opened user_id=%s mode=%s anchor=%s",
+                         ctx.author.id, state.mode, state.anchor)
+        except BaseException:
+            view.stop()
+            raise
+        finally:
+            close_files(files)
+
+    async def _calendar_activity_action(self, interaction, event_id: str, action: str) -> None:
+        """Run the existing command pipeline, including checks, roles and console persistence."""
+        from utils.slash_support import invoke_from_component
+
+        if action not in {"join", "leave"}:
+            raise ValueError("Unsupported calendar action")
+        await invoke_from_component(
+            self.bot, interaction, "activite", f"{action} {event_id}",
+        )
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction, user):

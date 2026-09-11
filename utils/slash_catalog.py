@@ -156,6 +156,14 @@ DESCRIPTION = Option("description", "Informations utiles pour les participants."
 def custom_routes() -> tuple[Route, ...]:
     confirmation = os.getenv("CLEAR_CONSOLE_CONFIRMATION", "CONFIRMER")
     return (
+        Route(("calendrier",), "calendrier", "Consulter l’agenda, filtrer les sorties et s’inscrire.", (
+            Option("vue", "Agenda de la semaine ou aperçu du mois.", default="semaine",
+                   choices=("semaine", "mois")),
+            Option("date", "Date à afficher, au format JJ/MM/AAAA ; vide pour aujourd’hui.", default=""),
+            Option("filtre", "Toutes, tes inscriptions, ou les sorties avec des places.", default="toutes",
+                   choices=("toutes", "inscrit", "disponibles")),
+            Option("prive", "Afficher ce calendrier uniquement pour toi.", bool, False),
+        ), mode="calendar"),
         Route(("objet",), "objet", "Consulter les caractéristiques d'un objet Dofus Rétro.", (
             Option("nom", "Nom de l'objet : choisis une suggestion.", autocomplete="wiki_items"),
         ), mode="rest"),
@@ -208,6 +216,9 @@ def quote_token(value: object) -> str:
 
 
 def format_arguments(route: Route, values: dict[str, object]) -> str:
+    if route.mode == "calendar":
+        return " ".join(quote_token(values.get(option.name, option.default))
+                        for option in route.options)
     if route.mode == "wiki_recipe":
         return f"{values.get('quantite', 1)} {values['objet']}"
     if route.mode == "wiki_equipment":

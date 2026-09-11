@@ -61,6 +61,7 @@ Les commandes de recherche suggèrent les noms pendant la saisie.
 | Ajouter mon personnage ou une mule | `/membre principal` · `/membre ajouter-mule` |
 | Compléter mon profil | `/profil modifier` |
 | Consulter les prochaines sorties | `/activite liste` |
+| Ouvrir l'agenda interactif de la semaine | `/calendrier` · `/calendrier vue:mois` |
 | Contacter le Staff en privé | `/ticket` |
 
 **Pour le Staff :** `/event` ouvre le parcours guidé en message privé ;
@@ -150,6 +151,7 @@ l'hébergement **Render** et le suivi HTTP avec **UptimeRobot**.
 | Document | Contenu |
 | --- | --- |
 | [Installation et exploitation](docs/INSTALLATION.md) | Discord, environnement local, Render, UptimeRobot et dépannage. |
+| [Calendrier des activités](docs/CALENDRIER.md) | Agenda, filtres, inscriptions, installation du patch et recette. |
 | [Architecture et données](docs/ARCHITECTURE.md) | Modules, commandes, persistance, encyclopédie et assistants IA. |
 | [Configuration d'exemple](.env.example) | Variables disponibles, sans secrets réels. |
 | [Consignes de contribution](AGENTS.md) | Organisation du code, conventions et tests. |
