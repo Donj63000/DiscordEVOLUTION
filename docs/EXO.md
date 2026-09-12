@@ -1,457 +1,453 @@
-# `/exo` — atelier personnel et probabilités de forgemagie Rétro
+# `/exo objet` — atelier de forgemagie Rétro
 
-Version du profil : `retro-nominal-v1`. Audit des sources : 12 septembre 2026.
+Profil du moteur : `retro-workshop-v2`. Sauvegardes : schéma JSON 2, avec
+migration du schéma 1 `retro-nominal-v1`.
 
-> Ce module n'est pas un émulateur certifié du serveur Ankama.
-> Il sépare les données d'objet, les probabilités conditionnelles à un taux,
-> une comptabilité nominale du puits et une simulation explicitement heuristique des pertes.
-> Ne présentez pas ses pourcentages de perte comme les véritables taux du serveur.
+## Périmètre et honnêteté du simulateur
 
-## Installation sur cette version du bot
+Cet atelier est un **simulateur pédagogique local**, pas une connexion à
+l'atelier Ankama. Il conserve réellement le jet courant, les pertes, les gains,
+le puits nominal, les runes consommées et les objectifs d'une tentative à l'autre.
 
-Ce patch est construit pour l'archive `DiscordEVOLUTION-main (7).zip`.
-Depuis le répertoire contenant `main.py`, sur une copie sauvegardée et une branche propre :
+La catégorie existante du bot est **Dofus Rétro**. Cette version ne prétend pas
+reproduire Dofus Unity ou Touch. La table nominale du dépôt est conservée ; les
+probabilités automatiques et la répartition des pertes sont des conventions
+explicites, non calibrées sur des données de serveur. Les avertissements sont
+visibles dans le panneau et le journal. Ne pas utiliser les résultats comme
+prévision certifiée de coût ou de rentabilité en jeu.
 
-```sh
-git apply --check discord-evolution-exo-retro.patch
-git apply discord-evolution-exo-retro.patch
-python -m pip install -r requirements.txt
-python -m pytest -q tests/test_exo_math.py tests/test_exo_engine.py tests/test_exo_data.py tests/test_exo_discord.py tests/test_exo_boundaries.py
+Les équipements avec malus, effets inconnus ou bornes non interprétables ne
+sont pas simulés automatiquement. Le suivi déclaratif reste disponible.
+Aucune nouvelle dépendance, permission, base de données ou variable
+d'environnement n'est ajoutée.
+
+## Démarrer comme un joueur
+
+1. Ouvrir `/exo` pour un Gelano de démonstration sans réseau, ou
+   `/exo objet:Gelano`. Le panneau est personnel et éphémère.
+2. Lire le jet affiché et les minimums à conserver. Par défaut le départ est au
+   maximum naturel, avec un puits de zéro.
+3. Choisir la caractéristique à travailler. Les lignes naturelles de l'objet
+   passent avant la liste des autres caractéristiques. Le choix suggère une
+   taille de rune ; il reste possible de choisir soi-même une rune normale,
+   Pa ou Ra lorsqu'elle existe.
+4. Cliquer sur **Poser ×1**. Aucun réglage de probabilité n'est nécessaire.
+   Lire le résultat, les lignes modifiées et le puits.
+5. Remonter les lignes abîmées, puis retenter l'exo. **Exporter** permet de
+   reprendre ultérieurement avec `/exo reprise:<fichier.json>`.
+
+`objectif` reste une option facultative : PA, PM ou Portée. Sans cette option,
+l'atelier préfère un bonus absent, dans l'ordre PM, PA, Portée puis les autres
+caractéristiques. Ainsi des bottes possédant déjà un PM ne démarrent pas avec un
+faux « exo PM réussi ». Un objectif explicitement impossible n'est pas masqué :
+le moteur expose son blocage.
+
+### Exemple : un Gelano PA/PM, pas seulement un PM
+
+Le but initial du Gelano est `pm=1 ; pa=1`. Si le PM passe alors que le PA a
+sauté, le panneau indique **bonus principal obtenu, objet à remonter**. Il
+invite à sélectionner le PA. Remettre ce PA est un remontage naturel, pas un
+second exo à 1 %. Le PM existant reste dans le jet et peut tomber pendant cette
+remontée : aucune réparation gratuite n'est effectuée entre deux tentatives.
+
+L'objet n'est terminé que lorsque les deux seuils sont atteints. Les mêmes
+règles s'appliquent aux objectifs de qualité d'un équipement plus complexe.
+
+### Objectifs et nouveaux jets
+
+Le bouton **Objectifs** accepte par exemple :
+
+```text
+pm=1 ; pa=1 ; fo=45 ; vi=180
+```
+
+La première ligne est le but principal ; les suivantes sont des minimums de
+qualité. Ce formulaire ne modifie ni le jet, ni les compteurs, ni le journal.
+Les objectifs de départ ajoutent les **minimums naturels strictement positifs**
+des autres lignes, pas leurs maxima : il faut les augmenter pour exiger un jet
+parfait. Les lignes naturelles dont le minimum vaut zéro ne sont pas imposées.
+
+Les plafonds de ligne et de poids over/exo sont vérifiés avant d'enregistrer les
+nouveaux objectifs. Une liste invalide ne remplace pas la précédente.
+
+Dans **Réglages**, les nouveaux jets minimum, aléatoire et parfait redémarrent
+uniquement la simulation : puits zéro, compteurs et journal de simulation
+neufs. Les objectifs, prix, taux personnalisés et observations sont conservés.
+Le bouton **Annuler** restaure l'état précédent.
+
+**Modifier le jet** est différent d'**Objectifs** : c'est une déclaration de
+nouveau point de départ. Les lignes naturelles omises passent à zéro et les
+compteurs du mode courant sont remis à zéro si le jet ou le puits change
+effectivement. Le formulaire demande aussi le
+puits (`?` pour inconnu) et la graine du scénario. Exporter avant cette opération
+pour conserver un historique indépendant.
+
+## Comprendre les messages
+
+Le bilan distingue trois choses : le gain de la rune acceptée, les pertes
+brutes et la variation nette de chaque ligne.
+
+| Résultat | Traitement du modèle |
+| --- | --- |
+| SC, succès critique | Le gain est ajouté ; pas de perte et pas de consommation de puits. |
+| SN, succès neutre | Le poids de la rune est compensé, puis son gain est ajouté. |
+| EC, échec | Le poids est compensé sans ajouter le gain de la rune. |
+
+Les points déjà présents sur la ligne travaillée ne sont plus immunisés.
+Exemple : une rune Fo acceptée en SN avec une perte de 1 Force peut produire
+un gain brut de +1 et une variation nette de zéro. Le journal montre les deux
+informations plutôt qu'un trompeur « +1 Force ».
+
+Exemple comptable nominal, Ga Pme sur Gelano :
+
+```text
+Échec — Ga Pme
+Gain : aucun
+Perte : PA −1
+PA : 1 → 0 (−1)
+PM : 0 → 0 (0)
+Puits : 0 → 10 (+10)
+```
+
+Le PA vaut 100 et la rune 90 dans ce profil : le reliquat vaut 10. Ce résultat
+est un exemple de calcul du modèle, pas une garantie du prochain tirage.
+
+Les messages montrent également le prix consommé et, dans l'historique
+détaillé, les taux effectivement employés. Le compteur parle de **runes
+utilisées**, qui comprend les échecs, et non de runes « passées ».
+
+### Lots ×10 et ×100
+
+Un lot applique des tentatives successives au même état mutable : dégâts,
+puits, coût et probabilités sont réévalués à chaque rune. Son bilan comprend
+toutes les runes réellement utilisées, le nombre de SC/SN/EC, les gains et
+pertes cumulés, les variations nettes et la raison de l'arrêt.
+
+Pour éviter un over involontaire, ces lots s'arrêtent au seuil de la ligne
+sélectionnée, ou avant qu'une rune trop grosse le dépasse. Le seuil est celui
+de l'objectif principal pour sa ligne ; pour une autre ligne, c'est au moins
+son maximum naturel et le minimum de qualité demandé. La pose ×1 permet de
+tenter volontairement un over, si les plafonds l'autorisent.
+
+Un lot n'est **pas** un robot qui répare les autres lignes : lorsqu'une ligne
+est remontée, le joueur choisit la suivante. Un arrêt après quelques essais
+conserve ces essais et indique pourquoi le reste n'a pas été exécuté.
+
+### Historique et annulation
+
+Chaque mode conserve les 100 dernières tentatives. Le journal présente un
+essai complet par page, avec navigation vers les plus anciens et les plus
+récents. Les compteurs restent cumulatifs au-delà de 100 essais, mais les
+anciennes lignes ne sont pas conservées indéfiniment.
+
+Le jet de l'atelier affiche les variations nettes du dernier lot ; l'historique
+permet de comprendre ses essais individuellement. Les textes de statut
+exceptionnellement longs sont abrégés explicitement ; le détail des événements
+conservés reste accessible dans le journal et l'export.
+
+**Annuler** restaure un niveau d'état précédent, y compris graine, séquence,
+prix consommé et journal. Rejouer le même essai dans la même version du moteur
+redonne le même résultat. Ce n'est pas une annulation d'action dans Dofus.
+
+## Réglages avancés et suivi réel
+
+**Taux / prix rune** définit un prix unitaire et, facultativement, des
+pourcentages SC et SN pour la combinaison caractéristique/taille sélectionnée.
+Les deux champs vides réactivent le modèle automatique. EC est le complément
+à 100 %. La convention historique de 1 % SC pour un exo PA/PM/Portée absent
+reste prioritaire : le formulaire l'annonce explicitement.
+
+Les prix sont déclarés par le joueur. Zéro signifie coût non renseigné, pas
+gratuité en jeu. Aucun prix HDV en temps réel n'est téléchargé.
+
+**Simulation ↔ suivi** sépare entièrement le bac à sable des observations.
+Avant de noter une observation, déclarer le jet réel. Saisir ensuite le
+résultat SC/SN/EC et les pertes brutes, par exemple `pa=1 ; vi=3`.
+Les pertes sont des quantités positives ; l'atelier les soustrait lui-même.
+
+Un puits initial inconnu reste inconnu. Si les pertes déclarées ne compensent
+pas la rune et le puits connu, le résultat est signalé comme inexpliqué et le
+puits devient inconnu au lieu d'être artificiellement fixé à zéro. Les malus et
+effets non pris en charge interdisent également d'inférer un puits fiable.
+
+Ce mode ne lit pas le client Dofus, ne reconnaît pas automatiquement une capture
+d'écran et ne vérifie pas la véracité d'un export. L'observation est déclarative.
+
+L'onglet probabilités/budget garde le modèle géométrique et les campagnes
+Monte-Carlo existants. Son taux constant et son forfait de remontage ne pilotent
+pas l'atelier à jets évolutifs. Une campagne budgétaire n'est pas une succession
+de remontages détaillés de l'équipement.
+
+## Spécification du profil nominal v2
+
+### Poids et gains
+
+Source de vérité locale : `utils/exo_engine.py`, dictionnaire `STATS`.
+Le poids de rune vaut poids par point multiplié par son gain.
+
+| Caractéristique | Poids par point | Gains disponibles |
+| --- | ---: | --- |
+| PA / PM / Portée | 100 / 90 / 51 | 1 |
+| Vitalité | 0,25 | 3 / 10 / 30 |
+| Force, Intelligence, Agilité, Chance | 1 | 1 / 3 / 10 |
+| Sagesse, Prospection | 3 | 1 / 3 / 10 |
+| Initiative | 0,1 | 10 / 30 / 100 |
+| Pods bonus | 0,25 | 10 / 30 / 100 |
+| Dommages, Soins | 20 | 1 |
+| Coups critiques, Invocations | 30 | 1 |
+| Dommages en pourcentage | 2 | 1 / 3 / 10 |
+| Résistances fixes des cinq éléments | 2 | 1 |
+| Résistances en pourcentage des cinq éléments | 6 | 1 |
+
+**Ces valeurs sont celles du dépôt d'origine, pas une certification de toutes
+les versions de Dofus.** Des guides publics donnent d'autres valeurs pour
+Vitalité et Soins. Le patch ne remplace pas une table entière à partir d'une
+page communautaire dont le périmètre/version est ambigu. Une calibration
+ultérieure doit préciser version, source, gains de runes et migration des
+anciens puits, et changer l'identifiant de profil si nécessaire.
+
+Le dépassement d'une ligne au-delà du maximum naturel est refusé lorsque son
+poids total dépasserait 101. Le poids cumulé over/exo du jet proposé est lui
+aussi limité à 101. Ces contrôles nominaux sont conservateurs et ne prétendent
+pas couvrir toutes les exceptions historiques du jeu.
+
+### Probabilités automatiques : formules locales, non serveur
+
+Pour une rune de gain `g`, soit `c` la valeur actuelle positive de sa ligne,
+`m` son maximum naturel positif, `w` le poids de rune et `S` le surplus
+over/exo actuel. On définit :
+
+```text
+pressure = poids naturel actuellement présent / poids naturel maximum
+           (lignes plafonnées à leur maximum ; zéro si dénominateur nul)
+undersized = min(1, max(0, c / (20*g) - 1))
+```
+
+Les formules de conception sont les suivantes :
+
+```text
+Remontage naturel :
+  fill = c / m
+  succès = 0,97 - 0,22*fill - 0,12*pressure - 0,40*undersized
+  part critique des succès = 0,55 + 0,30*(1-fill)
+
+Over :
+  over = (c + g - m) * poids_par_point / 101
+  succès = 0,55 * max(0,02, 1-over) * (1 - 0,45*undersized)
+  part critique des succès = 0,35
+
+Exo léger :
+  succès = 0,45 * exp(-w/35)
+           * (1 - 0,65*min(1, S/101)) * (1 - 0,35*pressure)
+  part critique des succès = 0,40
+```
+
+Le succès est borné entre 1 % et 98 % et arrondi à six décimales ; SC est ce
+succès multiplié par sa part critique, SN est le reste, EC son complément.
+L'exo PA/PM/Portée absent utilise séparément le preset 1 % SC, 0 % SN.
+
+Ces coefficients fournissent une jouabilité cohérente et des taux qui réagissent
+au jet. **Ils ne proviennent pas d'une formule Ankama vérifiée ni d'un ajustement
+statistique à des logs réels.** Aucun niveau de métier, focus, changement de
+version ou effet caché de serveur n'est modélisé. Les taux personnalisés servent
+à comparer des hypothèses ; ils ne certifient pas ces hypothèses.
+
+La rune conseillée utilise un repère local de 20 fois le gain, puis réduit la
+taille pour ne pas dépasser le nombre de points manquants. C'est une aide au
+choix, pas une optimisation économique démontrée.
+
+### Pertes, puits et invariants
+
+Pour SN ou EC, l'ordre conventionnel est : surplus des autres lignes, puits,
+puis lignes positives, **y compris les points déjà présents sur la ligne
+travaillée**. Les surplus sont mélangés et les lignes positives sont tirées
+uniformément. Le coût de rune est compensé avant l'ajout du gain de SN.
+La répartition est donc explicitement heuristique.
+
+Le prélèvement se fait en points entiers ; tout excédent de poids augmente le
+puits. S'il n'existe plus assez de poids à prélever, le moteur n'invente ni
+statistique négative ni puits négatif : il journalise le poids non compensé.
+L'existence d'un tel résultat dans ce bac à sable n'en fait pas une règle serveur.
+
+Les poids sont des `Decimal`. Le tirage dépend de la graine, de la séquence et
+du profil. Les parcours de dictionnaires sont normalisés pour qu'un ordre de
+clés JSON différent ne change pas un tirage.
+
+Un calcul valide est construit avant mutation : dépassement de limites,
+paramètres invalides ou erreur de validation ne laissent pas de demi-tentative.
+
+## Catalogue, parsing et sauvegardes
+
+Le chemin existant est conservé : catalogue/cache du cog wiki, détail d'objet,
+enrichissement éventuel Xixou et illustration facultative. Les API de catalogue
+apportent des fiches et effets ; elles ne sont pas appelées pour lancer les
+tirages du moteur local.
+
+Les nombres français avec séparateurs de milliers, certains tirets Unicode et
+des variantes de résistance sont normalisés. Les effets inconnus restent
+visibles et bloquent la simulation. La reconnaissance des dégâts de base d'une
+arme est limitée à des libellés identifiables : un « Dommages renvoyés »
+inconnu ne disparaît plus dans une exclusion trop large.
+
+Les images et enrichissements sont facultatifs : délais séparés de 20 secondes
+pour le détail, 8 pour l'enrichissement et 5 pour l'image. Leur indisponibilité
+ne supprime pas un objet dont le détail exploitable a déjà été récupéré.
+Une illustration déjà jointe est conservée plutôt que renvoyée à chaque rune.
+
+Le schéma 2 exporte les deux états, graine, objectifs, prix, taux, budgets et
+jusqu'à 100 événements par mode. Les nouveaux événements contiennent les jets
+avant/après des lignes touchées, le gain accepté, les pertes, les puits, le prix,
+les taux utilisés et le profil. La taille maximale est **512 Kio** ; l'export
+passe en JSON compact avant de refuser un fichier trop volumineux, sans tronquer
+silencieusement le journal.
+
+Le schéma 1 est repris en conservant jets, compteurs et ancien objectif simple.
+Un avertissement explique que les prochains tirages utilisent le moteur v2.
+L'ancien journal n'est pas réécrit en prétendant connaître des jets avant/après
+qu'il ne stockait pas. Les anciens puits sont conservés car la table nominale
+ne change pas.
+
+Les imports refusent les types incohérents, valeurs non finies, clés JSON
+répétées, profils inconnus, incohérences de bilan/compteurs et objectifs primaires
+répétés dans les seuils secondaires. Un snapshot reste déclaratif : il n'est
+ni signé ni garanti par le serveur. L'import ne charge aucune URL arbitraire.
+
+## Cycle de vie Discord
+
+Le panneau ferme après 10 minutes d'inactivité ou 14 minutes depuis sa création.
+La limite dure ménage une marge avant l'expiration du jeton d'interaction.
+Fermeture explicite, expiration, remplacement du panneau et déchargement normal
+du cog tentent de joindre une sauvegarde JSON au message fermé.
+
+Cette sauvegarde est **au mieux** : une suppression de message, une erreur HTTP,
+un arrêt brutal du processus ou une indisponibilité de Discord peut l'empêcher.
+Exporter régulièrement reste nécessaire. Il n'y a pas de persistance
+automatique sur disque, de reprise de bouton après redémarrage ou d'envoi en MP.
+
+Chaque composant porte la révision du panneau. Deux clics arrivant sur le même
+ancien état ne consomment pas silencieusement deux runes. Les traitements sont
+sérialisés par session ; les formulaires périmés sont refusés. Lorsqu'une action
+est en cours, l'ouverture d'un formulaire reçoit immédiatement une réponse.
+
+Les calculs s'appliquent à une copie de session. Une erreur de reconstruction
+du panneau ou de publication restaure l'état local précédent. Cela ne constitue
+pas une transaction distribuée : une coupure réseau après acceptation par
+Discord peut toujours nécessiter de rouvrir le panneau.
+
+Le rendu est construit dans `exo_presentation.py` sous forme de payload testable,
+puis converti par `discord.Embed.from_dict`. Les limites de taille sont comptées
+en unités UTF-16, les champs longs sont répartis et les mentions désactivées.
+
+## Architecture
+
+| Fichier | Responsabilité |
+| --- | --- |
+| `exo.py` | Commande, vues, formulaires, verrouillage, révisions et publication. |
+| `utils/exo_engine.py` | Profil nominal, tirages, poids, pertes, puits et observations. |
+| `utils/exo_workshop.py` | Objectifs, nouveaux jets et lots guidés. |
+| `utils/exo_session.py` | États séparés et validation des sauvegardes. |
+| `utils/exo_feedback.py` | Messages de bilan individuel et cumulé. |
+| `utils/exo_presentation.py` | Rendu pur, pagination et budgets de taille. |
+| `utils/exo_embeds.py` | Adaptateur Discord du rendu pur. |
+| `utils/exo_data.py` | Parsing conservateur des fiches d'objet. |
+| `utils/exo_math.py` | Modèle probabiliste/budgétaire distinct, inchangé. |
+
+## Validation et recette de déploiement
+
+Dans l'environnement du bot, avec les dépendances du dépôt :
+
+```bash
 python -m pytest
 ```
 
-Aucune nouvelle dépendance n'est ajoutée. Le bot possède déjà `discord.py>=2.4,<3`,
-`aiohttp`, Pillow, pytest et les clients Wiki/Xixou nécessaires.
-Utiliser les versions de Python supportées par le dépôt et son environnement de déploiement.
+Un sous-ensemble autonome permet de vérifier moteur, parsing, export et vrais
+payloads de présentation sans charger `tests/conftest.py`, qui importe Discord :
 
-La variable **existante** `XIXOU_API_KEY` est réutilisée par `DofusWikiCog`.
-Ne pas ajouter de clé dans le code ou dans un export.
-Sans clé Xixou, les données disponibles du Wiki servent de repli.
-Sans aucun accès réseau, `/exo` ouvre tout de même une démonstration locale Gelano.
-
-Redémarrer le bot. `main.py` charge `exo` après `dofus_wiki`, avant
-`slash_commands` et la synchronisation habituelle de l'arbre.
-La commande est native, réservée aux serveurs, et apparaît dans la catégorie
-« Dofus Rétro » de `/aide`. Aucun alias préfixé `!exo` n'est ajouté.
-Conserver le réglage de synchronisation slash déjà utilisé dans le projet.
-Si la synchronisation est volontairement désactivée dans votre déploiement,
-effectuer la synchronisation selon votre procédure existante.
-
-Le module ne demande aucune permission Administrateur ni aucun nouvel intent.
-Les images utilisent les permissions d'affichage habituelles du bot ; un refus
-d'attacher le PNG déclenche un repli vers la miniature distante validée.
-
-Pour retirer ce patch, avant toute modification ultérieure des mêmes fichiers :
-
-```sh
-git apply -R --check discord-evolution-exo-retro.patch
-git apply -R discord-evolution-exo-retro.patch
+```bash
+python -m pytest --noconftest -q \
+  tests/test_exo_engine.py tests/test_exo_math.py tests/test_exo_data.py \
+  tests/test_exo_workshop.py tests/test_exo_presentation.py tests/test_exo_structure.py
 ```
 
-Redémarrer et resynchroniser les commandes. Les exports personnels restent des fichiers
-JSON, mais leur import nécessite ce module.
-
-## Commandes
-
-```text
-/exo
-/exo objet:Gelano objectif:Exo PM
-/exo objet:<objet suggéré par Discord> objectif:Exo PA
-/exo reprise:<fichier exo-retro-session.json>
-```
-
-`objectif` est un choix Discord, dont les valeurs internes sont `pm`, `pa` et `po`.
-Un objectif différent, notamment une caractéristique ou un over, se définit ensuite
-dans le formulaire « Jet / objectif ».
-
-Sans objet, la démo est explicitement locale : elle n'affirme pas avoir consulté
-Xixou et ne récupère aucune image. Sur une vraie fiche, l'illustration est obtenue
-par le système d'images sécurisé déjà installé dans le bot.
-
-La recherche est limitée aux bijoux, vêtements et catégories d'armes couvertes.
-Un résultat flou ou plusieurs correspondances imposent une sélection explicite.
-Les résultats sont paginés par 25, avec un maximum de 200 correspondances ;
-préciser le nom lorsque cette borne est atteinte.
-
-La recherche s'appuie sur l'index du Wiki existant : un équipement uniquement présent
-chez Xixou et absent de cet index n'est pas découvrable par cette version.
-Les correspondances Xixou exactes enrichissent ensuite la fiche choisie.
-
-## Un parcours simple pour le joueur
-
-Ouvrir `/exo objet:Gelano`, choisir l'objectif PM, puis lire le jet affiché.
-**Ce n'est pas le jet de votre objet : c'est le maximum théorique de la fiche.**
-Le puits initial de la simulation est **supposé égal à zéro**.
-
-« Jet / objectif » permet de déclarer un autre point de départ, par exemple :
-
-```text
-Jet : pa=1
-Puits nominal : 0
-Objectif : pm=1
-Graine : 42
-```
-
-Les clés utilisables sont visibles devant les lignes du panneau.
-Le formulaire accepte aussi les noms usuels : `force`, `vitalité`, `chance`, etc.
-Les lignes omises dans une saisie complète sont remises à zéro.
-Les entiers négatifs sont acceptés pour représenter un malus, mais bloquent
-l'atelier automatique. Les nombres décimaux ne sont pas des jets valides.
-
-Choisir ensuite la caractéristique à travailler dans la liste, puis la taille
-de rune. Le menu « Autres caractéristiques » donne accès aux lignes suivantes.
-Toutes les caractéristiques ne possèdent pas trois tailles.
-
-Pour les exos lourds admissibles du preset, « Passer ×1 » réalise un essai.
-« ×10 » et « ×100 » conservent le jet endommagé entre essais et s'arrêtent
-lorsque l'objectif déclaré est atteint ou qu'une nouvelle tentative est bloquée.
-Ils **ne remontent pas automatiquement** l'objet.
-L'objectif est un seuil de caractéristique, pas une garantie que les autres jets
-sont conservés : un PM obtenu sur un Gelano ayant perdu son PA n'est pas un
-Gelano PA/PM terminé.
-
-« Annuler » restaure la dernière action modifiant le jet ou les paramètres,
-avec sa séquence aléatoire ; il ne constitue pas un historique d'annulation illimité.
-Exporter avant un changement d'objet, une nouvelle commande `/exo` ou une modification
-manuelle de jet qui remet les compteurs du mode courant à zéro.
-
-Dans « Jet / objectif », changer seulement l'objectif ou la graine conserve le jet,
-le puits, la séquence, les tentatives, les dépenses et le journal. Valider le formulaire
-sans changement, ajouter une ligne à zéro ou omettre une ligne déjà nulle les conserve
-également. Une modification effective du jet ou du puits réinitialise uniquement le
-mode courant ; le message de validation le précise et « Annuler » restaure l'état précédent.
-
-## Les quatre écrans
-
-### Atelier
-
-L'écran affiche les jets actuels face aux intervalles naturels, les lignes exo/over,
-le poids nominal de la rune, le puits déclaré ou inconnu, les contraintes du profil,
-les taux utilisés et la dépense de runes simulée.
-
-Les taux sont distingués par leur provenance :
-
-* **Preset communautaire lourd** : PA, PM ou PO absent de la fiche naturelle,
-  ligne actuelle à zéro et tentative admissible dans le profil. SC = 1 %, SN = 0 %,
-  EC = 99 %. Le réglage de taux personnalisé ne remplace pas ce preset.
-* **Bac à sable personnalisé** : pour le remontage, l'over et les autres exos,
-  l'utilisateur doit saisir SC et SN. EC vaut `100 − SC − SN`.
-  Aucune formule inconnue n'est remplacée par un taux deviné.
-* **Observation** : le joueur saisit ce qu'il a vu dans le jeu, sans tirage aléatoire.
-
-Remettre un PA naturellement présent sur un Gelano n'est donc **pas** traité comme
-un exo PA à 1 %. Pour simuler ce remontage, il faut déclarer des hypothèses de taux ;
-pour un suivi réel, il faut consigner son résultat observé.
-
-« Taux / prix rune » conserve les hypothèses et le prix par rune précise
-(caractéristique et taille). Il ne recycle pas silencieusement le même prix
-pour une Ga Pa et une petite rune de vitalité. Le prix zéro signifie « non renseigné /
-gratuit dans ce scénario », pas « prix réel connu ».
-
-« Risque du modèle » réalise 1 500 essais depuis **le même instantané** du jet.
-Il affiche la fréquence d'une perte sur chaque ligne, le poids moyen perdu et
-le nombre de situations que la compensation nominale n'explique pas.
-Il ne consomme ni rune, ni puits, ni séquence aléatoire de l'atelier.
-Ces fréquences sont celles de l'heuristique décrite ci-dessous et fluctuent
-avec l'échantillon : ce ne sont pas des taux de perte Ankama.
-
-### Probabilités et budget
-
-Cet écran est indépendant de la simulation du jet. Le joueur choisit un taux
-fixe `p`, un plafond `n`, une probabilité cible, un nombre de campagnes et une graine.
-Il ne certifie pas que l'objectif est réalisable sur l'objet sélectionné.
-
-Pour des essais indépendants, de même probabilité :
-
-```text
-P(au moins une réussite en n essais) = 1 − (1 − p)^n
-P(aucune réussite en n essais)       = (1 − p)^n
-E[T] sans plafond                   = 1 / p
-n pour atteindre une probabilité c  = ceil(log(1 − c) / log(1 − p))
-E[min(T, n)]                        = [1 − (1 − p)^n] / p
-```
-
-Les cas `p = 0`, `p = 1`, `n = 0` et une cible de 100 % sont traités séparément.
-Les quantiles utilisent une précision décimale adaptée et un nombre fixe de corrections
-d'arrondi, même pour une probabilité très faible importée depuis un export JSON.
-Le rendu de cet écran se fait hors de la boucle Discord, avec au plus deux calculs
-simultanés partagés avec les campagnes et les estimations de risque.
-L'espérance de 100 essais à 1 % n'est pas une garantie à la centième rune :
-avec `p = 0,01`, on obtient environ **63,397 %** de chance d'au moins un succès
-en 100 essais ; la médiane vaut 69, le seuil de 90 % vaut 230, de 95 % vaut 299,
-et de 99 % vaut 459. Les échecs précédents ne changent pas le prochain `p`
-dans ce modèle indépendant.
-
-Les cinq coûts sont déclarés en kamas entiers : objet, préparation initiale,
-rune exo, remontage entre deux essais, budget disponible.
-
-```text
-C(0) = 0
-C(n ≥ 1) = objet + préparation + n × rune + (n − 1) × remontage
-E[C(T)] = objet + préparation + (rune + remontage) / p − remontage
-E[C(min(T,n))] =
-    objet + préparation + rune × E[min(T,n)]
-    + remontage × (E[min(T,n)] − 1), pour n ≥ 1
-```
-
-Le remontage n'est pas facturé après le dernier essai et la préparation n'est
-pas refacturée à chaque rune. L'achat de l'objet peut être mis à zéro si vous
-le possédez déjà. Un plafond de zéro correspond à une campagne non commencée.
-La valeur de revente finale et une éventuelle remise en état après abandon ne
-sont pas comptées.
-
-Les campagnes s'arrêtent au premier succès ou au plafond.
-Le taux de campagnes réussies, un intervalle de Wilson à 95 %, les essais consommés,
-leur médiane/P95 et le coût moyen sont calculés sur **toutes** les campagnes.
-Les campagnes sans succès ne sont pas retirées du dénominateur.
-Les quantiles d'essais consommés avec plafond ne sont pas présentés comme
-les quantiles du délai de réussite sans plafond.
-
-Le prix de remontage est un **forfait choisi par le joueur**. Ce mode ne prétend
-pas reconstruire automatiquement un jet avec une séquence de runes optimisée.
-Le budget ne limite pas le nombre de runes dans l'atelier ; il sert aux calculs
-de campagnes. Il n'existe pas de flux de prix HDV dans cette intégration.
-
-### Journal et suivi déclaratif
-
-« Mode : simu ↔ suivi » alterne entre deux états entièrement distincts :
-jets, puits, tentatives, dépenses et journaux simulés ne se mélangent pas
-avec les observations.
-
-En suivi, il faut d'abord déclarer le jet réel dans « Jet / objectif ».
-Le puits initial reste inconnu (`?`) tant qu'un point de départ explicite
-n'est pas saisi. « Noter un résultat » accepte SC, SN ou EC et les quantités
-de caractéristiques effectivement perdues :
-
-```text
-Résultat : EC
-Pertes : pa=1; vi=3
-```
-
-Les pertes sont des quantités positives, comptées après le gain éventuel de
-la rune sur un SN. Un SC avec des pertes est rejeté.
-Les observations ne vérifient pas le journal de jeu et ne constituent pas une preuve.
-Les compteurs de passages mélangent éventuellement différentes runes et différents
-jets : leur moyenne ne permet pas d'inférer un taux serveur unique.
-
-Si le puits initial est inconnu, il reste inconnu. Sur une fiche incomplète ou
-comportant un malus non couvert, le calcul du puits observé est également rendu
-indéterminé plutôt que d'ignorer les effets non suivis.
-Les lignes reconnues peuvent toujours servir de carnet de suivi partiel.
-
-### Guide
-
-Le quatrième écran explique ces distinctions et lie les sources.
-L'avertissement de simulation nominale reste affiché en pied de tous les écrans
-de session.
-
-## Comptabilité et règles du profil nominal
-
-Les calculs de poids utilisent `Decimal`, pas une accumulation de flottants.
-Cela garantit la cohérence **interne du modèle** ; cela ne reproduit pas les
-arrondis et anomalies propres au serveur Rétro.
-
-Pour les lignes couvertes :
-
-```text
-SC : ajout du gain ; autres lignes et puits inchangés.
-SN : ajout du gain ; compensation du poids de la rune.
-EC : aucun gain ; compensation du poids de la rune.
-Puits suivant hors SC = max(0, puits précédent + poids perdu − poids rune).
-```
-
-Exemple nominal seulement : une Ga Pme de poids 90 échoue et fait perdre
-un PA de poids 100, sans autre changement et avec un puits initial nul.
-Le modèle obtient `100 − 90 = 10`, pas un puits de 100.
-
-Le puits n'est **jamais** calculé comme « poids du jet parfait moins poids actuel ».
-Il dépend d'une suite d'événements et d'un point de départ. Le module ne déduit
-pas non plus une règle de conservation du puits après échange, reconnexion ou
-déplacement de l'objet.
-
-Les plafonds implémentés sont des contraintes du profil nominal :
-poids cumulé des surplus over/exo limité à 101 ; pour une ligne au-delà du
-maximum naturel, poids de la **ligne entière** limité à 101.
-Une ligne naturellement plus lourde peut atteindre son maximum naturel,
-mais n'est pas autorisée à dépasser celui-ci par cette règle.
-Les caractéristiques natives ne sont pas comptées comme un exo supplémentaire.
-
-La simulation des pertes suit une convention explicite :
-
-1. Elle retire d'abord le surplus over/exo des autres lignes, dans un ordre tiré au sort.
-2. Elle consomme ensuite le puits disponible.
-3. Elle choisit uniformément une autre ligne positive et y retire le nombre
-   de points nécessaires, dans la limite des points présents, puis recommence
-   si nécessaire. La ligne de la rune tentée est exclue de cette allocation.
-4. Un excédent de poids retiré devient du puits ; un déficit non compensé est signalé.
-
-**Cette sélection des lignes et l'exclusion de la ligne travaillée sont des choix
-pédagogiques, pas des règles serveur démontrées.** Une vraie distribution de pertes
-ne peut pas être annoncée à partir de cet algorithme.
-
-### Poids nominaux utilisés
-
-| Caractéristique | Poids d'un point | Gains disponibles |
-| --- | ---: | --- |
-| PA | 100 | 1 |
-| PM | 90 | 1 |
-| Portée | 51 | 1 |
-| Vitalité | 0,25 | 3 / 10 / 30 |
-| Force, intelligence, agilité, chance | 1 | 1 / 3 / 10 |
-| Sagesse | 3 | 1 / 3 / 10 |
-| Prospection | 3 | 1 / 3 / 10 |
-| Initiative | 0,1 | 10 / 30 / 100 |
-| Bonus pods | 0,25 | 10 / 30 / 100 |
-| Dommages | 20 | 1 |
-| Soins | 20 | 1 |
-| Coups critiques | 30 | 1 |
-| Invocations | 30 | 1 |
-| Dommages en pourcentage | 2 | 1 / 3 / 10 |
-| Résistance fixe par élément | 2 | 1 |
-| Résistance en pourcentage par élément | 6 | 1 |
-
-Ces valeurs sont un référentiel nominal historique choisi pour ce profil, non
-un export du serveur. Certaines tables publiques consultées diffèrent, notamment
-sur la vitalité et les soins. Aucun poids n'est lu depuis le champ `pods` d'un
-équipement : ce champ représente son encombrement, pas son poids de forgemagie.
-
-Ne pas assimiler l'ensemble des mécaniques de DOFUS moderne ou de Touch à Rétro.
-Les lignes renvoi, pièges, bonus de sorts, effets spéciaux et effets non reconnus
-ne sont pas prises en charge par cet atelier automatique.
-Fuite, tacle, transcendance et autres mécanismes hors périmètre ne sont pas ajoutés.
-Les dégâts de base d'une arme reconnus sont conservés comme effets immuables ;
-la conversion élémentaire d'une arme n'est pas simulée.
-Dofus, familiers, montures, ressources, boucliers et outils sont exclus de la recherche
-de cette version, sans prétendre que toutes les catégories exclues sont toujours
-impossibles à modifier dans chaque version du jeu.
-
-## Ce que l'API permet réellement
-
-Sources consultées :
-
-- Documentation de l'éditeur du catalogue :
-  <https://xixou.io/les-outils/api/>
-- Index JSON public :
-  <https://xixou.io/api/v1/index.json>
-- Guide/tableau publié par Xixou :
-  <https://xixou.io/guides/poids-des-runes/>
-- Guide communautaire Rétro hébergé sur le forum du jeu :
-  <https://www.dofus-retro.com/fr/forum/11-aide-communautaire/1516-guide-forgemagie-retro>
-- Documentation technique Discord :
-  <https://discordpy.readthedocs.io/en/stable/interactions/api.html>
-
-L'index public décrit cinq familles : monstres, équipements, ressources, sorts
-et carte. L'API est en lecture seule et expose notamment les effets naturels
-et recettes d'équipements. Aucun endpoint de forgemagie ni formule de probabilité
-SC/SN/EC n'y est documenté. L'absence d'endpoint documenté n'est pas une preuve
-sur un éventuel fonctionnement interne du site.
-
-Le guide Xixou est une publication de fans, pas une spécification Ankama ;
-sa table et certaines indications ne concordent pas avec tous les guides
-historiques. Le guide du forum est communautaire lui aussi ; sa consultation
-complète est soumise à une protection anti-robot dans l'environnement de l'audit.
-Il ne faut donc pas transformer un résultat de recherche ou un tableau de fans
-en promesse de reproduction exacte de la version actuelle.
-
-Le preset à 1 % s'appuie sur la convention communautaire documentée pour les
-exos lourds. La formule de remontage et la distribution exacte des pertes
-ne sont **pas vérifiées** par cette livraison.
-Le nommage « profil nominal » et les avertissements visibles sont donc nécessaires.
-
-## Intégration technique et sécurité
-
-`ExoCog` emprunte `DofusWikiCog.client`, `enrichment_client` et le résolveur d'images.
-Il n'ajoute ni session HTTP ni requête munie de la clé vers un autre hôte.
-Il conserve les restrictions d'origine, d'identité, de taille et de cache des
-clients existants. Le client Xixou envoie sa clé dans l'en-tête existant,
-pas dans les exports, les logs de ce module ou les URLs d'images.
-La mention Xixou reste liée et visible lorsque ses données sont affichées.
-
-La fiche Xixou est prioritaire si le client existant a vérifié sa correspondance
-et renvoie des effets. À défaut, la fiche Wiki est utilisée et le repli est affiché.
-Les effets inconnus et les doublons ambigus ne sont pas supprimés silencieusement :
-ils désactivent les pertes automatiques.
-Les libellés « à la chance » et les résistances fixes ou en pourcentage aux cinq
-éléments sont reconnus, y compris les pluriels et les apostrophes échappées du Wiki.
-
-Chaque panneau est privé (`ephemeral`), réservé à son auteur, avec un verrou
-par session. Les formulaires mémorisent une révision ; une soumission devenue
-obsolète est refusée. Les mutations ne sont validées qu'après publication du
-nouvel état. Les simulations lourdes partent d'un instantané et s'exécutent
-dans un thread, avec au plus deux calculs concurrents.
-Pendant une action en cours, demander un formulaire reçoit immédiatement une réponse
-privée invitant à réessayer. Le formulaire déjà ouvert reste intact. Un rendu de
-probabilités terminé après expiration ou déchargement n'est pas publié.
-
-Bornes : 120 ateliers/ouvertures simultanés, un par utilisateur et serveur ;
-deux ouvertures par 15 secondes ; 100 essais par clic ; 1 000 000 d'essais
-au plafond d'une campagne ; 50 000 campagnes ; 1 500 échantillons de risque ;
-100 lignes de journal conservées par mode ; export de 128 Kio maximum.
-Les dépenses et les jets sont bornés et les NaN/infinis sont rejetés.
-
-La session expire après dix minutes d'inactivité et quatorze minutes maximum.
-Elle n'est pas un patrimoine de guilde : aucune mutation de `#console`,
-aucun inventaire de jeu, aucun fichier de sauvegarde serveur ou nouveau
-stockage permanent n'est introduit.
-Le redémarrage perd les sessions non exportées.
-
-L'export JSON comprend profil, objet déclaré, bornes, deux états, journaux,
-taux personnalisés, prix, objectif, paramètres de campagne, graine et séquence.
-Il n'embarque ni clé, ni identifiant utilisateur, ni image, ni code exécutable.
-L'import revalide les types, bornes et séparations des modes.
-Il ne fait pas confiance à une URL fournie par le fichier et n'utilise pas `pickle`.
-
-Un import reste **déclaratif** : le catalogue et l'image ne sont pas retéléchargés,
-et le panneau l'indique. Modifier manuellement ce JSON ne permet pas de prouver
-un résultat obtenu dans le jeu.
-La reproductibilité signifie mêmes paramètres, même ordre de données et même
-version du profil/moteur ; elle n'est pas une prédiction du prochain jet réel.
-
-## Recette manuelle de déploiement
-
-Vérifier en serveur de test :
-
-- `/exo` fonctionne sans clé ; les boutons d'un autre utilisateur ne modifient rien.
-- `/exo objet:Gelano` affiche la fiche et, si disponible, l'image réelle.
-  Vérifier la provenance Xixou/repli Wiki et les dates de cache si elles sont signalées.
-- Un exo PM utilise le preset de 1 % ; un remontage PA natif ne l'utilise pas.
-- Modifier le jet, simuler, annuler, exporter et reprendre.
-- Basculer en suivi, déclarer un jet puis saisir une observation ;
-  revenir en simulation et vérifier l'absence de mélange.
-- En probabilités, vérifier les résultats 63,397 % / 69 / 299 pour `p=1 %`
-  et un plafond de 100.
-- Tester l'expiration, le rechargement du module et une panne des catalogues.
-
-Les tests automatisés ajoutés n'ouvrent aucune connexion Discord et n'utilisent
-pas de clé Xixou réelle. Les tests de schéma utilisent de véritables objets
-`discord.py` avec des entrées/sorties réseau simulées.
-La validation automatisée ne remplace pas cette recette sur votre serveur.
-
-## Validation locale des corrections du 12 septembre 2026
-
-Les quatre anomalies de la revue ont été corrigées : quantile non borné,
-libellés de chance/résistances non reconnus, historique effacé par un simple
-changement d'objectif et formulaire bloqué derrière un chargement.
-
-- Tests dédiés `/exo` : **188 réussis**, dont 73 nouveaux cas de non-régression.
-- Suite complète : **1 463 réussis, 1 ignoré**, en 25,01 secondes.
-- Les neuf cas du script de reproduction de la revue passent désormais.
-- Les tests automatiques restent hors ligne. Les processus qui vérifient le rendu
-  des probabilités extrêmes ont un délai maximal de huit secondes.
-- La suite utilise un nouveau `--basetemp` sous le répertoire temporaire Windows.
-  Journal complet : `evolution-exo-fixed-full-279d7607d3c642c788e1e4de6347945d.log`.
-  Des avertissements de dépréciation restent présents ; aucun échec de test.
-
-Une vérification réseau distincte a exercé `ExoCog.load_item` avec les clients
-Wiki, Xixou et images existants, puis les quatre écrans de chaque fiche :
-
-| Objet | Caractéristiques reconnues | Repli Moon | Miniature PNG préparée |
-| --- | ---: | --- | ---: |
-| Gelano | 1 | Bornes identiques | 30 043 octets |
-| Anneau du Dragon Cochon | 10 | Bornes identiques | 25 883 octets |
-| Voile d'encre | 10 | Bornes identiques | 17 174 octets |
-
-Les trois fiches permettent la simulation automatique. Leurs quatre écrans
-respectent les limites des embeds et conservent la miniature. Les envois Discord
-ont été simulés : cette vérification n'est pas une recette manuelle dans le client
-Discord. Les contrôles de diff et de secrets locaux n'ont signalé aucune anomalie.
+Ce sous-ensemble ne remplace pas les tests `test_exo_discord.py`,
+`test_exo_boundaries.py`, le reste du dépôt ou une recette connectée. Le rapport
+`EXO-REVIEW.md` distingue les vérifications exécutées des tests non exécutables
+dans l'environnement de revue.
+
+Sur un serveur de test, vérifier au minimum : ouverture par commande et
+autocomplete ; import v1/v2 ; Gelano dont le PM passe après perte du PA ;
+remontage d'une ligne naturelle ; lots avec arrêt et prix cumulé ; objectifs
+modifiés sans remise à zéro ; navigation des 100 événements ; deux clics
+rapides et formulaire périmé ; export avant/après fermeture ; expiration
+inactive et limite dure ; catalogue lent avec image indisponible ; séparation
+observation/simulation ; tentative d'action par un autre utilisateur.
+
+Le chargement de l'extension `exo` et sa catégorie sont déjà présents dans le
+dépôt. Après application du patch, redémarrer/recharger selon le mécanisme
+habituel du projet et utiliser sa procédure habituelle de synchronisation des
+commandes pour actualiser les descriptions. Aucun nouveau sous-groupe slash
+n'est créé : `objet`, `objectif` et `reprise` restent des options de `/exo`.
+
+## Références et statut
+
+Consultation le 13 septembre 2026.
+
+- Documentation primaire `discord.py`, Interactions API :
+  https://discordpy.readthedocs.io/en/stable/interactions/api.html
+  Jetons, réponses différées, édition éphémère, pièces jointes et composants.
+- Guide publié par Xixou :
+  https://xixou.io/guides/poids-des-runes/
+  Comparaison communautaire seulement, pas spécification Ankama. Notamment,
+  cette page affiche des poids de Soins/Vitalité différents de ceux du dépôt ;
+  elle ne sert pas à certifier la table locale ni les probabilités.
+- Le code du dépôt et les tests du patch sont la référence exacte du comportement
+  de ce profil. Aucune formule serveur Ankama authentifiée n'a été établie dans
+  cette revue.
+
+## Compatibilité avec les corrections précédentes
+
+L'intégration de ce patch sur la branche actuelle conserve les corrections du
+12 septembre 2026. Dans « Modifier le jet », un changement d'objectif ou de graine
+seul conserve les jets, le puits, les tentatives, les dépenses et les journaux.
+Les lignes absentes et les lignes nulles sont équivalentes. Seul un changement
+effectif de jet ou de puits remet l'état du mode courant à zéro ; l'annulation
+restaure aussi les objectifs multiples et le bilan affiché.
+
+Les quantiles gardent leur calcul décimal à précision adaptée, sans boucle de
+correction non bornée. Le rendu probabiliste reste hors de la boucle Discord,
+sous la limite de deux calculs simultanés, avec contrôle d'expiration et retour
+à l'état précédent en cas d'annulation ou d'échec de publication.
+
+L'ouverture d'un formulaire, y compris « Objectifs », conserve le refus immédiat
+lorsque l'atelier travaille déjà, ainsi que la vérification de révision ajoutée
+par la v2. Les effets de chance et les cinq résistances restent reconnus.
+
+## Validation d'intégration locale du 13 septembre 2026
+
+Le patch `exo_objet_fm_retro_v2.patch` a été intégré sur `main`, après le commit
+`178a6e3`, en conservant les corrections précédentes. Les conflits concernaient
+le contrôleur Discord, son fichier de tests et ce guide. Le parsing combiné
+préserve aussi les apostrophes typographiques avant la normalisation ASCII.
+
+- Tests dédiés `/exo` : **319 réussis**, en 13,45 secondes.
+- Suite complète : **1 594 réussis, 1 ignoré**, en 34,42 secondes.
+- Les tests utilisent le véritable SDK `discord.py`, avec les échanges Discord
+  et les réponses des catalogues simulés ; aucune clé réelle n'est nécessaire.
+- Les nouveaux tests du patch couvrent notamment 1 500 scénarios déterministes
+  de comptabilité, les objectifs multiples, les lots, les sauvegardes v1/v2,
+  les miniatures, les limites Discord et les interactions concurrentes.
+- Le déchargement pendant un rendu vérifie maintenant que la sauvegarde v2
+  attend le retour au dernier état validé, sans publier le résultat expiré.
+- Le diff ne contient ni marqueur de conflit, ni secret local, ni fichier
+  temporaire ajouté. Les avertissements de dépréciation restent non bloquants.
+
+Chaque exécution utilise un nouveau répertoire `--basetemp` sous le dossier
+temporaire Windows. Journaux :
+
+- `evolution-exo-v2-targeted-905a78a2f8aa4138a55ecf993641cae3.log`
+- `evolution-exo-v2-full-1ef12b2c30374b0d94e35c4470cdf3b5.log`
+
+Cette validation complète celle de l'environnement d'origine décrite dans
+`EXO-REVIEW.md`. Aucun essai manuel dans Discord ni déploiement n'a été effectué
+pendant cette intégration. Les tests valident le modèle du patch, pas sa
+fidélité statistique au moteur Ankama.

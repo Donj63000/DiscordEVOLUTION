@@ -12,10 +12,10 @@ import unicodedata
 from utils.exo_math import integer, probability
 
 D = Decimal
-PROFILE = "retro-nominal-v1"
+PROFILE = "retro-workshop-v2"
+LEGACY_PROFILE = "retro-nominal-v1"
 DISCLAIMER = (
-    "Modèle pédagogique, pas le moteur Ankama. Les pertes sont heuristiques ; "
-    "arrondis et particularités Rétro non reproduits. Puits nominal, non garanti en jeu."
+    "Simulation Rétro estimative • taux et pertes non certifiés Ankama • aucun objet réel modifié."
 )
 
 
@@ -25,6 +25,8 @@ def normalized(text: str) -> str:
 
 
 def decimal_value(value: object, maximum: str = "100000") -> Decimal:
+    if isinstance(value, bool) or len(str(value)) > 40:
+        raise ValueError("Poids invalide.")
     try:
         result = D(str(value).replace(",", "."))
     except (InvalidOperation, ValueError):
@@ -33,7 +35,7 @@ def decimal_value(value: object, maximum: str = "100000") -> Decimal:
         raise ValueError(f"Poids attendu entre 0 et {maximum}.")
     if result.as_tuple().exponent < -2:
         raise ValueError("Deux décimales au maximum.")
-    return result
+    return result.quantize(D(".01"))
 
 
 @dataclass(frozen=True)
@@ -172,7 +174,9 @@ class State:
                 raise ValueError("Ligne inconnue.")
             integer(value, -10000, 10000, "Jet")
         if self.sink is not None:
-            self.sink = decimal_value(self.sink)
+            if not isinstance(self.sink, D):
+                raise ValueError("Le puits doit être un poids Decimal ou inconnu.")
+            decimal_value(self.sink)
         integer(self.sequence, 0, 10**9, "Séquence")
         integer(self.spent, 0, 10**18, "Dépense")
         integer(self.attempts, 0, 10**9, "Tentatives")
@@ -233,15 +237,68 @@ class Rates:
         return max(0.0, 1 - self.sc - self.sn)
 
 
+def recommended_rune(item: Item, state: State, key: str, target: int | None = None) -> Rune:
+    """Choisit une taille de confort, sans garantir le meilleur rendement en jeu."""
+    current = max(0, state.jets.get(key, 0))
+    limit = item.maximum(key) if target is None else target
+    missing = max(1, limit - current)
+    gains = STATS[key].gains
+    tier = next((index for index, gain in enumerate(gains) if current < 20 * gain),
+                len(gains) - 1)
+    while tier and gains[tier] > missing:
+        tier -= 1
+    return Rune(key, tier)
+
+
+def estimated_rates(item: Item, state: State, rune: Rune) -> Rates:
+    """Modele de jeu local v2. Coefficients de conception, non mesures sur Ankama."""
+    current = max(0, state.jets.get(rune.stat, 0))
+    maximum = max(0, item.maximum(rune.stat))
+    target = current + rune.gain
+    natural_weight = sum(
+        (max(0, high) * STATS[key].weight for key, (_, high) in item.bounds.items()), D(0)
+    )
+    current_weight = sum(
+        (min(maximum_value, max(0, state.jets.get(key, 0))) * STATS[key].weight
+         for key, (_, maximum_value) in item.bounds.items() if maximum_value > 0), D(0)
+    )
+    pressure = float(current_weight / natural_weight) if natural_weight else 0.0
+    undersized = min(1.0, max(0.0, current / (20 * rune.gain) - 1))
+    if rune.stat not in item.bounds:
+        success = .45 * math.exp(-float(rune.weight) / 35)
+        success *= 1 - .65 * min(1.0, float(surplus(item, state.jets) / 101))
+        success *= 1 - .35 * pressure
+        critical_share = .4
+        kind = "exo léger"
+    elif target > maximum:
+        over = float((target - maximum) * STATS[rune.stat].weight / 101)
+        success = .55 * max(.02, 1 - over) * (1 - .45 * undersized)
+        critical_share = .35
+        kind = "over"
+    else:
+        fill = current / maximum if maximum else 0.0
+        success = .97 - .22 * fill - .12 * pressure - .4 * undersized
+        critical_share = .55 + .3 * (1 - fill)
+        kind = "remontage"
+    success = round(min(.98, max(.01, success)), 6)
+    sc = round(success * critical_share, 6)
+    sn = round(max(0, success - sc), 6)
+    return Rates(sc, sn, f"estimation pédagogique v2 · {kind} · non calibrée sur le serveur")
+
+
 def rates_for(item: Item, state: State, rune: Rune, custom: Rates | None) -> Rates:
     if fixed_exo(item, state, rune):
         return Rates(.01, 0, "hypothèse communautaire exo PA/PM/PO : 1 % SC")
-    if custom is None:
-        raise ValueError(
-            "Taux serveur non disponibles pour ce remontage/over/exo léger. "
-            "Renseignez des taux SC/SN de bac à sable, ou consignez un résultat observé."
-        )
-    return custom
+    return custom if custom is not None else estimated_rates(item, state, rune)
+
+
+def simulation_blocker(item: Item, state: State, rune: Rune) -> str:
+    if not item.automatic or any(value < 0 for value in state.jets.values()):
+        return "Effet non interprété ou malus : simulation bloquée, suivi manuel disponible."
+    if state.sink is None:
+        return "Déclarez un puits de départ dans « Modifier le jet » (0 pour un scénario neuf)."
+    allowed, explanation = eligibility(item, state, rune)
+    return "" if allowed else explanation
 
 
 def _take_loss(jets: dict[str, int], key: str, units: int, losses: dict[str, int]) -> Decimal:
@@ -255,11 +312,15 @@ def allocate_loss(
     item: Item, jets: dict[str, int], sink: Decimal, cost: Decimal,
     target: str, rng: random.Random,
 ) -> tuple[Decimal, dict[str, int], Decimal]:
-    """Heuristique : surplus tiers, puits, puis lignes positives tirees uniformement."""
+    """Surplus tiers, puits, puis lignes positives, y compris la ligne travaillee.
+
+    La selection uniforme reste une convention locale. Les pertes sont calculees
+    avant l'ajout du gain : un SN peut perdre des points deja presents sur sa ligne.
+    """
     losses: dict[str, int] = {}
     debt = cost
     extras = [
-        key for key, value in jets.items()
+        key for key, value in sorted(jets.items())
         if key != target and value > max(0, item.maximum(key))
     ]
     rng.shuffle(extras)
@@ -275,7 +336,7 @@ def allocate_loss(
     sink -= consumed
     debt -= consumed
     while debt > 0:
-        candidates = [key for key, value in jets.items() if value > 0 and key != target]
+        candidates = [key for key, value in sorted(jets.items()) if value > 0]
         if not candidates:
             break
         key = rng.choice(candidates)
@@ -284,17 +345,28 @@ def allocate_loss(
     return sink + max(D(0), -debt), losses, max(D(0), debt)
 
 
+def weight_text(value: Decimal) -> str:
+    return format(value.normalize(), "f") if value else "0"
+
+
 def _record(
     state: State, rune: Rune, outcome: str, before: Decimal | None,
     losses: dict[str, int], price: int, mode: str, deficit: Decimal = D(0),
+    jets_before: dict[str, int] | None = None, rates: Rates | None = None,
 ) -> dict:
+    initial = jets_before if jets_before is not None else state.jets
+    touched = sorted({rune.stat, *losses})
     record = {
         "n": state.sequence + 1, "mode": mode, "rune": rune.name,
-        "stat": rune.stat, "gain": rune.gain, "weight": str(rune.weight),
+        "stat": rune.stat, "gain": rune.gain, "weight": weight_text(rune.weight),
         "outcome": outcome, "losses": losses,
-        "sink_before": None if before is None else str(before),
-        "sink_after": None if state.sink is None else str(state.sink),
-        "price": price, "unexplained_weight": str(deficit),
+        "sink_before": None if before is None else weight_text(before),
+        "sink_after": None if state.sink is None else weight_text(state.sink),
+        "price": price, "unexplained_weight": weight_text(deficit),
+        "applied_gain": rune.gain if outcome in {"SC", "SN"} else 0,
+        "changes": {key: [initial.get(key, 0), state.jets.get(key, 0)] for key in touched},
+        "rates": None if rates is None else {"sc": rates.sc, "sn": rates.sn, "source": rates.source},
+        "profile": PROFILE,
     }
     state.sequence += 1
     state.attempts += 1
@@ -309,50 +381,55 @@ def attempt(
     item: Item, state: State, rune: Rune, custom: Rates | None,
     seed: int, price: int = 0,
 ) -> dict:
+    """Valide et calcule sur une copie ; aucune mutation partielle en cas d'erreur."""
     state.validate()
     integer(seed, 0, 2**64 - 1, "Graine")
     integer(price, 0, 10**12, "Prix")
     if state.attempts >= 10**9 or state.sequence >= 10**9 or state.spent + price > 10**18:
         raise ValueError("Limite de session atteinte : exportez et ouvrez une nouvelle session.")
-    if not item.automatic or any(value < 0 for value in state.jets.values()):
-        raise ValueError("Effet non interprété ou malus : atelier automatique bloqué, suivi manuel disponible.")
-    if state.sink is None:
-        raise ValueError("Déclarez un puits de départ pour cette simulation.")
-    allowed, explanation = eligibility(item, state, rune)
-    if not allowed:
-        raise ValueError(explanation)
+    reason = simulation_blocker(item, state, rune)
+    if reason:
+        raise ValueError(reason)
     rates = rates_for(item, state, rune, custom)
     rng = random.Random(f"{PROFILE}:{seed}:{state.sequence}")
     draw = rng.random()
     outcome = "SC" if draw < rates.sc else "SN" if draw < rates.sc + rates.sn else "EC"
-    before = state.sink
+    before, jets_before = state.sink, dict(state.jets)
+    jets = dict(state.jets)
+    sink = state.sink
     losses: dict[str, int] = {}
     deficit = D(0)
-    if outcome in {"SC", "SN"}:
-        state.jets[rune.stat] = state.jets.get(rune.stat, 0) + rune.gain
     if outcome != "SC":
-        state.sink, losses, deficit = allocate_loss(
-            item, state.jets, state.sink, rune.weight, rune.stat, rng,
+        sink, losses, deficit = allocate_loss(
+            item, jets, sink, rune.weight, rune.stat, rng,
         )
-    return _record(state, rune, outcome, before, losses, price, "simulation", deficit)
+    if outcome in {"SC", "SN"}:
+        jets[rune.stat] = jets.get(rune.stat, 0) + rune.gain
+    candidate = State(jets, sink)
+    candidate.validate()
+    state.jets, state.sink = jets, sink
+    return _record(
+        state, rune, outcome, before, losses, price, "simulation", deficit, jets_before, rates,
+    )
 
 
 def observe(
     item: Item, state: State, rune: Rune, outcome: str, losses: dict[str, int],
     price: int = 0,
 ) -> dict:
-    """Consigne une observation, sans tirer ni inventer de pertes ou de probabilites."""
+    """Consigne les changements declares, sans inventer un puits manquant."""
     state.validate()
     integer(price, 0, 10**12, "Prix")
     if state.attempts >= 10**9 or state.sequence >= 10**9 or state.spent + price > 10**18:
         raise ValueError("Limite de session atteinte : exportez et ouvrez une nouvelle session.")
-    outcome = outcome.upper()
-    if outcome not in {"SC", "SN", "EC"}:
+    if not isinstance(outcome, str) or outcome.upper() not in {"SC", "SN", "EC"}:
         raise ValueError("Résultat attendu : SC, SN ou EC.")
+    outcome = outcome.upper()
     if not isinstance(losses, dict) or len(losses) > len(STATS):
         raise ValueError("Pertes invalides.")
     if outcome == "SC" and any(losses.values()):
         raise ValueError("Un SC ne comporte pas de pertes ; vérifiez le résultat.")
+    jets_before = dict(state.jets)
     jets = dict(state.jets)
     if outcome in {"SC", "SN"}:
         jets[rune.stat] = jets.get(rune.stat, 0) + rune.gain
@@ -360,23 +437,23 @@ def observe(
     for key, amount in losses.items():
         if key not in STATS:
             raise ValueError("Perte sur une caractéristique inconnue.")
-        integer(amount, 0, max(0, jets.get(key, 0)), "Perte")
-        if amount and state.jets.get(key, 0) < 0:
-            raise ValueError("Calcul des malus non couvert par ce profil.")
+        malus = item.bounds.get(key, (0, 0))[0] < 0 or jets.get(key, 0) < 0
+        integer(amount, 0, 10000 if malus else max(0, jets.get(key, 0)), "Perte")
         jets[key] = jets.get(key, 0) - amount
         lost += amount * STATS[key].weight
-    if any(not -10000 <= value <= 10000 for value in jets.values()):
-        raise ValueError("Jet résultant hors limite.")
-    before = state.sink
+    before, sink = state.sink, state.sink
     deficit = D(0)
     if not item.automatic or any(value < 0 for value in jets.values()):
-        state.sink = None
-    if outcome != "SC" and state.sink is not None:
-        net = state.sink + lost - rune.weight
+        sink = None
+    if outcome != "SC" and sink is not None:
+        net = sink + lost - rune.weight
         deficit = max(D(0), -net)
-        state.sink = max(D(0), net)
-    state.jets = jets
-    return _record(state, rune, outcome, before, dict(losses), price, "observation", deficit)
+        sink = None if deficit else net
+    State(jets, sink).validate()
+    state.jets, state.sink = jets, sink
+    return _record(
+        state, rune, outcome, before, dict(losses), price, "observation", deficit, jets_before,
+    )
 
 
 def risk(

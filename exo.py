@@ -6,6 +6,7 @@ import asyncio
 import copy
 from io import BytesIO
 import logging
+import secrets
 import time
 
 import discord
@@ -17,8 +18,10 @@ from utils.exo_data import demo_item, from_detail, is_mageable
 from utils.exo_embeds import build_embed, number, percent
 from utils.exo_engine import (
     D, Rates, Rune, STATS, State, attempt, decimal_value, observe,
-    parse_jets, risk, stat_key,
+    parse_jets, recommended_rune, risk, simulation_blocker, stat_key,
 )
+from utils.exo_feedback import batch_text, result_lines
+from utils.exo_workshop import reset_simulation, set_goals, simulate_batch
 from utils.exo_math import Budget, integer, run_campaigns, success_within
 from utils.exo_session import EXPORT_LIMIT, Session, export_session, import_session
 from utils.wiki_embeds import display_text, truncate_text
@@ -32,6 +35,7 @@ TABS = (
     ("maths", "Probabilités et budget", "📊"),
     ("journal", "Historique du mode courant", "📜"),
     ("aide", "Guide, limites et sources", "📖"),
+    ("settings", "Réglages et nouveau jet", "⚙️"),
     ("search", "Rechercher un autre objet", "🔎"),
 )
 
@@ -64,7 +68,7 @@ class ActionButton(discord.ui.Button):
         self.action = action
 
     async def callback(self, interaction: discord.Interaction):
-        await self.view.dispatch(interaction, self.action)
+        await self.view.dispatch(interaction, self.action, revision=self.revision)
 
 
 class ChoiceSelect(discord.ui.Select):
@@ -75,7 +79,7 @@ class ChoiceSelect(discord.ui.Select):
         self.action = action
 
     async def callback(self, interaction: discord.Interaction):
-        await self.view.dispatch(interaction, self.action, self.values[0])
+        await self.view.dispatch(interaction, self.action, self.values[0], revision=self.revision)
 
 
 class ExoModal(discord.ui.Modal):
@@ -83,7 +87,8 @@ class ExoModal(discord.ui.Modal):
 
     def __init__(self, view, kind: str):
         titles = {
-            "jets": "Jet, objectif et puits nominal", "rates": "Hypothèses de cette rune",
+            "jets": "Modifier le jet de départ", "rates": "Taux et prix de cette rune",
+            "goals": "Objectifs et qualité de l'objet",
             "observe": "Consigner un résultat en jeu", "math": "Calcul probabiliste",
             "budget": "Budget exo (kamas)", "search": "Rechercher un objet mageable",
         }
@@ -92,18 +97,26 @@ class ExoModal(discord.ui.Modal):
         self.inputs: dict[str, discord.ui.TextInput] = {}
         s = view.session
         self.rune_key = s.rune_key
-        if kind == "jets":
+        if kind == "goals":
+            self.add_input(
+                "goals", "Minimums (objectif principal en premier)",
+                "; ".join(f"{key}={value}" for key, value in s.requirements.items()),
+                paragraph=True, maximum=1800,
+            )
+        elif kind == "jets":
             self.add_input(
                 "jets", "Jet complet (clés du panneau, ex. pa=1)",
                 "; ".join(f"{key}={value}" for key, value in s.state.jets.items()),
                 paragraph=True, maximum=1800,
             )
             self.add_input("sink", "Puits nominal de départ (? = inconnu)", "?" if s.state.sink is None else str(s.state.sink), maximum=20)
-            self.add_input("goal", "Objectif (exemple pm=1 ou vi=250)", f"{s.goal_stat}={s.goal_value}", maximum=80)
+            self.add_input("goal", "Objectifs minimums (ex. pm=1 ; pa=1)",
+                           "; ".join(f"{key}={value}" for key, value in s.requirements.items()),
+                           maximum=1800, paragraph=True)
             self.add_input("seed", "Graine de simulation (entier)", str(s.seed), maximum=20)
         elif kind == "rates":
-            self.add_input("sc", "SC % personnalisé (vide = non défini)", "" if s.rates is None else format(s.rates.sc * 100, ".2f"), required=False, maximum=8)
-            self.add_input("sn", "SN % personnalisé (vide = non défini)", "" if s.rates is None else format(s.rates.sn * 100, ".2f"), required=False, maximum=8)
+            self.add_input("sc", "SC % forcé (vide = automatique)", "" if s.rates is None else format(s.rates.sc * 100, ".2f"), required=False, maximum=8)
+            self.add_input("sn", "SN % forcé (vide = automatique)", "" if s.rates is None else format(s.rates.sn * 100, ".2f"), required=False, maximum=8)
             self.add_input("price", f"Prix unitaire : {s.rune.name}"[:45], str(s.price), maximum=20)
         elif kind == "observe":
             self.add_input("outcome", "Résultat : SC / SN / EC", "EC", maximum=2)
@@ -159,26 +172,28 @@ class ExoModal(discord.ui.Modal):
                     candidate = copy.deepcopy(self.panel.session)
                     self.apply(candidate, values)
                     await self.panel.commit(interaction, candidate, undo=True)
-            except (ValueError, WikiError) as exc:
+            except (ValueError, WikiError, TimeoutError) as exc:
                 await private_message(interaction, str(exc))
                 log.debug("exo: modal_rejected kind=%s reason=%s", self.kind, exc)
 
     def apply(self, session: Session, values: dict[str, str]) -> None:
-        if self.kind == "jets":
+        if self.kind == "goals":
+            set_goals(session, values["goals"])
+            session.notice = (
+                "Objectifs enregistrés sans changer les jets ni les compteurs. "
+                "L'objet est terminé seulement lorsque tous ces minimums sont atteints."
+            )
+        elif self.kind == "jets":
             jets = parse_jets(values["jets"])
             if not jets:
                 raise ValueError("Indiquez au moins une ligne ; les lignes omises seront à zéro.")
-            goal = parse_jets(values["goal"])
-            if len(goal) != 1:
-                raise ValueError("Indiquez exactement un objectif, par exemple pm=1.")
-            key, value = next(iter(goal.items()))
-            integer(value, 1, 10000, "Objectif")
             state = State(
                 {**{key: 0 for key in session.item.bounds}, **jets},
                 None if values["sink"] == "?" else decimal_value(values["sink"]),
             )
             state.validate()
             seed = whole(values["seed"], 0, 2**64 - 1, "Graine")
+            set_goals(session, values["goal"])
             changed = state.sink != session.state.sink or any(
                 state.jets.get(stat, 0) != session.state.jets.get(stat, 0) for stat in STATS
             )
@@ -189,7 +204,9 @@ class ExoModal(discord.ui.Modal):
                     session.observed = state
             if session.mode == "observation":
                 session.observation_ready = True
-            session.goal_stat, session.goal_value = key, value
+            if changed:
+                session.last_changes = {}
+                session.journal_page = 0
             session.seed = seed
             session.notice = (
                 "Jet ou puits modifié. Compteurs et historique du mode courant remis à zéro ; "
@@ -209,8 +226,8 @@ class ExoModal(discord.ui.Modal):
                 session.custom[session.rune_key] = Rates(percentage(values["sc"]), percentage(values["sn"]))
             session.prices[session.rune_key] = whole(values["price"], 0, 10**12, "Prix")
             session.notice = (
-                "Hypothèses enregistrées pour cette rune uniquement. Le preset exo PA/PM/PO reste à 1 % ; "
-                "pour comparer d'autres taux, utilisez l'onglet probabilités."
+                "Prix et taux enregistrés pour cette rune uniquement. Champs vides : modèle automatique "
+                "estimatif. Le preset exo PA/PM/PO reste à 1 % ; les taux forcés ne le remplacent pas."
             )
         elif self.kind == "observe":
             if session.mode != "observation" or not session.observation_ready:
@@ -221,6 +238,8 @@ class ExoModal(discord.ui.Modal):
             result = observe(
                 session.item, session.observed, session.rune, values["outcome"], losses, session.price,
             )
+            session.last_changes = result["changes"]
+            session.journal_page = 0
             session.notice = self.panel.result_text(result, "Observation enregistrée")
         elif self.kind == "math":
             session.p = percentage(values["p"])
@@ -250,6 +269,7 @@ class ExoView(discord.ui.View):
         self.session, self.image = session, image
         self.lock = asyncio.Lock()
         self.message = None
+        self.published_image = None
         self.modals = set()
         self.undo_session = None
         self.retired = False
@@ -304,19 +324,66 @@ class ExoView(discord.ui.View):
         return not (self.retired or self.is_finished() or self.cog.closed
                     or time.monotonic() - self.created >= 840)
 
-    async def on_timeout(self):
+    async def finish(self, reason: str, interaction=None):
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        editor = interaction.edit_original_response if interaction is not None else (
+            self.message.edit if self.message is not None else None
+        )
+        if editor is None:
+            return
+        embed = discord.Embed(
+            title=reason,
+            description=(
+                "La sauvegarde JSON jointe permet de reprendre avec **/exo reprise:**. "
+                "Les jets, les objectifs, les prix et les deux journaux sont conservés."
+            ),
+            color=0x607D8B,
+        )
+        stream = None
+        file = None
+        try:
+            stream = BytesIO(export_session(self.session))
+            file = discord.File(stream, filename="exo-retro-session.json")
+            await editor(
+                embed=embed, attachments=[file], view=self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            log.debug("exo: archived owner=%s reason=%s", self.owner_id, reason)
+        except (ValueError, discord.HTTPException):
+            log.debug("exo: archive_unavailable owner=%s", self.owner_id, exc_info=True)
+            embed.description = (
+                "Atelier fermé. La sauvegarde n'a pas pu être jointe à ce message. "
+                "Seuls les exports déjà récupérés permettent une reprise."
+            )
+            try:
+                await editor(embed=embed, view=self)
+            except discord.HTTPException:
+                log.debug("exo: closed_message_unavailable", exc_info=True)
+        finally:
+            if file is not None:
+                file.close()
+            if stream is not None:
+                stream.close()
+
+    async def on_timeout(self, reason="Atelier expiré · sauvegarde de session"):
         async with self.lock:
-            self.stop()
-            for child in self.children:
-                child.disabled = True
-            if self.message:
-                try:
-                    await self.message.edit(view=self)
-                except discord.HTTPException:
-                    log.debug("exo: timeout_message_unavailable", exc_info=True)
+            if not self.retired:
+                await self.finish(reason)
+
+    def add_item(self, item):
+        if isinstance(item, (ActionButton, ChoiceSelect)):
+            item.revision = self.session.revision
+            item.custom_id = f"exo:{item.action}:{item.revision}"
+        return super().add_item(item)
 
     def add_button(self, label, action, row=3, style=discord.ButtonStyle.secondary, disabled=False):
         self.add_item(ActionButton(label, action, row, style, disabled))
+
+    def stat_keys(self):
+        s = self.session
+        return list(dict.fromkeys([*s.item.bounds, s.goal_stat, *s.state.jets, *STATS]))
 
     def rebuild(self):
         self._rebuild()
@@ -330,62 +397,100 @@ class ExoView(discord.ui.View):
         self.add_item(ChoiceSelect(
             "tab", [discord.SelectOption(label=label, value=key, emoji=emoji, default=key == s.tab)
                     for key, label, emoji in TABS],
-            "Choisir un écran", 0,
+            "Atelier, historique, réglages ou aide", 0,
         ))
         if self.search_entries:
             page = self.search_entries[self.search_page * 25:(self.search_page + 1) * 25]
             self.add_item(ChoiceSelect(
                 "item", [discord.SelectOption(label=truncate_text(entry.label, 100), value=str(index))
                          for index, entry in enumerate(page, self.search_page * 25)],
-                "Choisir explicitement un objet", 1,
+                "Choisir un objet", 1,
             ))
             self.add_button("Précédent", "previous", disabled=self.search_page == 0)
             self.add_button("Suivant", "next", disabled=(self.search_page + 1) * 25 >= len(self.search_entries))
             self.add_button("Retour atelier", "cancel_search")
+            self.add_button("Exporter l'atelier", "export", 4)
             return
         if s.tab == "maths":
             self.add_button("Paramètres / taux", "math", style=discord.ButtonStyle.primary)
             self.add_button("Prix / budget", "budget")
             self.add_button("Simuler les campagnes", "campaign", style=discord.ButtonStyle.success)
-            self.add_button("Exporter JSON", "export", 4)
-            self.add_button("Annuler dernière action", "undo", 4, disabled=self.undo_session is None)
-            self.add_button("Fermer", "close", 4)
-            return
-        if s.tab in {"aide", "journal"}:
-            self.add_button("Exporter JSON", "export")
-            self.add_button("Basculer simulation / suivi", "mode")
-            self.add_button("Annuler dernière action", "undo", disabled=self.undo_session is None)
-            self.add_button("Fermer", "close")
-            return
-        keys = list(STATS)
-        chunk = keys[self.page * 24:(self.page + 1) * 24]
-        options = [
-            discord.SelectOption(label=STATS[key].name, value=key, default=key == s.rune.stat)
-            for key in chunk
-        ]
-        options.append(discord.SelectOption(label="Autres caractéristiques →", value="__page"))
-        self.add_item(ChoiceSelect("stat", options, f"Caractéristique : {STATS[s.rune.stat].name}", 1))
-        self.add_item(ChoiceSelect(
-            "rune", [
-                discord.SelectOption(
-                    label=f"{Rune(s.rune.stat, tier).name} · +{gain} · poids {Rune(s.rune.stat, tier).weight}",
-                    value=str(tier), default=tier == s.rune.tier,
+        elif s.tab == "settings":
+            if s.mode == "simulation":
+                self.add_item(ChoiceSelect(
+                    "preset", [
+                        discord.SelectOption(label="Nouveau jet aléatoire", value="random"),
+                        discord.SelectOption(label="Nouveau jet minimum", value="minimum"),
+                        discord.SelectOption(label="Nouveau jet parfait", value="perfect"),
+                    ], "Recommencer la simulation (annulable)", 1,
+                ))
+            self.add_button("Taux / prix rune", "rates")
+            self.add_button("Modifier le jet", "jets")
+            self.add_button("Objectifs", "goals")
+            self.add_button("Risque estimatif", "risk", disabled=s.mode != "simulation")
+            self.add_button("Simulation ↔ suivi", "mode")
+        elif s.tab == "journal":
+            self.add_button(
+                "← Plus ancien", "older",
+                disabled=s.journal_page >= max(0, len(s.state.journal) - 1),
+            )
+            self.add_button("Plus récent →", "newer", disabled=s.journal_page == 0)
+            self.add_button("Dernier essai", "latest", disabled=s.journal_page == 0)
+            self.add_button("Simulation ↔ suivi", "mode")
+        elif s.tab == "aide":
+            self.add_button("Retour atelier", "workshop", style=discord.ButtonStyle.primary)
+            self.add_button("Simulation ↔ suivi", "mode")
+        else:
+            keys = self.stat_keys()
+            chunk = keys[self.page * 24:(self.page + 1) * 24]
+            options = []
+            for key in chunk:
+                current = s.state.jets.get(key, 0)
+                native = key in s.item.bounds
+                label = f"{STATS[key].name} · {current}"
+                description = (
+                    f"Naturel : {s.item.bounds[key][0]} à {s.item.maximum(key)}"
+                    if native else "Caractéristique exotique, absente de l'objet naturel"
                 )
-                for tier, gain in enumerate(STATS[s.rune.stat].gains)
-            ],
-            "Taille de rune", 2,
-        ))
-        active = s.mode == "simulation"
-        self.add_button("Passer ×1", "one", style=discord.ButtonStyle.success, disabled=not active)
-        self.add_button("×10", "ten", disabled=not active)
-        self.add_button("×100", "hundred", disabled=not active)
-        self.add_button("Risque du modèle", "risk", disabled=not active)
-        self.add_button("Jet / objectif", "jets")
-        self.add_button("Taux / prix rune", "rates", 4)
-        self.add_button("Noter un résultat", "observe", 4, disabled=active)
-        self.add_button("Mode : simu ↔ suivi", "mode", 4)
+                options.append(discord.SelectOption(
+                    label=label, value=key, description=description, default=key == s.rune.stat,
+                ))
+            options.append(discord.SelectOption(label="Autres caractéristiques →", value="__page"))
+            self.add_item(ChoiceSelect(
+                "stat", options, f"Travailler : {STATS[s.rune.stat].name}", 1,
+            ))
+            recommended = recommended_rune(s.item, s.state, s.rune.stat, s.rune_target)
+            self.add_item(ChoiceSelect(
+                "rune", [
+                    discord.SelectOption(
+                        label=f"{Rune(s.rune.stat, tier).name} · +{gain} · poids {Rune(s.rune.stat, tier).weight}",
+                        description="Taille conseillée pour ce jet" if tier == recommended.tier else "Autre taille",
+                        value=str(tier), default=tier == s.rune.tier,
+                    )
+                    for tier, gain in enumerate(STATS[s.rune.stat].gains)
+                ],
+                "Choisir la rune à poser", 2,
+            ))
+            active = s.mode == "simulation"
+            blocked = bool(simulation_blocker(s.item, s.state, s.rune)) if active else True
+            unsafe_batch = s.state.jets.get(s.rune.stat, 0) + s.rune.gain > s.rune_target
+            if active:
+                self.add_button("Poser ×1", "one", style=discord.ButtonStyle.success, disabled=blocked)
+                self.add_button("×10 sans dépasser", "ten", disabled=blocked or unsafe_batch)
+                self.add_button("×100 sans dépasser", "hundred", disabled=blocked or unsafe_batch)
+                self.add_button("Rune conseillée", "recommend")
+            else:
+                self.add_button(
+                    "Noter un résultat", "observe", style=discord.ButtonStyle.success,
+                    disabled=not s.observation_ready,
+                )
+                self.add_button("Passer en simulation", "mode")
+            self.add_button("Objectifs", "goals")
+            self.add_button("Modifier le jet", "jets", 4)
+            self.add_button("Réglages", "settings", 4)
         self.add_button("Annuler", "undo", 4, disabled=self.undo_session is None)
         self.add_button("Exporter", "export", 4)
+        self.add_button("Fermer et sauvegarder", "close", 4)
 
     def embed(self):
         if self.search_entries:
@@ -420,7 +525,15 @@ class ExoView(discord.ui.View):
         self.require_active()
         image = None if self.search_entries else self.image
         kwargs = {"embed": embed, "view": self, "allowed_mentions": discord.AllowedMentions.none()}
-        if image is not None:
+        retained = [
+            attachment for attachment in getattr(self.message, "attachments", ())
+            if attachment.filename == "exo-objet.png"
+        ]
+        if image is not None and self.published_image is image and retained:
+            embed.set_thumbnail(url="attachment://exo-objet.png")
+            kwargs["attachments"] = retained
+            message = await interaction.edit_original_response(**kwargs)
+        elif image is not None:
             stream = BytesIO(image.data)
             file = discord.File(stream, filename="exo-objet.png")
             embed.set_thumbnail(url="attachment://exo-objet.png")
@@ -440,6 +553,7 @@ class ExoView(discord.ui.View):
             message = await interaction.edit_original_response(**kwargs)
         if message is not None:
             self.message = message
+            self.published_image = image
         return message
 
     async def commit(self, interaction, candidate: Session, *, undo=False):
@@ -450,8 +564,8 @@ class ExoView(discord.ui.View):
         self.session = candidate
         if undo:
             self.undo_session = copy.deepcopy(previous)
-        self.rebuild()
         try:
+            self.rebuild()
             await self.publish(interaction)
         except (Exception, asyncio.CancelledError):
             self.session, self.undo_session = previous, old_undo
@@ -461,17 +575,29 @@ class ExoView(discord.ui.View):
 
     @staticmethod
     def result_text(row, prefix="Tentative"):
-        lost = ", ".join(f"{STATS[key].name} −{value}" for key, value in row["losses"].items() if value) or "aucune"
-        text = (
-            f"{prefix} : **{row['outcome']}** · {row['rune']}\n"
-            f"Pertes : {lost} · puits nominal {row['sink_before']} → {row['sink_after']}."
-        )
-        if D(row["unexplained_weight"]) > 0:
-            text += (
-                f"\n⚠ Poids non compensé {row['unexplained_weight']} : le modèle ne reproduit pas "
-                "la résolution serveur de cette situation."
+        return prefix + "\n" + "\n".join(result_lines(row, detailed=False))
+
+    async def send_export(self, interaction, caption="Sauvegarde personnelle : /exo reprise:<ce fichier>."):
+        stream = BytesIO(export_session(self.session))
+        file = discord.File(stream, filename="exo-retro-session.json")
+        try:
+            await interaction.followup.send(
+                caption, file=file, ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
             )
-        return text
+        finally:
+            file.close()
+            stream.close()
+        log.debug("exo: exported owner=%s", self.owner_id)
+
+    async def check_revision(self, interaction, revision):
+        if revision is not None and revision != self.session.revision:
+            await private_message(
+                interaction,
+                "Le panneau a été actualisé. Aucun essai supplémentaire n'a été lancé ; "
+                "utilisez les boutons du dernier état affiché.",
+            )
+            return False
+        return True
 
     async def search(self, interaction, query):
         if not query.strip():
@@ -484,8 +610,8 @@ class ExoView(discord.ui.View):
         self.search_entries, self.search_page = found, 0
         self.search_label = ("Suggestions approchantes — à vérifier" if fuzzy else "Résultats") + f" pour « {query} »"
         self.session.revision += 1
-        self.rebuild()
         try:
+            self.rebuild()
             await self.publish(interaction)
         except (Exception, asyncio.CancelledError):
             self.search_entries, self.search_page, self.search_label = old
@@ -493,11 +619,11 @@ class ExoView(discord.ui.View):
             self.rebuild()
             raise
 
-    async def dispatch(self, interaction, action, value=None):
+    async def dispatch(self, interaction, action, value=None, *, revision=None):
         if not await self.interaction_check(interaction):
             return
         modal_action = "search" if action == "tab" and value == "search" else action
-        if modal_action in {"jets", "rates", "observe", "math", "budget", "search"}:
+        if modal_action in {"jets", "goals", "rates", "observe", "math", "budget", "search"}:
             if self.lock.locked():
                 await self.report_busy(interaction, modal_action)
                 return
@@ -508,7 +634,7 @@ class ExoView(discord.ui.View):
                 await self.report_busy(interaction, modal_action)
                 return
             try:
-                if not await self.ensure_active(interaction):
+                if not await self.ensure_active(interaction) or not await self.check_revision(interaction, revision):
                     return
                 for previous_modal in list(self.modals):
                     previous_modal.stop()
@@ -525,11 +651,11 @@ class ExoView(discord.ui.View):
             return
         await interaction.response.defer()
         async with self.lock:
-            if not await self.ensure_active(interaction):
+            if not await self.ensure_active(interaction) or not await self.check_revision(interaction, revision):
                 return
             try:
                 await self.handle(interaction, action, value)
-            except (ValueError, WikiError) as exc:
+            except (ValueError, WikiError, TimeoutError) as exc:
                 log.debug("exo: action_rejected action=%s reason=%s", action, exc)
                 await private_message(interaction, str(exc))
 
@@ -540,35 +666,25 @@ class ExoView(discord.ui.View):
     async def handle(self, interaction, action, value):
         s = copy.deepcopy(self.session)
         if action == "export":
-            data = export_session(s)
-            stream = BytesIO(data)
-            file = discord.File(stream, filename="exo-retro-session.json")
-            try:
-                await interaction.followup.send(
-                    "Sauvegarde personnelle : /exo reprise:<ce fichier>. Les jets restent déclaratifs.",
-                    file=file, ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
-                )
-            finally:
-                file.close()
-                stream.close()
-            log.debug("exo: exported owner=%s size=%s", self.owner_id, len(data))
+            await self.send_export(interaction)
             return
         if action == "close":
-            for child in self.children:
-                child.disabled = True
-            await interaction.edit_original_response(view=self)
-            self.stop()
+            await self.finish("Atelier fermé · sauvegarde de session", interaction)
             return
         if action == "item":
             index = whole(value, 0, max(0, len(self.search_entries) - 1), "Objet")
             item, image = await self.cog.load_item(self.search_entries[index])
+            if s.sim.attempts or s.observed.attempts or s.observation_ready or s.sim.jets != State.initial(s.item).jets:
+                await self.send_export(interaction, "Ancien atelier sauvegardé avant le changement d'objet.")
             old_image, old_entries = self.image, self.search_entries
             old_page = self.page
             self.image, self.search_entries, self.page = image, [], 0
             previous_undo = self.undo_session
             self.undo_session = None
             try:
-                await self.commit(interaction, Session.create(item, self.session.goal_stat))
+                await self.commit(interaction, Session.create(
+                    item, self.session.goal_stat if self.session.goal_stat not in item.bounds else None,
+                ))
             except (Exception, asyncio.CancelledError):
                 self.image, self.search_entries, self.page = old_image, old_entries, old_page
                 self.undo_session = previous_undo
@@ -607,7 +723,7 @@ class ExoView(discord.ui.View):
         if action == "stat":
             if value == "__page":
                 old_page = self.page
-                self.page = (self.page + 1) % ((len(STATS) + 23) // 24)
+                self.page = (self.page + 1) % ((len(self.stat_keys()) + 23) // 24)
                 try:
                     await self.commit(interaction, s)
                 except (Exception, asyncio.CancelledError):
@@ -616,12 +732,30 @@ class ExoView(discord.ui.View):
                     raise
                 return
             s.rune = Rune(stat_key(value))
+            s.rune = recommended_rune(s.item, s.state, s.rune.stat, s.rune_target)
+            s.notice = "Rune proposée selon le jet ; vous pouvez choisir une autre taille."
+        elif action == "recommend":
+            s.rune = recommended_rune(s.item, s.state, s.rune.stat, s.rune_target)
+            s.notice = "Taille conseillée sélectionnée. Ce conseil ne garantit pas le rendement en jeu."
+        elif action in {"settings", "workshop"}:
+            s.tab = "settings" if action == "settings" else "atelier"
             s.notice = ""
+        elif action in {"older", "newer", "latest"}:
+            offset = 1 if action == "older" else -1
+            s.journal_page = 0 if action == "latest" else max(
+                0, min(max(0, len(s.state.journal) - 1), s.journal_page + offset),
+            )
+            s.notice = ""
+        elif action == "preset":
+            reset_simulation(s, value, secrets.randbits(64))
+            s.tab = "atelier"
         elif action == "rune":
             s.rune = Rune(s.rune.stat, whole(value, 0, 2, "Taille"))
             s.notice = ""
         elif action == "mode":
             s.mode = "observation" if s.mode == "simulation" else "simulation"
+            s.journal_page = 0
+            s.last_changes = {}
             s.notice = "Les jets, tentatives et dépenses de chaque mode sont conservés séparément."
         elif action == "undo":
             if self.undo_session is None:
@@ -638,23 +772,12 @@ class ExoView(discord.ui.View):
                 raise
             return
         elif action in {"one", "ten", "hundred"}:
-            if s.mode != "simulation":
-                raise ValueError("Les tirages sont désactivés dans le suivi réel.")
-            count = {"one": 1, "ten": 10, "hundred": 100}[action]
-            if count > 1 and s.reached:
-                raise ValueError("Objectif déjà atteint. Changez-le pour lancer un lot.")
-            last, done = None, 0
-            for _ in range(count):
-                try:
-                    last = attempt(s.item, s.sim, s.rune, s.rates, s.seed, s.price)
-                except ValueError:
-                    if done == 0:
-                        raise
-                    break
-                done += 1
-                if s.reached:
-                    break
-            s.notice = f"Lot : {done}/{count} tentative(s).\n" + self.result_text(last)
+            result = simulate_batch(s, {"one": 1, "ten": 10, "hundred": 100}[action])
+            s.notice = batch_text(result)
+            log.debug(
+                "exo: batch owner=%s attempts=%s stop=%s",
+                self.owner_id, len(result.rows), result.stop_reason,
+            )
         elif action == "risk":
             if s.mode != "simulation":
                 raise ValueError("Risque simulé indisponible dans le suivi d'observations.")
@@ -695,7 +818,7 @@ class ExoView(discord.ui.View):
             raise ValueError("Action inconnue.")
         await self.commit(
             interaction, s,
-            undo=action in {"one", "ten", "hundred"},
+            undo=action in {"one", "ten", "hundred", "preset"},
         )
 
     async def on_error(self, interaction, error, item):
@@ -724,35 +847,28 @@ class ExoCog(commands.Cog):
 
     async def load_item(self, entry):
         wiki = self.wiki()
-        async with asyncio.timeout(25):
+        async with asyncio.timeout(20):
             detail = await wiki.client.detail(entry)
-            try:
-                async with asyncio.timeout(10):
-                    enrichment = await wiki.enrichment_client.enrich(detail) if wiki.enrichment_client else None
-            except (TimeoutError, WikiError, XixouError):
-                enrichment = None
-                log.debug("exo: enrichment_fallback item=%s", entry.token, exc_info=True)
-            item = from_detail(detail, enrichment)
-            try:
+        try:
+            async with asyncio.timeout(8):
+                enrichment = await wiki.enrichment_client.enrich(detail) if wiki.enrichment_client else None
+        except (TimeoutError, WikiError, XixouError):
+            enrichment = None
+            log.debug("exo: enrichment_fallback item=%s", entry.token, exc_info=True)
+        item = from_detail(detail, enrichment)
+        try:
+            async with asyncio.timeout(5):
                 image = await wiki.resolve_item_image(detail, enrichment)
-            except (TimeoutError, WikiError):
-                image = None
-                log.debug("exo: image_unavailable item=%s", entry.token, exc_info=True)
+        except (TimeoutError, WikiError, XixouError):
+            image = None
+            log.debug("exo: image_unavailable item=%s", entry.token, exc_info=True)
         return item, image
 
     async def cog_unload(self):
         self.closed = True
         views = list(self.views.values())
         for view in views:
-            view.stop()
-        for view in views:
-            if view.message:
-                for child in view.children:
-                    child.disabled = True
-                try:
-                    await view.message.edit(view=view)
-                except discord.HTTPException:
-                    log.debug("exo: unload_message_unavailable", exc_info=True)
+            await view.on_timeout("Module rechargé · sauvegarde de session")
         self.open_locks.clear()
         log.debug("exo: unloaded count=%s", len(views))
 
@@ -765,19 +881,19 @@ class ExoCog(commands.Cog):
                 return []
             entries = tuple(entry for entry in cached if is_mageable(entry))
             found, _ = find_entries(entries, current, limit=25)
-            return [app_commands.Choice(name=entry.label, value=entry.token) for entry in found]
+            return [app_commands.Choice(name=truncate_text(entry.label, 100), value=entry.token) for entry in found]
         except (WikiError, ValueError):
             log.debug("exo: autocomplete_unavailable", exc_info=True)
             return []
 
-    @app_commands.command(name="exo", description="Atelier exo Rétro : essais, puits nominal, probabilités, budget et suivi.")
+    @app_commands.command(name="exo", description="Atelier FM Rétro : posez des runes, suivez les jets, le puits et vos objectifs.")
     @app_commands.guild_only()
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.checks.cooldown(2, 15, key=lambda interaction: (interaction.guild_id, interaction.user.id))
     @app_commands.describe(
         objet="Objet mageable, sinon démonstration Gelano sans réseau.",
-        objectif="Caractéristique visée au départ (modifiable dans l'atelier).",
-        reprise="Reprendre un export JSON personnel /exo (128 Kio maximum).",
+        objectif="Exo visé, sinon choix automatique d'un bonus absent de l'objet.",
+        reprise="Reprendre un export JSON personnel /exo (512 Kio maximum).",
     )
     @app_commands.choices(objectif=[
         app_commands.Choice(name="Exo PM", value="pm"),
@@ -786,15 +902,15 @@ class ExoCog(commands.Cog):
     ])
     async def exo(
         self, interaction: discord.Interaction, objet: str | None = None,
-        objectif: str = "pm", reprise: discord.Attachment | None = None,
+        objectif: str | None = None, reprise: discord.Attachment | None = None,
     ):
         await interaction.response.defer(ephemeral=True, thinking=True)
         key = (interaction.guild_id, interaction.user.id)
         if key not in self.views and len(self.views) + len(self.open_locks) >= MAX_SESSIONS:
-            await private_message(interaction, "Tous les ateliers sont occupés. Réessayez après l'expiration d'une session.")
+            await interaction.edit_original_response(content="Tous les ateliers sont occupés. Réessayez après l'expiration d'une session.")
             return
         if key in self.open_locks:
-            await private_message(interaction, "Une ouverture d'atelier est déjà en cours pour vous.")
+            await interaction.edit_original_response(content="Une ouverture d'atelier est déjà en cours pour vous.")
             return
         self.open_locks[key] = asyncio.Lock()
         new_view = None
@@ -804,15 +920,16 @@ class ExoCog(commands.Cog):
             entries, label, image = [], "", None
             if reprise is not None:
                 if reprise.size > EXPORT_LIMIT or not reprise.filename.lower().endswith(".json"):
-                    raise ValueError("La reprise attend un fichier .json de 128 Kio maximum.")
+                    raise ValueError("La reprise attend un fichier .json de 512 Kio maximum.")
                 async with asyncio.timeout(10):
                     raw = await reprise.read()
                 session = import_session(raw)
             else:
                 session = Session.create(demo_item(), objectif)
                 session.notice = (
-                    "Démonstration locale : jet théorique PA=1, puits supposé 0. "
-                    "Choisissez un objet réel dans le menu, puis déclarez votre jet."
+                    "Prêt à jouer : Gelano théorique PA=1, puits 0. Choisissez une rune puis « Poser ×1 ». "
+                    "L'objet est terminé seulement lorsque tous les seuils affichés sont atteints. "
+                    "« Réglages » propose un nouveau jet ; le menu permet de changer d'objet."
                 )
                 if objet:
                     entries_all = await self.entries()
@@ -823,7 +940,10 @@ class ExoCog(commands.Cog):
                     if exact:
                         item, image = await self.load_item(found[0])
                         session = Session.create(item, objectif)
-                        session.notice = "Jet initial au maximum théorique ; puits 0 supposé. Saisissez votre jet avec « Jet / objectif »."
+                        session.notice = (
+                            "Prêt à simuler : jet au maximum naturel, puits 0. Posez une rune ou ouvrez "
+                            "« Réglages » pour un jet aléatoire. « Objectifs » règle les minimums à conserver."
+                        )
                     else:
                         entries, label = found, ("Suggestions approchantes" if fuzzy else "Résultats") + f" pour « {objet} »"
             if self.closed:
@@ -837,7 +957,7 @@ class ExoCog(commands.Cog):
                 raise ValueError("Module rechargé pendant l'ouverture. Réessayez /exo.")
             old_view = self.views.get(key)
             if old_view:
-                await old_view.on_timeout()
+                await old_view.on_timeout("Atelier remplacé · sauvegarde de session")
             self.views[key] = new_view
             new_view.hard_timeout = asyncio.create_task(new_view.hard_expire())
             log.debug("exo: opened owner=%s item=%s imported=%s", interaction.user.id, session.item.token, reprise is not None)
@@ -845,13 +965,18 @@ class ExoCog(commands.Cog):
             if new_view is not None:
                 new_view.stop()
             message = str(exc) or "Le catalogue n'a pas répondu à temps. /exo sans objet reste utilisable."
-            await private_message(interaction, message)
+            await interaction.edit_original_response(
+                content=message, allowed_mentions=discord.AllowedMentions.none(),
+            )
             log.debug("exo: opening_rejected reason=%s", message)
         except Exception:
             if new_view is not None:
                 new_view.stop()
             log.exception("exo: opening_failed owner=%s", interaction.user.id)
-            await private_message(interaction, "L'atelier n'a pas pu être ouvert. Le problème a été journalisé.")
+            await interaction.edit_original_response(
+                content="L'atelier n'a pas pu être ouvert. Le problème a été journalisé.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         finally:
             self.open_locks.pop(key, None)
 

@@ -7,11 +7,11 @@ import json
 import secrets
 
 from utils.exo_engine import (
-    D, Item, PROFILE, Rates, Rune, STATS, State, decimal_value,
+    D, Item, LEGACY_PROFILE, PROFILE, Rates, Rune, STATS, State, decimal_value,
 )
 from utils.exo_math import Budget, integer, probability
 
-EXPORT_LIMIT = 128 * 1024
+EXPORT_LIMIT = 512 * 1024
 
 
 @dataclass
@@ -35,12 +35,21 @@ class Session:
     observation_ready: bool = False
     revision: int = 0
     notice: str = ""
+    quality: dict[str, int] = field(default_factory=dict)
+    journal_page: int = 0
+    last_changes: dict[str, list[int]] = field(default_factory=dict)
 
     @classmethod
-    def create(cls, item: Item, objective: str = "pm") -> Session:
+    def create(cls, item: Item, objective: str | None = None) -> Session:
+        if objective is None:
+            objective = next((key for key in ("pm", "pa", "po", *STATS)
+                              if key not in item.bounds), "pm")
         return cls(
             item, State.initial(item), State.initial(item, tracking=True),
             rune=Rune(objective), goal_stat=objective,
+            goal_value=max(1, item.maximum(objective) + 1),
+            quality={key: max(0, low) for key, (low, _) in item.bounds.items()
+                     if low > 0 and key != objective},
         )
 
     @property
@@ -60,8 +69,32 @@ class Session:
         return self.prices.get(self.rune_key, 0)
 
     @property
-    def reached(self) -> bool:
+    def requirements(self) -> dict[str, int]:
+        return {self.goal_stat: self.goal_value, **{
+            key: value for key, value in self.quality.items() if key != self.goal_stat
+        }}
+
+    @property
+    def goal_met(self) -> bool:
         return self.state.jets.get(self.goal_stat, 0) >= self.goal_value
+
+    @property
+    def reached(self) -> bool:
+        return all(self.state.jets.get(key, 0) >= value
+                   for key, value in self.requirements.items())
+
+    @property
+    def rune_target(self) -> int:
+        if self.rune.stat == self.goal_stat:
+            return self.goal_value
+        return max(self.rune.gain, self.item.maximum(self.rune.stat),
+                   self.quality.get(self.rune.stat, 0))
+
+    @property
+    def display_changes(self) -> dict[str, list[int]]:
+        if self.last_changes:
+            return self.last_changes
+        return self.state.journal[-1].get("changes", {}) if self.state.journal else {}
 
 
 def _state_data(state: State) -> dict:
@@ -74,7 +107,7 @@ def _state_data(state: State) -> dict:
 
 def export_session(session: Session) -> bytes:
     payload = {
-        "schema": 1, "profile": PROFILE,
+        "schema": 2, "profile": PROFILE,
         "warning": "Bac à sable nominal ; ni preuve de jet ni résultat serveur. Journal déclaratif.",
         "item": {
             "name": session.item.name, "token": session.item.token,
@@ -85,6 +118,7 @@ def export_session(session: Session) -> bytes:
         "observations": _state_data(session.observed),
         "rune": {"stat": session.rune.stat, "tier": session.rune.tier},
         "goal": {"stat": session.goal_stat, "value": session.goal_value},
+        "quality": session.quality,
         "mode": session.mode, "seed": session.seed,
         "rates": {key: {"sc": rate.sc, "sn": rate.sn} for key, rate in session.custom.items()},
         "prices": session.prices,
@@ -97,7 +131,9 @@ def export_session(session: Session) -> bytes:
     }
     data = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode()
     if len(data) > EXPORT_LIMIT:
-        raise ValueError("Export trop volumineux.")
+        data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+    if len(data) > EXPORT_LIMIT:
+        raise ValueError("Export trop volumineux (limite : 512 Kio).")
     return data
 
 
@@ -143,6 +179,7 @@ def _load_state(payload: object) -> State:
         row = _object(raw, {
             "n", "mode", "rune", "stat", "gain", "weight", "outcome", "losses",
             "sink_before", "sink_after", "price", "unexplained_weight",
+            "applied_gain", "changes", "rates", "profile",
         })
         if row.get("mode") not in {"simulation", "observation"} or row.get("outcome") not in {"SC", "SN", "EC"}:
             raise ValueError("Événement de journal invalide.")
@@ -162,23 +199,73 @@ def _load_state(payload: object) -> State:
             if key not in STATS:
                 raise ValueError("Statistique du journal invalide.")
             integer(value, 0, 10000, "Perte")
+        gain = row["gain"] if row["outcome"] in {"SC", "SN"} else 0
+        if "applied_gain" in row:
+            integer(row["applied_gain"], 0, 100, "Gain appliqué")
+            if row["applied_gain"] != gain:
+                raise ValueError("Gain du journal incohérent.")
+        if "profile" in row and row["profile"] not in {PROFILE, LEGACY_PROFILE}:
+            raise ValueError("Profil de journal inconnu.")
+        if "changes" in row:
+            changes = _object(row["changes"])
+            if set(changes) != {row["stat"], *row["losses"]}:
+                raise ValueError("Lignes de bilan du journal incohérentes.")
+            for key, pair in changes.items():
+                if key not in STATS or not isinstance(pair, list) or len(pair) != 2:
+                    raise ValueError("Bilan de jet invalide.")
+                before, after = (integer(value, -10000, 10000, "Jet du journal") for value in pair)
+                expected = (gain if key == row["stat"] else 0) - row["losses"].get(key, 0)
+                if after - before != expected:
+                    raise ValueError("Variation de jet incohérente.")
+        if row.get("rates") is not None:
+            rates_data = _object(row["rates"], {"sc", "sn", "source"})
+            if not isinstance(rates_data.get("source"), str) or len(rates_data["source"]) > 160:
+                raise ValueError("Source des taux invalide.")
+            Rates(**rates_data)
+        if row["n"] > state.sequence or (state.journal and row["n"] <= state.journal[-1]["n"]):
+            raise ValueError("Ordre du journal incohérent.")
         state.journal.append(dict(row))
+    if (len(state.journal) > state.attempts
+            or sum(row["price"] for row in state.journal) > state.spent
+            or sum(row["outcome"] != "EC" for row in state.journal) > state.successes):
+        raise ValueError("Compteurs du journal incohérents.")
     return state
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Champ JSON répété.")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value: str):
+    raise ValueError(f"Constante JSON interdite : {value}.")
 
 
 def import_session(raw: bytes) -> Session:
     if not isinstance(raw, bytes) or len(raw) > EXPORT_LIMIT:
-        raise ValueError("Fichier JSON limité à 128 Kio.")
+        raise ValueError("Fichier JSON limité à 512 Kio.")
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object,
+                          parse_constant=_reject_constant)
         data = _object(data, {
             "schema", "profile", "warning", "item", "simulation", "observations",
             "rune", "goal", "mode", "seed", "rates", "prices", "budget", "math",
-            "observation_ready",
+            "observation_ready", "quality",
         })
-        if data["schema"] != 1 or type(data["schema"]) is not int or data["profile"] != PROFILE:
+        legacy = data["schema"] == 1 and data["profile"] == LEGACY_PROFILE
+        if type(data["schema"]) is not int or not (
+            legacy or (data["schema"] == 2 and data["profile"] == PROFILE)
+        ):
             raise ValueError("Version de sauvegarde non prise en charge.")
-        item_data = _object(data["item"])
+        item_data = _object(data["item"], {
+            "name", "token", "bounds", "source", "unsupported", "immutable",
+        })
+        if not isinstance(item_data.get("name"), str) or not isinstance(item_data.get("token"), str):
+            raise ValueError("Identité de l'objet invalide.")
         bounds = {}
         for key, pair in _object(item_data["bounds"]).items():
             if not isinstance(pair, list) or len(pair) != 2:
@@ -203,6 +290,13 @@ def import_session(raw: bytes) -> Session:
             raise ValueError("Objectif inconnu.")
         session.goal_stat = goal["stat"]
         session.goal_value = integer(goal["value"], 1, 10000, "Objectif")
+        session.quality = {}
+        for key, value in _object(data.get("quality", {})).items():
+            if key not in STATS:
+                raise ValueError("Critère de qualité inconnu.")
+            if key == session.goal_stat:
+                raise ValueError("L'objectif principal ne doit pas être répété dans les seuils.")
+            session.quality[key] = integer(value, 0, 10000, "Seuil de qualité")
         session.seed = integer(data["seed"], 0, 2**64 - 1, "Graine")
         for key, value in _object(data["rates"]).items():
             session.custom[_rune_key(key)] = Rates(**_object(value, {"sc", "sn"}))
@@ -223,6 +317,11 @@ def import_session(raw: bytes) -> Session:
             raise ValueError("État de suivi invalide.")
         session.observation_ready = data["observation_ready"]
         session.notice = "Snapshot importé : paramètres et historique déclaratifs, jamais preuve d'un résultat en jeu."
+        if legacy:
+            session.notice += (
+                " Migration v1 → v2 : jets et journaux conservés ; les futurs tirages changent de moteur. "
+                "Ancien objectif simple conservé : ajoutez vos seuils dans « Objectifs »."
+            )
         return session
     except (KeyError, TypeError, UnicodeError, OverflowError, RecursionError, json.JSONDecodeError) as exc:
         raise ValueError("Sauvegarde /exo invalide ou incomplète.") from exc

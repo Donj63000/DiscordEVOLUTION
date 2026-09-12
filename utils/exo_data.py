@@ -35,8 +35,12 @@ MAGEABLE = frozenset({
     "pelle", "pelles", "dague", "dagues", "arc", "arcs", "baton", "batons",
     "baguette", "baguettes",
 })
-IMMUTABLE = re.compile(
-    r"^(?:dommages?|vole(?:r)?\s+\d|vol de vie|arme de chasse|effets? de l arme)\b"
+IMMUTABLE = re.compile(r"^(?:arme de chasse|effets? de l arme)$")
+BASE_DAMAGE = re.compile(
+    r"(?:(?:dommages?|vole(?:r)?|vol de vie)\s*:?\s*)?"
+    r"[+]?\d+(?:\s*(?:à|a|-)\s*[+]?\d+)?\s*"
+    r"\((?:(?:dommages?|vol(?:e| de vie)?)\s+)?(?:neutre|terre|feu|eau|air)\)",
+    re.IGNORECASE,
 )
 RANGE = re.compile(
     r"^\s*([+-]?\d+)\s*(?:(?:à|a|[-–])\s*([+-]?\d+))?\s*(.*?)\s*$",
@@ -55,12 +59,10 @@ def parse_effects(lines: tuple[str, ...] | list[str]) -> tuple[dict, tuple, tupl
         text = str(raw).strip()
         if not text:
             continue
+        text = text.replace("−", "-").replace("–", "-").replace("—", "-")
+        text = re.sub(r"(?<=\d)[ \u00a0\u202f](?=\d{3}(?:\D|$))", "", text)
         clean = normalized(text)
-        weapon_damage = re.fullmatch(
-            r"[+]?\d+(?:\s*(?:à|a|-)\s*\d+)?\s*"
-            r"\((?:dommages?|vol(?:e| de vie)?)[^)]*\)", text, re.IGNORECASE,
-        )
-        if IMMUTABLE.match(clean) or weapon_damage:
+        if IMMUTABLE.fullmatch(clean) or BASE_DAMAGE.fullmatch(text):
             immutable.append(text[:300])
             continue
         damage_percent = re.fullmatch(
@@ -76,7 +78,11 @@ def parse_effects(lines: tuple[str, ...] | list[str]) -> tuple[dict, tuple, tupl
         first, second, label = match.groups()
         low, high = sorted((int(first), int(second or first)))
         label = re.sub(r"^(?:en |de |d['’])", "", label.strip(), flags=re.IGNORECASE)
-        label = label.replace("résistances", "résistance")
+        label = normalized(label.replace("’", "'").replace("‘", "'")).replace("resistances", "resistance")
+        label = re.sub(
+            r"((?:% (?:de )?)?resistance) (?:a l |a la |au |en )",
+            r"\1 ", label,
+        )
         try:
             key = EFFECT_ALIASES.get(normalized(label.replace("’", "'").replace("‘", "'")))
             if key is None:

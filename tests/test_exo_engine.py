@@ -15,8 +15,9 @@ def test_native_pa_is_not_an_exo():
     item = demo_item()
     state = State({"pa":0}, D(0))
     assert not fixed_exo(item,state,Rune("pa"))
-    with pytest.raises(ValueError, match="Taux serveur"):
-        rates_for(item,state,Rune("pa"),None)
+    rates = rates_for(item,state,Rune("pa"),None)
+    assert rates.sc > .01
+    assert "estimation" in rates.source
     assert fixed_exo(item,state,Rune("pm"))
 
 
@@ -176,7 +177,7 @@ def test_export_import_replays_next_draw():
 
 
 @pytest.mark.parametrize("mutation", [
-    lambda x:x.update(schema=2),
+    lambda x:x.update(schema=3),
     lambda x:x.update(seed=True),
     lambda x:x["math"].update(p=float("nan")),
     lambda x:x["simulation"].update(sink="-1"),

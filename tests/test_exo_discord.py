@@ -42,6 +42,7 @@ def interaction(user_id=42):
 async def panel():
     cog=ExoCog(SimpleNamespace(get_cog=lambda name:None))
     view=ExoView(cog,42,100,Session.create(demo_item()))
+    view.session.seed = 1
     cog.views[view.key]=view
     yield view
     await cog.cog_unload()
@@ -84,7 +85,7 @@ async def test_native_command_registration_without_connection(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tab",["atelier","maths","journal","aide"])
+@pytest.mark.parametrize("tab",["atelier","maths","journal","aide","settings"])
 async def test_components_and_embeds_fit_discord(panel,tab):
     panel.session.tab=tab
     for page in (0,1):
@@ -103,7 +104,7 @@ async def test_large_item_embed_is_bounded(panel):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind",["jets","rates","observe","math","budget","search"])
+@pytest.mark.parametrize("kind",["jets","goals","rates","observe","math","budget","search"])
 async def test_modal_limits(panel,kind):
     modal=ExoModal(panel,kind)
     assert len(modal.children) <= 5
@@ -226,7 +227,7 @@ async def test_export_is_private_and_stream_is_closed(panel):
     event.followup.send.side_effect=capture
     await panel.dispatch(event,"export")
     file,raw,ephemeral=captures[0]
-    assert b'"schema": 1' in raw
+    assert b'"schema": 2' in raw
     assert ephemeral
     assert file.fp.closed
 
@@ -462,7 +463,7 @@ async def test_first_observation_declaration_without_state_change_is_ready(panel
 async def test_invalid_seed_rejects_jet_form_atomically(panel):
     session_with_history(panel.session)
     before = copy.deepcopy(panel.session)
-    modal, values = jet_form(panel, jets="pa=1", seed="invalid")
+    modal, values = jet_form(panel, jets="pa=1", goal="po=1;pa=1", seed="invalid")
     with pytest.raises(ValueError):
         modal.apply(panel.session, values)
     assert panel.session == before
@@ -576,6 +577,14 @@ async def test_probability_render_keeps_event_loop_free_and_uses_snapshot(panel,
 async def test_probability_render_expiration_prevents_publication(panel, monkeypatch, expiration):
     started, release, _ = delayed_math_renderer(panel, monkeypatch)
     before = copy.deepcopy(panel.session)
+    unloading = None
+    saved = []
+
+    async def capture_snapshot(**kwargs):
+        saved.append(kwargs["attachments"][0].fp.read())
+
+    if expiration == "unload":
+        panel.message = SimpleNamespace(edit=AsyncMock(side_effect=capture_snapshot))
     event = interaction()
     task = asyncio.create_task(panel.dispatch(event, "tab", "maths"))
     try:
@@ -585,15 +594,23 @@ async def test_probability_render_expiration_prevents_publication(panel, monkeyp
         elif expiration == "deadline":
             panel.created -= 841
         else:
-            await panel.cog.cog_unload()
+            unloading = asyncio.create_task(panel.cog.cog_unload())
+            await asyncio.sleep(0)
+            assert panel.cog.closed
+            assert not unloading.done()
+            panel.message.edit.assert_not_awaited()
     finally:
         release.set()
         await task
+        if unloading is not None:
+            await asyncio.wait_for(unloading, 1)
     assert panel.session == before
     event.edit_original_response.assert_not_awaited()
     event.followup.send.assert_awaited_once()
     if expiration != "deadline":
         assert all(child.disabled for child in panel.children)
+    if expiration == "unload":
+        assert saved == [export_session(before)]
 
 
 @pytest.mark.asyncio
@@ -681,3 +698,172 @@ async def test_probability_renders_share_two_compute_slots(panel, monkeypatch):
         await asyncio.gather(*tasks)
     assert maximum == 2
     assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_stale_component_does_not_consume_another_rune(panel):
+    await panel.dispatch(interaction(), "one", revision=0)
+    before = copy.deepcopy(panel.session)
+    event = interaction()
+    await panel.dispatch(event, "one", revision=0)
+    assert panel.session == before
+    event.followup.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_two_queued_clicks_on_same_revision_consume_one_rune(panel):
+    await asyncio.gather(
+        panel.dispatch(interaction(), "one", revision=0),
+        panel.dispatch(interaction(), "one", revision=0),
+    )
+    assert panel.session.sim.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_busy_modal_gets_immediate_response(panel):
+    await panel.lock.acquire()
+    event = interaction()
+    try:
+        await asyncio.wait_for(panel.dispatch(event, "goals"), timeout=.5)
+    finally:
+        panel.lock.release()
+    event.response.send_message.assert_awaited_once()
+    event.response.send_modal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_failure_rolls_back_session_and_undo(panel, monkeypatch):
+    before = copy.deepcopy(panel.session)
+    original = panel.rebuild
+    calls = 0
+
+    def broken_once():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("render failure")
+        original()
+
+    monkeypatch.setattr(panel, "rebuild", broken_once)
+    with pytest.raises(RuntimeError, match="render failure"):
+        await panel.dispatch(interaction(), "one")
+    assert panel.session == before
+    assert panel.undo_session is None
+
+
+@pytest.mark.asyncio
+async def test_goal_modal_keeps_attempts_and_journal(panel):
+    await panel.dispatch(interaction(), "one")
+    before = copy.deepcopy(panel.session.sim)
+    modal = ExoModal(panel, "goals")
+    modal.apply(panel.session, {"goals": "pm=1;pa=1"})
+    assert panel.session.sim == before
+    assert panel.session.requirements == {"pm": 1, "pa": 1}
+    modal.stop()
+
+
+@pytest.mark.asyncio
+async def test_expiration_attaches_reusable_snapshot_and_closes_stream(panel):
+    import json
+    from utils.exo_session import import_session
+
+    await panel.dispatch(interaction(), "one")
+    captures = []
+    async def capture(**kwargs):
+        file = kwargs["attachments"][0]
+        captures.append((file, file.fp.read()))
+    panel.message = SimpleNamespace(edit=AsyncMock(side_effect=capture))
+    await panel.on_timeout()
+    file, raw = captures[0]
+    assert json.loads(raw)["schema"] == 2
+    assert import_session(raw).sim == panel.session.sim
+    assert file.fp.closed
+    assert panel.retired
+
+
+@pytest.mark.asyncio
+async def test_explicit_close_attaches_snapshot(panel):
+    event = interaction()
+    await panel.dispatch(event, "close")
+    kwargs = event.edit_original_response.call_args.kwargs
+    assert kwargs["attachments"][0].filename.endswith(".json")
+    assert kwargs["attachments"][0].fp.closed
+    assert panel.retired
+
+
+@pytest.mark.asyncio
+async def test_new_jet_is_undoable_without_touching_observations(panel):
+    before = copy.deepcopy(panel.session)
+    await panel.dispatch(interaction(), "preset", "minimum")
+    await panel.dispatch(interaction(), "undo")
+    assert panel.session.sim == before.sim
+    assert panel.session.observed == before.observed
+    assert panel.session.seed == before.seed
+
+
+@pytest.mark.asyncio
+async def test_history_navigation_reaches_oldest_entry(panel):
+    from utils.exo_engine import attempt
+
+    panel.session.sim = State({"pa": 0}, D(1000))
+    for _ in range(20):
+        attempt(panel.session.item, panel.session.sim, Rune("fo"), Rates(0, 0), 1)
+    panel.session.tab = "journal"
+    for _ in range(19):
+        await panel.dispatch(interaction(), "older")
+    assert panel.session.journal_page == 19
+    assert "Essai #1" in panel.embed().fields[0].name
+    await panel.dispatch(interaction(), "latest")
+    assert panel.session.journal_page == 0
+
+
+@pytest.mark.asyncio
+async def test_existing_thumbnail_is_retained_without_reupload(panel):
+    panel.image = SimpleNamespace(data=b"testpng", source_url="https://wiki.moon-bot.io/icons/item.png")
+    attachment = SimpleNamespace(filename="exo-objet.png")
+    event = interaction()
+    event.edit_original_response.return_value = SimpleNamespace(
+        edit=AsyncMock(), attachments=[attachment],
+    )
+    await panel.publish(event)
+    event2 = interaction()
+    await panel.publish(event2)
+    assert event2.edit_original_response.call_args.kwargs["attachments"] == [attachment]
+
+
+@pytest.mark.asyncio
+async def test_catalogue_timeout_does_not_leave_opening_in_thinking_state(panel):
+    from utils.dofus_wiki import WikiError
+
+    panel.cog.entries = AsyncMock(side_effect=WikiError("catalogue indisponible"))
+    event = interaction()
+    await ExoCog.exo.callback(panel.cog, event, objet="Gelano")
+    assert "catalogue" in event.edit_original_response.call_args.kwargs["content"]
+    event.followup.send.assert_not_awaited()
+    assert not panel.retired
+
+
+@pytest.mark.asyncio
+async def test_missing_enrichment_and_image_do_not_lose_valid_item(panel):
+    detail = WikiDetail(
+        WikiEntry("item", "1", "Gelano", "Anneau", 60, "/items/gelano", "gelano"),
+        {"stats": ["+1 PA"]}, None, False,
+    )
+    wiki = SimpleNamespace(
+        _closed=False,
+        client=SimpleNamespace(detail=AsyncMock(return_value=detail)),
+        enrichment_client=SimpleNamespace(enrich=AsyncMock(side_effect=TimeoutError)),
+        resolve_item_image=AsyncMock(side_effect=TimeoutError),
+    )
+    panel.cog.bot = SimpleNamespace(get_cog=lambda name: wiki)
+    item, image = await panel.cog.load_item(detail.entry)
+    assert item.bounds == {"pa": (1, 1)}
+    assert image is None
+
+
+@pytest.mark.asyncio
+async def test_actual_components_have_revision_stamps_and_modal_goals_fit(panel):
+    assert all(child.custom_id.endswith(":0") for child in panel.children)
+    await panel.dispatch(interaction(), "one")
+    assert all(child.custom_id.endswith(":1") for child in panel.children)
+    limits(panel)
