@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import uuid
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,10 +18,12 @@ from discord.ext import commands, tasks
 
 from calendrier import MonthlyRenderer
 from utils.activity_data import (
-    ActivityError, ActiviteData, DEFAULT_CAPACITY, apply_draft, change_roster,
+    ActivityError, ActiviteData, DEFAULT_CAPACITY, activity_end, apply_draft, change_roster,
     migrate_snapshot, utc, validate_draft,
 )
 from utils.activity_store import ActivitySnapshotStore
+from utils.activity_roles import ActivityRoleManager
+from utils.activity_media import announcement_image, close_artwork, IMAGE_FILENAME
 from utils.activity_views import (
     ActivityCardView, ActivityListView, ActivityManageView, ActivityModal,
     activity_embed, roster_file, safe,
@@ -38,6 +41,7 @@ VALIDATED_ROLE_NAME = "Membre validé d'Evolution"
 DATA_FILE = "activities_data.json"
 MARKER_TEXT = "===BOTACTIVITES==="
 MAX_GROUP_SIZE = GROUP_CAPACITY
+SNAPSHOT_TIMEOUT = 15.0
 DATE_TIME_REGEX = re.compile(
     r"(?P<date>\d{2}/\d{2}/\d{4})\s*(?:;|\s+)\s*(?P<time>\d{2}:\d{2})(?P<desc>.*)$",
     re.DOTALL,
@@ -84,6 +88,12 @@ class ActiviteCog(commands.Cog):
         self._persistent_views = {}
         self._dirty_cards = set()
         self._sent_reminders = set()
+        self._card_locks = {}
+        self.role_manager = ActivityRoleManager(self)
+        self._calendar_views = weakref.WeakSet()
+        self._calendar_refresh_task = None
+        self._calendar_dirty = False
+        self._remote_uncertain = False
 
     def now(self):
         return datetime.now(timezone.utc)
@@ -180,7 +190,9 @@ class ActiviteCog(commands.Cog):
                 return
             channel = self._resolve_console_channel(guild)
             try:
-                payload = await self.snapshot_store.load(channel)
+                payload = await asyncio.wait_for(self.snapshot_store.load(channel), timeout=45)
+                if payload is None and self._remote_uncertain:
+                    raise ActivityError("Sauvegarde introuvable après une écriture incertaine : vérifier #console.")
                 if payload is None and Path(DATA_FILE).exists():
                     payload = json.loads(Path(DATA_FILE).read_text(encoding="utf-8"))
                     logger.warning("Activities: no console snapshot, importing the legacy local cache")
@@ -189,9 +201,10 @@ class ActiviteCog(commands.Cog):
                 )
                 self._source_guild_id = guild.id
                 if payload is not None and migrated != payload:
-                    await self.snapshot_store.persist(channel, migrated)
+                    await asyncio.wait_for(self.snapshot_store.persist(channel, migrated), timeout=SNAPSHOT_TIMEOUT)
                 self.activities_data = migrated
                 self.initialized = True
+                self._remote_uncertain = False
                 await self.save_data_local()
                 self._register_persistent_views()
                 logger.info("Activities initialized: %s records, %s quarantined",
@@ -200,7 +213,10 @@ class ActiviteCog(commands.Cog):
                 self.initialized = False
                 logger.exception("Activities restoration failed; writes remain disabled")
                 return
-        await self._recover_legacy_cards(guild)
+        try:
+            await asyncio.wait_for(self._recover_legacy_cards(guild), timeout=25)
+        except Exception:
+            logger.exception("Activity legacy card recovery deferred")
 
     async def save_data_local(self):
         """The local file is a disposable cache, never the authority over a console snapshot."""
@@ -231,14 +247,68 @@ class ActiviteCog(commands.Cog):
         )
 
     async def _commit(self, candidate, *, ctx=None, guild=None):
-        """Call only while holding the mutation lock; expose the state after durable success."""
-        if ctx is not None:
-            await self.dump_data_to_console(ctx, payload=candidate)
-        else:
-            await self.dump_data_to_console_no_ctx(guild, payload=candidate)
+        """Publish memory only after durable success; ambiguous writes require a reload."""
+        if not self.initialized:
+            raise ActivityError("Le registre est en cours de restauration. Vérifie /activite liste avant de réessayer.")
+        try:
+            operation = (
+                self.dump_data_to_console(ctx, payload=candidate) if ctx is not None
+                else self.dump_data_to_console_no_ctx(guild, payload=candidate)
+            )
+            await asyncio.wait_for(operation, timeout=SNAPSHOT_TIMEOUT)
+        except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+            self.initialized = False
+            self._remote_uncertain = True
+            logger.error("Activity snapshot result uncertain; writes paused until console reload")
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise ActivityError(
+                "Discord met trop de temps à sauvegarder. Le registre va être relu ; "
+                "vérifie /activite liste avant de refaire la demande."
+            ) from exc
         self.activities_data = candidate
         await self.save_data_local()
+        self._schedule_calendar_refresh()
         logger.debug("Activities snapshot committed events=%s", len(candidate["events"]))
+
+    async def _update_event_fields(self, guild, identifier, **fields):
+        """Merge side-effect metadata without overwriting concurrent roster changes."""
+        async with self._mutation_lock:
+            record = self.events_for_guild(guild.id).get(str(identifier))
+            if record is None or all(record.get(k) == v for k, v in fields.items()):
+                return
+            candidate = copy.deepcopy(self.activities_data)
+            candidate["events"][str(identifier)].update(fields)
+            changed_card = self._card_signature(record) != self._card_signature(candidate["events"][str(identifier)])
+            await self._commit(candidate, guild=guild)
+            if changed_card:
+                self._dirty_cards.add(str(identifier))
+
+    def _schedule_calendar_refresh(self):
+        self._calendar_dirty = True
+        if self._calendar_views and (
+            self._calendar_refresh_task is None or self._calendar_refresh_task.done()
+        ):
+            self._calendar_refresh_task = asyncio.create_task(self._refresh_calendars())
+
+    async def _refresh_calendars(self):
+        """Coalesce edits and never keep the datastore lock during image rendering or uploads."""
+        try:
+            while self._calendar_dirty:
+                self._calendar_dirty = False
+                await asyncio.sleep(0.5)
+                for view in list(self._calendar_views):
+                    if view.is_finished() or view.message is None:
+                        self._calendar_views.discard(view)
+                        continue
+                    try:
+                        await asyncio.wait_for(view.refresh_from_source(), timeout=20)
+                    except discord.NotFound:
+                        self._calendar_views.discard(view)
+                    except Exception:
+                        logger.warning("Activity calendar refresh deferred", exc_info=True)
+        finally:
+            self._calendar_refresh_task = None
 
     def _register_persistent_views(self):
         for record in self.activities_data.get("events", {}).values():
@@ -304,75 +374,104 @@ class ActiviteCog(commands.Cog):
                     logger.exception("Activities: old card migration postponed")
 
     async def sync_card(self, identifier, guild, *, publish=False):
-        """Refresh the canonical message; failure never rolls back a confirmed roster."""
+        """Bound all Discord work; a saved roster remains authoritative on presentation failure."""
         key = str(identifier)
-        async with self._mutation_lock:
-            record = self.events_for_guild(guild.id).get(key)
-            if not record:
+        try:
+            return await asyncio.wait_for(self._sync_card(key, guild, publish=publish), timeout=25)
+        except Exception:
+            self._dirty_cards.add(key)
+            logger.exception("Activities card sync deferred event_id=%s", key)
+            return False
+
+    @staticmethod
+    def _card_signature(record):
+        return tuple(repr(record.get(name)) for name in (
+            "titre", "description", "lieu", "starts_at", "date_str", "ends_at",
+            "participants", "waitlist", "capacity", "creator_id", "cancelled",
+            "role_id", "role_error", "announcement_url",
+        ))
+
+    async def _sync_card(self, key, guild, *, publish=False):
+        async with self._card_locks.setdefault(key, asyncio.Lock()):
+            original = self.events_for_guild(guild.id).get(key)
+            if original is None:
                 return False
+            record = copy.deepcopy(original)
             channel = self._resolve_organisation_channel(guild)
             if record.get("channel_id"):
-                channel = guild.get_channel(int(record["channel_id"]))
+                channel = guild.get_channel(int(record["channel_id"])) or channel
             if channel is None:
                 self._dirty_cards.add(key)
                 return False
-            try:
-                message = None
-                if record.get("message_id"):
-                    try:
-                        message = await channel.fetch_message(int(record["message_id"]))
-                    except discord.NotFound:
-                        candidate = copy.deepcopy(self.activities_data)
-                        candidate["events"][key].update(message_id=None, publication_pending=False)
-                        await self._commit(candidate, guild=guild)
-                        record = self.activities_data["events"][key]
-                if message is None and not publish:
-                    self._dirty_cards.discard(key)
-                    return False
-                if message is None:
-                    recent = await fetch_channel_history(
-                        channel, limit=200, reason="activities.card.recover", raise_errors=True,
+            me = getattr(guild, "me", None)
+            if me is not None:
+                permissions = channel.permissions_for(me)
+                if not (permissions.view_channel and permissions.send_messages and permissions.embed_links):
+                    raise ActivityError("Autoriser Voir le salon, Envoyer des messages et Intégrer des liens.")
+            message = None
+            if record.get("message_id"):
+                try:
+                    message = await channel.fetch_message(int(record["message_id"]))
+                except discord.NotFound:
+                    publish = publish or (not record.get("cancelled") and activity_end(record) > self.now())
+                    await self._update_event_fields(
+                        guild, key, message_id=None, publication_pending=publish,
                     )
-                    message = next((
-                        msg for msg in recent
-                        if msg.author == self.bot.user and self._message_event_id(msg) == key
-                    ), None)
-                created = False
-                view = ActivityCardView(self, record)
-                if message is None:
-                    message = await channel.send(
-                        embed=activity_embed(record), view=view,
-                        allowed_mentions=discord.AllowedMentions.none(),
-                    )
-                    created = True
-                else:
-                    if message.author != self.bot.user:
-                        raise ActivityError("La fiche enregistrée n'appartient pas au bot.")
-                    await message.edit(
-                        content=None, embed=activity_embed(record), view=view,
-                        allowed_mentions=discord.AllowedMentions.none(),
-                    )
-                if record.get("message_id") != message.id or record.get("publication_pending"):
-                    candidate = copy.deepcopy(self.activities_data)
-                    candidate["events"][key].update(
-                        channel_id=channel.id, message_id=message.id, publication_pending=False,
-                    )
-                    try:
-                        await self._commit(candidate, guild=guild)
-                    except Exception:
-                        if created:
-                            try:
-                                await message.delete()
-                            except discord.HTTPException:
-                                logger.warning("Activity #%s has an unlinked card; recovery will scan it", key)
-                        raise
-                self._register_view(self.activities_data["events"][key])
+                    record = copy.deepcopy(self.activities_data["events"][key])
+            publish = publish or record.get("publication_pending", False)
+            if message is None and not publish:
                 self._dirty_cards.discard(key)
-                return True
+                return False
+            if message is None:
+                recent = await fetch_channel_history(
+                    channel, limit=200, reason="activities.card.recover", raise_errors=True,
+                )
+                message = next((
+                    msg for msg in recent
+                    if msg.author == self.bot.user and self._message_event_id(msg) == key
+                ), None)
+            if message is not None and message.author != self.bot.user:
+                raise ActivityError("La fiche enregistrée n'appartient pas au bot.")
+            record = copy.deepcopy(self.activities_data["events"][key])
+            signature = self._card_signature(record)
+            view = ActivityCardView(self, record)
+            artwork, warning = announcement_image(
+                channel, retained=getattr(message, "attachments", ()),
+            )
+            embed = activity_embed(
+                record, now=self.now(), image_url=f"attachment://{IMAGE_FILENAME}" if artwork else None,
+            )
+            if warning:
+                embed.add_field(name="Illustration", value=warning, inline=False)
+            created = message is None
+            try:
+                if created:
+                    kwargs = {"file": artwork} if isinstance(artwork, discord.File) else {}
+                    message = await channel.send(
+                        embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none(), **kwargs,
+                    )
+                else:
+                    await message.edit(
+                        content=None, embed=embed, view=view, attachments=[artwork] if artwork else [],
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+            finally:
+                close_artwork(artwork)
+            try:
+                await self._update_event_fields(
+                    guild, key, channel_id=channel.id, message_id=message.id, publication_pending=False,
+                )
             except Exception:
                 self._dirty_cards.add(key)
-                logger.exception("Activities card sync failed event_id=%s", key)
-                return False
+                logger.warning("Activity card sent but link not committed; recovery will scan event_id=%s", key)
+                raise
+            self._register_view(self.activities_data["events"][key])
+            if self._card_signature(self.activities_data["events"][key]) == signature:
+                self._dirty_cards.discard(key)
+            else:
+                self._dirty_cards.add(key)
+            logger.debug("Activity announcement synced event_id=%s created=%s", key, created)
+            return True
 
     def _card_link(self, record):
         if record.get("message_id") and record.get("channel_id") and record.get("guild_id"):
@@ -401,24 +500,13 @@ class ActiviteCog(commands.Cog):
             except discord.HTTPException:
                 logger.warning("Activities notification failed event_id=%s", record["id"], exc_info=True)
 
-    async def _sync_legacy_roles(self, guild, identifier, user_ids):
-        """New activities need no role; old event roles remain compatible on a best-effort basis."""
-        async with self._mutation_lock:
-            record = self.activities_data["events"].get(str(identifier))
-            role = guild.get_role(record["role_id"]) if record and record.get("role_id") else None
-            if role is None:
-                return
-            for user_id in set(user_ids):
-                member = guild.get_member(user_id)
-                if member is None:
-                    continue
-                try:
-                    if user_id in record["participants"] and not record.get("cancelled"):
-                        await member.add_roles(role)
-                    else:
-                        await member.remove_roles(role)
-                except discord.HTTPException:
-                    logger.warning("Activity legacy role synchronization failed user_id=%s", user_id)
+    async def _sync_legacy_roles(self, guild, identifier, user_ids=()):
+        """Keep the historical entry point; reconcile the entire team, not only one click."""
+        try:
+            return await asyncio.wait_for(self.role_manager.sync(guild, identifier), timeout=25)
+        except Exception:
+            logger.exception("Activity role synchronization deferred event_id=%s", identifier)
+            return False
 
     @commands.command(name="activite")
     @commands.guild_only()
@@ -448,12 +536,17 @@ class ActiviteCog(commands.Cog):
             "`/activite creer` ouvre un formulaire : quoi, quand, où, places et précisions.\n"
             "Exemples de date : `demain 21h`, `vendredi 20h30`, `18/09/2026 21:00` (Paris).\n"
             "Tu vérifies l'aperçu avant de créer. Tu es inscrit automatiquement et comptes dans les places.\n"
-            "La fiche complète ton annonce habituelle, sans ping général.\n\n"
+            "L'annonce avec image et boutons est publiée automatiquement dans #organisation, sans ping général.\n"
+            "La durée prévue est de 180 minutes par défaut (réglable par le Staff) ; "
+            "utilise l'option `duree` de `/activite creer` ou `/activite modifier` pour la changer.\n\n"
+            "`/activite rejoindre` sans argument : choisis une sortie dans la liste pour t'inscrire.\n"
+            "`/activite quitter` sans argument : choisis l'inscription à retirer.\n"
             "`/activite liste` : à venir, tes inscriptions (attente incluse), tes sorties, historique.\n"
-            "Les boutons **Rejoindre / Attente** et **Quitter** gèrent le groupe. "
+            "Les boutons **S'inscrire / Liste d'attente** et **Se désinscrire** gèrent le groupe. "
             "Une place libérée revient au premier membre en attente.\n"
             "**Gérer** : modifier, annuler avec confirmation, réparer une fiche supprimée.\n"
-            "`/calendrier` utilise exactement les mêmes activités et inscriptions.\n"
+            "Les inscrits reçoivent le rôle d'équipe, retiré au départ de la liste et supprimé à la fin prévue.\n"
+            "`/calendrier` utilise exactement les mêmes activités et inscriptions ; les sessions ouvertes sont actualisées.\n"
             "Les anciennes commandes `!activite` restent compatibles.",
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -489,7 +582,7 @@ class ActiviteCog(commands.Cog):
                 "L'ancien format reste accepté : `!activite creer Titre JJ/MM/AAAA HH:MM Description`."
             )
             return
-        values = initial
+        values = dict(initial or {})
         if record:
             values = {
                 "titre": record["titre"],
@@ -497,7 +590,11 @@ class ActiviteCog(commands.Cog):
                         .astimezone(PARIS).strftime("%d/%m/%Y %H:%M"),
                 "lieu": record.get("lieu", ""), "description": record.get("description", ""),
                 "capacite": record.get("capacity", DEFAULT_CAPACITY),
+                "duree": record.get("duration_minutes", 180),
             }
+        supplied_duration = getattr(ctx, "slash_values", {}).get("duree")
+        if supplied_duration is not None:
+            values["duree"] = supplied_duration
         await ctx.interaction.response.send_modal(ActivityModal(
             self, ctx.author.id, ctx.guild.id, values=values,
             event_id=record["id"] if record else None,
@@ -550,39 +647,75 @@ class ActiviteCog(commands.Cog):
                     "role_id": None, "cancelled": False, "revision": 0,
                     "reminder_24_sent": False, "reminder_1_sent": False,
                     "creation_key": creation_key, "publication_pending": True,
+                    "role_sync_pending": True, "role_member_ids": [],
                 }
                 await self._commit(candidate, ctx=ctx)
         ctx.activity_committed = True
-        synced = await self.sync_card(key, ctx.guild, publish=True)
         record = self.activities_data["events"][key]
-        link = self._card_link(record)
-        await ctx.send(
-            f"Sortie **{safe(record['titre'], 120)}** enregistrée (#{key}). Tu es inscrit.\n"
-            + (f"Fiche : {link}" if synced and link else
-               "La publication est en attente. Les données sont sauvegardées ; "
-               "utilise `/activite info` → Gérer → Réparer pour réessayer."),
+        receipt = await ctx.send(
+            f"✅ Sortie **{safe(record['titre'], 120)}** enregistrée (#{key}). **Tu es inscrit.**\n"
+            "Publication de l'annonce et préparation du rôle d'équipe…",
             allowed_mentions=discord.AllowedMentions.none(),
         )
+        role_ok, synced = await asyncio.gather(
+            self._sync_legacy_roles(ctx.guild, key), self.sync_card(key, ctx.guild, publish=True),
+        )
+        if synced and key in self._dirty_cards:
+            synced = await self.sync_card(key, ctx.guild)
+        record = self.activities_data["events"][key]
+        link = self._card_link(record)
+        content = (
+            f"✅ Sortie **{safe(record['titre'], 120)}** enregistrée (#{key}). **Tu es inscrit.**\n"
+            + (f"Annonce dans #organisation : {link}" if synced and link else
+               "L'annonce est en attente ; le bot réessaiera automatiquement. "
+               "Vérifier les permissions de #organisation. Ne recrée pas la sortie.")
+        )
+        if not role_ok:
+            content += "\n⚠️ Rôle d'équipe en attente : vérifier « Gérer les rôles » et la hiérarchie du bot."
+        if receipt is not None:
+            try:
+                await receipt.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                logger.warning("Activity receipt update unavailable event_id=%s", key)
 
-    async def command_liste(self, ctx, args=None):
+    async def command_liste(self, ctx, args=None, *, action="info"):
         self._guard(ctx)
-        view = ActivityListView(self, ctx.author.id, ctx.guild.id)
+        view = ActivityListView(self, ctx.author.id, ctx.guild.id, action=action)
         view.message = await ctx.send(
             embed=view.build_embed(), view=view, allowed_mentions=discord.AllowedMentions.none(),
         )
 
     async def command_info(self, ctx, args):
         record = self._record(ctx, args)
-        await ctx.send(
-            embed=activity_embed(record), view=ActivityCardView(self, record, persistent=False),
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        artwork, _ = announcement_image(getattr(ctx, "channel", None))
+        try:
+            kwargs = {"file": artwork} if isinstance(artwork, discord.File) else {}
+            await ctx.send(
+                embed=activity_embed(
+                    record, now=self.now(),
+                    image_url=f"attachment://{IMAGE_FILENAME}" if artwork else None,
+                ), view=ActivityCardView(self, record, persistent=False),
+                allowed_mentions=discord.AllowedMentions.none(), **kwargs,
+            )
+        finally:
+            close_artwork(artwork)
 
     async def command_participants(self, ctx, args):
         record = self._record(ctx, args)
         file = roster_file(record, ctx.guild)
+        embed = discord.Embed(title=f"Participants · {safe(record['titre'], 180)}", colour=discord.Colour.blue())
+        for label, ids in (
+            ("Inscrits", record.get("participants", [])), ("Liste d'attente", record.get("waitlist", [])),
+        ):
+            lines = [
+                f"{i}. <@{uid}> — {safe(getattr(ctx.guild.get_member(uid), 'display_name', 'Membre'), 50)}"
+                for i, uid in enumerate(ids, 1)
+            ]
+            embed.add_field(name=f"{label} · {len(ids)}", value=shorten("\n".join(lines), 1000) or "Personne.",
+                            inline=False)
+        embed.set_footer(text="La pièce jointe contient la liste intégrale si elle est abrégée ci-dessus.")
         try:
-            await ctx.send(file=file, allowed_mentions=discord.AllowedMentions.none())
+            await ctx.send(embed=embed, file=file, allowed_mentions=discord.AllowedMentions.none())
         finally:
             file.close()
 
@@ -592,13 +725,14 @@ class ActiviteCog(commands.Cog):
             raise ActivityError("Seuls l'organisateur et le Staff peuvent gérer cette sortie.")
         view = ActivityManageView(self, ctx.author.id, ctx.guild.id, record["id"])
         view.message = await ctx.send(
-            embed=activity_embed(record), view=view, allowed_mentions=discord.AllowedMentions.none(),
+            embed=activity_embed(record, now=self.now()), view=view, allowed_mentions=discord.AllowedMentions.none(),
         )
 
     async def command_publier(self, ctx, args):
         record = self._record(ctx, args)
         if not self.can_modify(ctx, record):
             raise ActivityError("Seuls l'organisateur et le Staff peuvent republier cette fiche.")
+        await self._sync_legacy_roles(ctx.guild, record["id"])
         result = await self.sync_card(record["id"], ctx.guild, publish=True)
         await ctx.send("Fiche publiée et actualisée." if result else
                        "Impossible de publier la fiche. Vérifie le salon et les permissions du bot.")
@@ -615,9 +749,22 @@ class ActiviteCog(commands.Cog):
                 uid for uid in changed.get("waitlist", [])
                 if (member := ctx.guild.get_member(uid)) is None or self.has_validated_role(member)
             ]
+            changed["role_member_ids"] = list(dict.fromkeys(
+                changed.get("role_member_ids", []) + changed.get("participants", [])
+            ))
             text, promoted = change_roster(changed, ctx.author.id, action, now=self.now())
+            changed["role_sync_pending"] = True
             await self._commit(candidate, ctx=ctx)
             self._dirty_cards.add(record["id"])
+        ctx.activity_committed = True
+        current = self.activities_data["events"][record["id"]]
+        link = self._card_link(current)
+        await ctx.send(
+            f"✅ {ctx.author.mention} {text}\n**{safe(current['titre'], 100)}** · "
+            f"{len(current['participants'])}/{current.get('capacity', DEFAULT_CAPACITY)} inscrits"
+            + (f"\nAnnonce : {link}" if link else ""),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
         await self._sync_legacy_roles(ctx.guild, record["id"], [ctx.author.id, *promoted])
         await self.sync_card(record["id"], ctx.guild)
         current = self.activities_data["events"][record["id"]]
@@ -626,13 +773,15 @@ class ActiviteCog(commands.Cog):
                 ctx.guild, current, f"Une place s'est libérée pour **{safe(current['titre'], 100)}** : "
                 "tu passes de la liste d'attente aux inscrits.", promoted,
             )
-        await ctx.send(f"{ctx.author.mention} {text} (#{record['id']})",
-                       allowed_mentions=discord.AllowedMentions.none())
 
-    async def command_join(self, ctx, args):
+    async def command_join(self, ctx, args=None):
+        if not str(args or "").strip():
+            return await self.command_liste(ctx, action="join")
         await self._change_membership(ctx, args, "join")
 
-    async def command_leave(self, ctx, args):
+    async def command_leave(self, ctx, args=None):
+        if not str(args or "").strip():
+            return await self.command_liste(ctx, action="leave")
         await self._change_membership(ctx, args, "leave")
 
     async def command_annuler(self, ctx, args):
@@ -644,16 +793,19 @@ class ActiviteCog(commands.Cog):
                 raise ActivityError("Cette activité est déjà annulée.")
             candidate = copy.deepcopy(self.activities_data)
             candidate["events"][record["id"]]["cancelled"] = True
+            candidate["events"][record["id"]]["role_sync_pending"] = True
             candidate["events"][record["id"]]["revision"] = int(record.get("revision", 0)) + 1
             await self._commit(candidate, ctx=ctx)
             self._dirty_cards.add(record["id"])
+        ctx.activity_committed = True
+        await ctx.send(f"Sortie #{record['id']} annulée. L'historique et les listes sont conservés.")
+        await self._sync_legacy_roles(ctx.guild, record["id"])
         await self.sync_card(record["id"], ctx.guild)
         await self._notify_members(
             ctx.guild, self.activities_data["events"][record["id"]],
             f"Sortie annulée : **{safe(record['titre'], 100)}**.",
             record.get("participants", []) + record.get("waitlist", []),
         )
-        await ctx.send(f"Sortie #{record['id']} annulée. L'historique et les listes sont conservés.")
 
     async def command_modifier(self, ctx, args):
         parts = str(args or "").split(" ", 1)
@@ -667,6 +819,7 @@ class ActiviteCog(commands.Cog):
             "titre": record["titre"], "lieu": record.get("lieu", ""),
             "capacite": record.get("capacity", DEFAULT_CAPACITY),
             "description": record.get("description", ""),
+            "duree": record.get("duration_minutes", 180),
         }
         values.update({k: v for k, v in supplied.items() if v is not None})
         if not supplied.get("date"):
@@ -682,6 +835,7 @@ class ActiviteCog(commands.Cog):
             candidate = copy.deepcopy(self.activities_data)
             changed = candidate["events"][record["id"]]
             apply_draft(changed, draft, revision=supplied.get("_revision"))
+            changed["role_sync_pending"] = True
             promoted = []
             while changed.get("waitlist") and len(changed["participants"]) < changed["capacity"]:
                 uid = changed["waitlist"].pop(0)
@@ -692,6 +846,7 @@ class ActiviteCog(commands.Cog):
             await self._commit(candidate, ctx=ctx)
             self._dirty_cards.add(record["id"])
         ctx.activity_committed = True
+        await ctx.send(f"Sortie #{record['id']} modifiée ; calendrier et inscriptions à jour.")
         await self._sync_legacy_roles(ctx.guild, record["id"], promoted)
         await self.sync_card(record["id"], ctx.guild)
         current = self.activities_data["events"][record["id"]]
@@ -705,7 +860,6 @@ class ActiviteCog(commands.Cog):
                 ctx.guild, current, "La capacité augmente : tu es maintenant inscrit à la sortie.",
                 promoted,
             )
-        await ctx.send(f"Sortie #{record['id']} modifiée ; calendrier et inscriptions à jour.")
 
     @tasks.loop(minutes=1)
     async def check_events_loop(self):
@@ -717,63 +871,72 @@ class ActiviteCog(commands.Cog):
         guild = self._source_guild()
         if guild is None:
             return
-        channel = self._resolve_organisation_channel(guild)
         for key in list(self.events_for_guild(guild.id)):
             try:
-                async with self._mutation_lock:
-                    original = self.activities_data["events"].get(key)
-                    if original is None:
-                        continue
-                    candidate = copy.deepcopy(self.activities_data)
-                    record = candidate["events"][key]
-                    event = ActiviteData.from_dict(record)
-                    remaining = (utc(event.date_obj) - self.now()).total_seconds()
-                    changed = False
-                    reminder_key = None
-                    if record.get("cancelled") or remaining <= 0:
-                        if not record.get("closed"):
-                            record["closed"] = True
-                            self._dirty_cards.add(key)
-                            changed = True
-                        role = guild.get_role(event.role_id) if event.role_id else None
-                        if role:
-                            try:
-                                await role.delete(reason="Activité terminée")
-                            except discord.HTTPException:
-                                logger.warning("Activity legacy role cleanup postponed event_id=%s",
-                                               key, exc_info=True)
-                            else:
-                                record["role_id"] = None
-                                changed = True
-                    elif channel is not None:
-                        kind = (
-                            "1h" if remaining <= 3600 and not event.reminder_1_sent else
-                            "24h" if 3600 < remaining <= 86400 and not event.reminder_24_sent else None
-                        )
-                        if kind:
-                            reminder_key = (key, record.get("revision", 0), kind)
-                            logger.debug(
-                                "Activite rappel selectionne event_id=%s echeance=%s time_left_seconds=%.0f",
-                                key, kind, remaining,
-                            )
-                            sent = reminder_key in self._sent_reminders
-                            if not sent:
-                                sent = await self.envoyer_rappel(channel, event, kind)
-                            if sent:
-                                self._sent_reminders.add(reminder_key)
-                                record["reminder_24_sent"] = True
-                                if kind == "1h":
-                                    record["reminder_1_sent"] = True
-                                changed = True
-                    if changed:
-                        await self._commit(candidate, guild=guild)
-                        if reminder_key:
-                            self._sent_reminders.discard(reminder_key)
-                current = self.activities_data["events"].get(key, {})
-                if key in self._dirty_cards or current.get("publication_pending"):
-                    await self.sync_card(key, guild, publish=bool(current.get("publication_pending")))
+                await asyncio.wait_for(self._maintain_event(guild, key), timeout=65)
             except Exception:
                 logger.exception("Activity maintenance failed event_id=%s; next event continues", key)
+        self._schedule_calendar_refresh()
+
+    async def _maintain_event(self, guild, key):
+        """Never keep the roster lock during reminders, role requests or announcement edits."""
+        async with self._mutation_lock:
+            original = self.activities_data["events"].get(key)
+            if original is None:
+                return
+            candidate = copy.deepcopy(self.activities_data)
+            record = candidate["events"][key]
+            event = ActiviteData.from_dict(record)
+            remaining = (utc(event.date_obj) - self.now()).total_seconds()
+            changed = False
+            if record.get("cancelled") or remaining <= 0:
+                if not record.get("closed"):
+                    record["closed"] = True
+                    changed = True
+            if record.get("cancelled") or activity_end(record) <= self.now():
+                if not record.get("completed"):
+                    record["completed"] = True
+                    changed = True
+                if not record.get("message_id") and record.get("publication_pending"):
+                    record["publication_pending"] = False
+                    changed = True
+            if changed:
+                await self._commit(candidate, guild=guild)
+                self._dirty_cards.add(key)
+            kind = None
+            if not record.get("cancelled") and remaining > 0:
+                kind = (
+                    "1h" if remaining <= 3600 and not event.reminder_1_sent else
+                    "24h" if 3600 < remaining <= 86400 and not event.reminder_24_sent else None
+                )
+        channel = self._resolve_organisation_channel(guild)
+        if kind and channel is not None:
+            reminder_key = (key, record.get("revision", 0), kind)
+            logger.debug(
+                "Activite rappel selectionne event_id=%s echeance=%s time_left_seconds=%.0f",
+                key, kind, remaining,
+            )
+            sent = reminder_key in self._sent_reminders
+            if not sent:
+                sent = await self.envoyer_rappel(channel, event, kind)
+            if sent:
+                self._sent_reminders.add(reminder_key)
+                async with self._mutation_lock:
+                    latest = self.activities_data["events"].get(key)
+                    if latest is not None and latest.get("revision", 0) == record.get("revision", 0):
+                        candidate = copy.deepcopy(self.activities_data)
+                        candidate["events"][key]["reminder_24_sent"] = True
+                        if kind == "1h":
+                            candidate["events"][key]["reminder_1_sent"] = True
+                        await self._commit(candidate, guild=guild)
+                    self._sent_reminders.discard(reminder_key)
+        current = self.activities_data["events"].get(key, {})
+        if (not current.get("completed") or current.get("role_id")
+                or current.get("role_staging_name") or current.get("role_sync_pending")):
+            await self._sync_legacy_roles(guild, key)
+        current = self.activities_data["events"].get(key, {})
+        if key in self._dirty_cards or current.get("publication_pending"):
+            await self.sync_card(key, guild, publish=bool(current.get("publication_pending")))
 
     async def envoyer_rappel(self, channel, event: ActiviteData, kind: str) -> bool:
         start = utc(event.date_obj)
@@ -789,12 +952,12 @@ class ActiviteCog(commands.Cog):
             for chunk in chunks:
                 users = [discord.Object(id=uid) for uid in chunk]
                 mentions = " ".join(f"<@{user.id}>" for user in users)
-                await channel.send(
+                await asyncio.wait_for(channel.send(
                     text + (f"\n{mentions}" if mentions else "") + (f"\n{link}" if link else ""),
                     allowed_mentions=discord.AllowedMentions(
                         everyone=False, roles=False, users=users, replied_user=False,
                     ),
-                )
+                ), timeout=12)
         except Exception:
             logger.warning("Activite rappel echoue event_id=%s echeance=%s", event.id, kind,
                            exc_info=True)
@@ -817,6 +980,10 @@ class ActiviteCog(commands.Cog):
                         continue
                     if member.id not in record.get("participants", []) + record.get("waitlist", []):
                         continue
+                    record["role_member_ids"] = list(dict.fromkeys(
+                        record.get("role_member_ids", []) + record.get("participants", [])
+                    ))
+                    record["role_sync_pending"] = True
                     _, promoted = change_roster(record, member.id, "leave", now=self.now())
                     notifications.append((key, promoted))
                     changed_keys.append(key)
@@ -834,11 +1001,33 @@ class ActiviteCog(commands.Cog):
             logger.exception("Activities: departed member cleanup failed user_id=%s", member.id)
 
     @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload):
+        if not self.initialized or payload.guild_id is None:
+            return
+        for key, record in self.events_for_guild(payload.guild_id).items():
+            if record.get("message_id") == payload.message_id:
+                self._dirty_cards.add(key)
+                logger.warning("Activity announcement deleted; repair queued event_id=%s", key)
+
+    @commands.Cog.listener()
+    async def on_raw_bulk_message_delete(self, payload):
+        if not self.initialized or payload.guild_id is None:
+            return
+        for key, record in self.events_for_guild(payload.guild_id).items():
+            if record.get("message_id") in payload.message_ids:
+                self._dirty_cards.add(key)
+
+    @commands.Cog.listener()
     async def on_ready(self):
         await self.initialize_data()
 
     def cog_unload(self):
         self.check_events_loop.cancel()
+        if self._calendar_refresh_task is not None:
+            self._calendar_refresh_task.cancel()
+        for calendar in list(self._calendar_views):
+            calendar.stop()
+        self._calendar_views.clear()
         for view in self._persistent_views.values():
             view.stop()
         self._persistent_views.clear()
@@ -891,6 +1080,7 @@ class ActiviteCog(commands.Cog):
             ctx.author, {}, source=lambda: self.events_for_guild(ctx.guild.id),
             state=state, guild=guild, renderer=self.calendar_renderer,
             action=self._calendar_activity_action, attach_files=can_attach,
+            registry=self._calendar_views,
             attachment_limit=min(getattr(guild, "filesize_limit", 8 * 1024 * 1024), 8 * 1024 * 1024),
         )
         await view.send_initial(ctx.send)

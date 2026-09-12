@@ -224,8 +224,8 @@ def test_emoji_title_is_limited_by_utf16_before_any_side_effect():
 
 def test_activity_modification_opens_a_form_without_empty_fields_overwriting_the_record():
     route = next(route for route in custom_routes() if route.path == ("activite", "modifier"))
-    assert [option.name for option in route.options] == ["identifiant"]
-    assert validate_values(route, {"identifiant": "1"}) == {"identifiant": "1"}
+    assert [option.name for option in route.options] == ["identifiant", "duree"]
+    assert validate_values(route, {"identifiant": "1"}) == {"identifiant": "1", "duree": None}
 
 
 @pytest.mark.asyncio

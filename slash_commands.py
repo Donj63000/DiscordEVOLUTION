@@ -267,7 +267,7 @@ class SlashCommandsCog(commands.Cog):
                 key: event for key, event in cog.activities_data.get("events", {}).items()
                 if isinstance(event, dict) and event.get("guild_id", guild_id) == guild_id
             }
-        now = datetime.now(timezone.utc)
+        now = cog.now() if hasattr(cog, "now") else datetime.now(timezone.utc)
         route_name = getattr(getattr(interaction, "command", None), "name", "")
         user = getattr(interaction, "user", None)
         user_id = getattr(user, "id", None)
@@ -292,10 +292,14 @@ class SlashCommandsCog(commands.Cog):
                 and not (hasattr(cog, "is_staff") and cog.is_staff(user))
             ):
                 continue
-            label = f"{event.starts_at:%d/%m %H:%M} · {event.title} · #{event.id}"
+            prefix = f"{event.starts_at:%d/%m/%Y %H:%M} · "
+            suffix = f" · {len(event.participants)}/{event.capacity} inscrits · {event.places} libres · #{event.id}"
+            title = one_line(event.title, max(8, 100 - len(prefix) - len(suffix)))
+            label = prefix + title + suffix
             if record.get("cancelled"):
-                label += " · annulée"
-            if _search_key(current) in _search_key(label):
+                label = one_line(label, 90) + " · annulée"
+            searchable = f"{event.title} {event.starts_at:%d/%m/%Y %H:%M} {event.id}"
+            if _search_key(current) in _search_key(searchable):
                 choices.append(app_commands.Choice(name=one_line(label, 100), value=event.id))
             if len(choices) == 25:
                 break

@@ -294,13 +294,27 @@ async def test_event_role_is_still_assigned_and_removed(calendar_bot, monkeypatc
         "id": "42", "name": "Sortie", "permissions": "0", "position": 1,
     })
     click.guild._roles[42] = role
+    bot_role = discord.Role(guild=click.guild, state=env.bot._connection, data={
+        "id": "201", "name": "Bot", "permissions": str(discord.Permissions(manage_roles=True).value),
+        "position": 100,
+    })
+    click.guild._roles[201] = bot_role
+    click.guild._members[777] = discord.Member(state=env.bot._connection, guild=click.guild, data={
+        "user": {"id": "777", "username": "Evolution BOT", "discriminator": "0", "avatar": None},
+        "flags": 0, "roles": ["201"], "joined_at": "2025-01-01T00:00:00+00:00",
+    })
+    monkeypatch.setattr(discord.Role, "edit", AsyncMock(return_value=role))
+    monkeypatch.setattr(discord.Guild, "fetch_member", AsyncMock(side_effect=discord.NotFound(
+        SimpleNamespace(status=404, reason="Not Found"), "Absent",
+    )))
+    env.cog.dump_data_to_console_no_ctx = AsyncMock()
     add_roles, remove_roles = AsyncMock(), AsyncMock()
     monkeypatch.setattr(discord.Member, "add_roles", add_roles)
     monkeypatch.setattr(discord.Member, "remove_roles", remove_roles)
     await env.cog._calendar_activity_action(click, "1", "join")
     await env.cog._calendar_activity_action(click, "1", "leave")
-    add_roles.assert_awaited_once_with(role)
-    remove_roles.assert_awaited_once_with(role)
+    add_roles.assert_awaited_once_with(role, reason="Inscription activité #1", atomic=True)
+    remove_roles.assert_awaited_once_with(role, reason="Désinscription activité #1", atomic=True)
 
 
 @pytest.mark.asyncio

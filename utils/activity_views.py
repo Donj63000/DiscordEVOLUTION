@@ -10,7 +10,11 @@ from datetime import datetime, timezone
 
 import discord
 
-from utils.activity_data import ActivityError, DEFAULT_CAPACITY, PARIS, utc, validate_draft
+from utils.activity_data import (
+    ActivityError, DEFAULT_CAPACITY, PARIS, activity_end, activity_status, duration_minutes,
+    utc, validate_draft,
+)
+from utils.activity_media import announcement_image, close_artwork, IMAGE_FILENAME
 from utils.calendar_data import one_line, shorten
 from utils.slash_errors import send_interaction_error
 from utils.slash_support import invoke_from_component
@@ -23,48 +27,68 @@ def safe(value: object, limit: int = 1000) -> str:
         discord.utils.escape_markdown(str(value or ""))), limit)
 
 
-def activity_embed(record: dict, *, preview: bool = False) -> discord.Embed:
+def activity_embed(record: dict, *, preview=False, now=None, image_url=None) -> discord.Embed:
     starts = utc(datetime.fromisoformat(record.get("starts_at") or record["date_str"]))
+    ends = activity_end(record)
     stamp = int(starts.timestamp())
-    cancelled = record.get("cancelled", False)
-    started = starts <= datetime.now(timezone.utc)
     participants = record.get("participants", [])
     waiting = record.get("waitlist", [])
     capacity = int(record.get("capacity", DEFAULT_CAPACITY))
-    status = "Annulée" if cancelled else "Début passé" if started else (
-        "Complet · liste d'attente ouverte" if len(participants) >= capacity else "Inscriptions ouvertes"
-    )
+    status = activity_status(record, now or datetime.now(timezone.utc))
+    places = max(0, capacity - len(participants))
+    description = safe(record.get("description"), 1600) or "On se retrouve pour une sortie de guilde !"
     embed = discord.Embed(
-        title=safe(record.get("titre"), 180),
-        description=safe(record.get("description"), 1600) or "Une sortie proposée à la guilde.",
-        colour=discord.Colour.orange() if cancelled else discord.Colour.blue(),
+        title="⚔️ " + safe(record.get("titre"), 180),
+        description=description,
+        colour=discord.Colour.orange() if record.get("cancelled") else discord.Colour.blue(),
     )
+    embed.set_author(name="EVOLUTION • SORTIE DE GUILDE")
+    if image_url:
+        embed.set_image(url=image_url)
     embed.add_field(
-        name="Quand ?",
-        value=f"<t:{stamp}:F> · <t:{stamp}:R>\n"
-              f"{starts.astimezone(PARIS):%d/%m/%Y à %H:%M} (Paris)",
+        name="📅 Rendez-vous",
+        value=f"**{starts.astimezone(PARIS):%d/%m/%Y à %H:%M} · heure de Paris**\n"
+              f"<t:{stamp}:F> · <t:{stamp}:R>",
         inline=False,
     )
-    embed.add_field(name="Où ?", value=safe(record.get("lieu")) or "À préciser avec l'organisateur.")
-    embed.add_field(name="Organisateur", value=f"<@{record['creator_id']}>")
     embed.add_field(
-        name=f"Inscrits · {len(participants)}/{capacity} (organisateur compris)",
+        name="⏱️ Fin prévue",
+        value=f"{ends.astimezone(PARIS):%d/%m/%Y à %H:%M} (Paris)\n"
+              "Le rôle temporaire sera supprimé après cet horaire.",
+        inline=False,
+    )
+    embed.add_field(name="📍 Rendez-vous", value=safe(record.get("lieu")) or "À préciser avec l'organisateur.")
+    embed.add_field(name="👑 Organisateur", value=f"<@{record['creator_id']}>")
+    embed.add_field(name="🎟️ Places restantes", value=f"**{places}** · {len(participants)}/{capacity} inscrits")
+    embed.add_field(
+        name=f"✅ Participants · {len(participants)}/{capacity} (organisateur compris)",
         value=shorten("\n".join(f"<@{uid}>" for uid in participants), 1000) or "Aucun inscrit.",
         inline=False,
     )
     if waiting:
         embed.add_field(
-            name=f"Liste d'attente · {len(waiting)}",
+            name=f"⌛ Liste d'attente · {len(waiting)}",
             value=shorten("\n".join(f"{i}. <@{uid}>" for i, uid in enumerate(waiting, 1)), 1000),
             inline=False,
         )
+    if record.get("role_id"):
+        embed.add_field(name="🛡️ Équipe temporaire", value=f"<@&{record['role_id']}>", inline=False)
+    if record.get("role_error") and status not in {"Terminée", "Annulée"}:
+        embed.add_field(name="Rôle en attente", value=safe(record["role_error"], 300), inline=False)
     embed.add_field(name="Statut", value=status, inline=False)
+    if status in {"Inscriptions ouvertes", "Complet · liste d'attente ouverte"}:
+        embed.add_field(
+            name="Comment participer ?",
+            value="**S'inscrire** pour participer, **Se désinscrire** pour libérer ta place.\n"
+                  "Complet ? Rejoins la **liste d'attente** : la prochaine place libérée lui revient.",
+            inline=False,
+        )
     source = record.get("announcement_url")
     if source:
         embed.add_field(name="Annonce du membre", value=f"[Lire l'annonce d'origine]({source})",
                         inline=False)
     footer = ("Aperçu privé · Rien n'est encore enregistré" if preview else
-              f"Activité #{record['id']} · Liste complète via Participants · /calendrier")
+              f"Activité #{record['id']} · Participants : liste complète · /activite rejoindre · /calendrier")
     embed.set_footer(text=footer)
     return embed
 
@@ -116,6 +140,7 @@ class ActivityModal(discord.ui.Modal):
         self.creation_key = creation_key or uuid.uuid4().hex
         self.announcement_url = announcement_url
         values = values or {}
+        self.duration = duration_minutes(values.get("duree"))
         self.title_input = discord.ui.TextInput(
             label="Quoi ? Nom de la sortie", placeholder="Donjon Blop, session drop…",
             default=str(values.get("titre", ""))[:85], max_length=85,
@@ -149,7 +174,7 @@ class ActivityModal(discord.ui.Modal):
         values = {
             "titre": self.title_input.value, "date": self.when_input.value,
             "lieu": self.where_input.value, "capacite": self.capacity_input.value,
-            "description": self.description_input.value,
+            "description": self.description_input.value, "duree": self.duration,
         }
         try:
             draft = validate_draft(values, now=self.cog.now())
@@ -171,13 +196,25 @@ class ActivityModal(discord.ui.Modal):
                 "participants": current.get("participants", [interaction.user.id]),
                 "announcement_url": self.announcement_url,
             }
-            await interaction.response.send_message(
-                "Vérifie la fiche. Elle sera publiée dans le salon d'organisation, **sans mention générale**."
-                if not self.event_id else "Vérifie les changements avant de les enregistrer.",
-                embed=activity_embed(preview, preview=True), view=view, ephemeral=True,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        view.message = await interaction.original_response()
+            await interaction.response.defer(thinking=True, ephemeral=True)
+            artwork, _ = announcement_image(getattr(interaction, "channel", None))
+            try:
+                view.message = await interaction.edit_original_response(
+                    content=(
+                        "Vérifie la sortie puis clique **Créer la sortie** : annonce automatique dans "
+                        "#organisation, inscription et rôle temporaire. **Aucun ping général**."
+                        if not self.event_id else "Vérifie les changements avant de les enregistrer."
+                    ),
+                    embed=activity_embed(
+                        preview, preview=True, now=self.cog.now(),
+                        image_url=f"attachment://{IMAGE_FILENAME}" if artwork else None,
+                    ), view=view, attachments=[artwork] if artwork else [],
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            finally:
+                close_artwork(artwork)
+        if view.message is None:
+            view.message = await interaction.original_response()
 
     async def on_error(self, interaction, error):
         log.exception("Activity form failed", exc_info=error)
@@ -257,15 +294,19 @@ class ActivityCardView(ActivityView):
         closed = record.get("cancelled") or utc(datetime.fromisoformat(
             record.get("starts_at") or record["date_str"])) <= utc(cog.now())
         self.join.disabled = self.leave.disabled = bool(closed)
+        self.join.label = (
+            "Liste d'attente" if len(record.get("participants", [])) >= record.get("capacity", DEFAULT_CAPACITY)
+            else "S'inscrire"
+        )
 
     async def run(self, interaction, action):
         await invoke_from_component(self.cog.bot, interaction, "activite", f"{action} {self.event_id}")
 
-    @discord.ui.button(label="Rejoindre / Attente", style=discord.ButtonStyle.success, custom_id="join")
+    @discord.ui.button(label="S'inscrire", style=discord.ButtonStyle.success, custom_id="join")
     async def join(self, interaction, button):
         await self.run(interaction, "join")
 
-    @discord.ui.button(label="Quitter", style=discord.ButtonStyle.secondary, custom_id="leave")
+    @discord.ui.button(label="Se désinscrire", style=discord.ButtonStyle.secondary, custom_id="leave")
     async def leave(self, interaction, button):
         await self.run(interaction, "leave")
 
@@ -280,6 +321,11 @@ class ActivityCardView(ActivityView):
     @discord.ui.button(label="Gérer", style=discord.ButtonStyle.secondary, custom_id="manage")
     async def manage(self, interaction, button):
         await self.run(interaction, "gerer")
+
+    @discord.ui.button(label="Calendrier", style=discord.ButtonStyle.secondary, custom_id="calendar", row=1)
+    async def calendar(self, interaction, button):
+        await invoke_from_component(self.cog.bot, interaction, "calendrier", "")
+
 
 
 class ActivityManageView(OwnedActivityView):
@@ -312,10 +358,17 @@ class ActivityManageView(OwnedActivityView):
 
 
 class ActivityListView(OwnedActivityView):
-    def __init__(self, cog, owner_id, guild_id):
+    def __init__(self, cog, owner_id, guild_id, *, action="info"):
         super().__init__(cog, owner_id, guild_id)
-        self.mode = "avenir"
+        self.action = action
+        self.mode = "inscrit" if action == "leave" else "avenir"
         self.page = 0
+        if action != "info":
+            self.remove_item(self.filter_events)
+        self.choose.placeholder = {
+            "join": "Choisir une sortie pour s'inscrire",
+            "leave": "Choisir la sortie à quitter",
+        }.get(action, "Choisir une sortie · Détails et inscription")
 
     def build_embed(self):
         now = utc(self.cog.now())
@@ -333,6 +386,10 @@ class ActivityListView(OwnedActivityView):
                 selected = not past and record["creator_id"] == self.owner_id
             else:
                 selected = not past
+            if self.action == "join":
+                selected = selected and self.owner_id not in (
+                    record.get("participants", []) + record.get("waitlist", [])
+                ) and len(record.get("waitlist", [])) < 100
             if selected:
                 events.append(record)
         events.sort(key=lambda e: utc(datetime.fromisoformat(e.get("starts_at") or e["date_str"])),
@@ -341,18 +398,28 @@ class ActivityListView(OwnedActivityView):
         self.page = min(self.page, pages - 1)
         subset = events[self.page * 6:self.page * 6 + 6]
         embed = discord.Embed(
-            title="Les sorties de la guilde",
-            description="Choisis une sortie pour voir sa fiche et t'inscrire.\n"
-                        "Les annonces des membres restent libres ; cette liste suit les groupes.",
+            title={"join": "Rejoindre une activité", "leave": "Me désinscrire"}.get(
+                self.action, "Les sorties de la guilde"),
+            description={
+                "join": "Choisis dans le menu ci-dessous : **tu seras inscrit directement**.\n"
+                        "Une sortie complète t'inscrit en liste d'attente, sans rôle pour l'instant.",
+                "leave": "Choisis dans le menu la sortie à quitter : ta place sera libérée.",
+            }.get(self.action, "Choisis une sortie pour voir l'annonce, les participants et t'inscrire."),
             colour=discord.Colour.blue(),
         )
         for record in subset:
             starts = utc(datetime.fromisoformat(record.get("starts_at") or record["date_str"]))
+            participants = record.get("participants", [])
+            capacity = record.get("capacity", DEFAULT_CAPACITY)
+            places = max(0, capacity - len(participants))
+            names = " ".join(f"<@{uid}>" for uid in participants[:8]) or "Aucun inscrit"
+            if len(participants) > 8:
+                names += f" + {len(participants) - 8} autre(s)"
             text = (
-                f"<t:{int(starts.timestamp())}:f> · "
-                f"{len(record.get('participants', []))}/{record.get('capacity', DEFAULT_CAPACITY)} inscrits"
+                f"**{starts.astimezone(PARIS):%d/%m/%Y à %H:%M} (Paris)** · <t:{int(starts.timestamp())}:R>\n"
+                f"**{len(participants)}/{capacity} inscrits · {places} place(s) restante(s)**"
                 f" · {len(record.get('waitlist', []))} en attente\n"
-                f"{safe(record.get('lieu') or 'Rendez-vous à préciser', 160)}"
+                f"{names}\n{safe(record.get('lieu') or 'Rendez-vous à préciser', 160)}"
             )
             if record.get("cancelled"):
                 text += "\n**Annulée**"
@@ -361,8 +428,14 @@ class ActivityListView(OwnedActivityView):
         if not subset:
             embed.description += "\n\nAucune sortie dans ce filtre. Le bouton Créer ouvre le formulaire."
         self.choose.options = [
-            discord.SelectOption(label=one_line(f"#{e['id']} · {e['titre']}", 95), value=str(e["id"]))
-            for e in subset
+            discord.SelectOption(
+                label=one_line(e["titre"], 95), value=str(e["id"]),
+                description=one_line(
+                    f"{utc(datetime.fromisoformat(e.get('starts_at') or e['date_str'])).astimezone(PARIS):%d/%m/%Y %H:%M}"
+                    f" · {len(e.get('participants', []))}/{e.get('capacity', DEFAULT_CAPACITY)} inscrits"
+                    f" · {max(0, e.get('capacity', DEFAULT_CAPACITY) - len(e.get('participants', [])))} libres", 100,
+                ),
+            ) for e in subset
         ] or [discord.SelectOption(label="Aucune sortie", value="empty")]
         self.choose.disabled = not subset
         self.previous.disabled = self.page <= 0
@@ -384,8 +457,13 @@ class ActivityListView(OwnedActivityView):
     @discord.ui.select(placeholder="Choisir une sortie", row=1)
     async def choose(self, interaction, select):
         await invoke_from_component(
-            self.cog.bot, interaction, "activite", f"info {select.values[0]}",
+            self.cog.bot, interaction, "activite", f"{self.action} {select.values[0]}",
         )
+        if self.action != "info" and interaction.message is not None:
+            try:
+                await interaction.message.edit(embed=self.build_embed(), view=self)
+            except discord.HTTPException:
+                log.debug("Activity picker refresh failed", exc_info=True)
 
     @discord.ui.button(label="Précédent", style=discord.ButtonStyle.secondary, row=2)
     async def previous(self, interaction, button):

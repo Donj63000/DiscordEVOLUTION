@@ -21,7 +21,7 @@ from utils.activity_data import (
     parse_activity_when, utc, validate_draft,
 )
 from utils.activity_store import ActivitySnapshotStore
-from utils.activity_views import ActivityCardView, ActivityModal, activity_embed
+from utils.activity_views import ActivityCardView, ActivityListView, ActivityModal, activity_embed
 from utils.calendar_data import matches_filter, snapshot_events
 
 NOW = datetime(2026, 9, 12, 10, tzinfo=timezone.utc)
@@ -169,6 +169,7 @@ async def workflow(slash_bot, monkeypatch):
     cog.dump_data_to_console = AsyncMock()
     cog.dump_data_to_console_no_ctx = AsyncMock()
     cog.sync_card = AsyncMock(return_value=True)
+    cog._sync_legacy_roles = AsyncMock(return_value=True)
     await slash_bot.add_cog(cog)
     catalog = SlashCommandsCog(slash_bot)
     catalog.register_commands()
@@ -208,10 +209,11 @@ def member(env, identifier):
 
 
 @pytest.mark.asyncio
-async def test_create_command_has_no_fields_and_opens_modal_without_deferring(workflow):
+async def test_create_command_has_no_required_fields_and_opens_modal_without_deferring(workflow):
     env = workflow
     command = env.click.command
-    assert command.parameters == []
+    assert [parameter.name for parameter in command.parameters] == ["duree"]
+    assert all(not parameter.required for parameter in command.parameters)
     await command.callback(env.click)
     env.click.response.defer.assert_not_awaited()
     env.click.response.send_modal.assert_awaited_once()
@@ -232,7 +234,7 @@ async def test_modal_opening_does_not_bypass_global_checks(workflow):
 
 
 @pytest.mark.asyncio
-async def test_create_is_idempotent_and_does_not_create_a_discord_role(workflow):
+async def test_create_records_one_activity_per_draft_before_discord_effects(workflow):
     env = workflow
     env.cog.activities_data = {"next_id": 1, "events": {}}
     values = {"titre": "Sortie", "date": "demain 21h", "capacite": "4",
@@ -460,7 +462,8 @@ async def test_valid_modal_preview_then_confirm_runs_the_real_checked_command(wo
     modal.description_input._value = "Sans ping général"
     await modal.on_submit(env.click)
     env.cog.dump_data_to_console.assert_not_awaited()
-    preview = env.click.response.send_message.await_args.kwargs["view"]
+    env.click.response.defer.assert_awaited_once_with(thinking=True, ephemeral=True)
+    preview = env.click.edit_original_response.await_args.kwargs["view"]
     await preview.confirm.callback(component_click(env))
     stored = env.cog.activities_data["events"]["1"]
     assert stored["titre"] == "Donjon avec la guilde"
@@ -685,3 +688,27 @@ async def test_code_fences_in_member_text_do_not_poison_inline_console_snapshots
     assert store.message.content.count("```") == 2
     legacy = FakeMessage(bot.user, "===BOTACTIVITES===\n```json\n" + json.dumps(payload) + "\n```")
     assert await store.extract_payload(legacy) == payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["join", "leave"])
+async def test_quick_picker_selection_runs_checked_membership_command(workflow, monkeypatch, action):
+    env = workflow
+    user = member(env, 2)
+    if action == "leave":
+        env.cog.activities_data["events"]["1"]["participants"].append(user.id)
+    picker = ActivityListView(env.cog, user.id, 100, action=action)
+    picker.build_embed()
+    picker.choose._values = ["1"]
+    click = component_click(env, user=user)
+    edit_message = AsyncMock()
+    monkeypatch.setattr(discord.Message, "edit", edit_message)
+    try:
+        await picker.choose.callback(click)
+        participants = env.cog.activities_data["events"]["1"]["participants"]
+        assert (user.id in participants) is (action == "join")
+        edit_message.assert_awaited_once()
+        assert picker.choose.disabled
+        assert click.followup.send.await_args.kwargs["ephemeral"]
+    finally:
+        picker.stop()

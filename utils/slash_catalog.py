@@ -152,7 +152,15 @@ PARAMETERS = {
 
 JOB_NAME = Option("metier", "Choisis un métier ou saisis son nom.", autocomplete="jobs")
 LEVEL = Option("niveau", "Niveau du métier, de 1 à 100.", app_commands.Range[int, 1, 100])
-ACTIVITY_ID = Option("identifiant", "Identifiant de l’activité.", autocomplete="activities")
+ACTIVITY_ID = Option("identifiant", "Choisir une activité : nom, date, inscrits et places libres.", autocomplete="activities")
+ACTIVITY_PICKER_ID = Option(
+    "identifiant", "Facultatif : choisir ici, ou envoyer la commande pour ouvrir la liste.",
+    default=None, autocomplete="activities",
+)
+ACTIVITY_DURATION = Option(
+    "duree", "Durée prévue en minutes (180 = 3 h). Le rôle sera supprimé à la fin.",
+    annotation=app_commands.Range[int, 1, 10080], default=None,
+)
 DATE = Option("date", "Date et heure de Paris au format JJ/MM/AAAA HH:MM.")
 DESCRIPTION = Option("description", "Informations utiles pour les participants.", default="")
 MODIFIED_DESCRIPTION = Option(
@@ -197,11 +205,11 @@ def custom_routes() -> tuple[Route, ...]:
         Route(("job", "nettoyer"), "job", "Staff : retirer les joueurs absents du serveur.", fixed=("prune",)),
         Route(("activite", "aide"), "activite", "Consulter le guide des activités.", fixed=("guide",)),
         Route(("activite", "liste"), "activite", "Consulter les prochaines activités.", fixed=("liste",)),
-        Route(("activite", "creer"), "activite", "Créer une sortie avec un formulaire rapide.", (), ("creer",), "activity_form"),
-        Route(("activite", "modifier"), "activite", "Modifier une sortie dans un formulaire prérempli.", (ACTIVITY_ID,), ("modifier",), "activity_form"),
+        Route(("activite", "creer"), "activite", "Créer une sortie avec annonce et inscriptions.", (ACTIVITY_DURATION,), ("creer",), "activity_form"),
+        Route(("activite", "modifier"), "activite", "Modifier une sortie dans un formulaire prérempli.", (ACTIVITY_ID, ACTIVITY_DURATION), ("modifier",), "activity_form"),
         Route(("activite", "info"), "activite", "Consulter les détails d’une activité.", (ACTIVITY_ID,), ("info",), "rest"),
-        Route(("activite", "rejoindre"), "activite", "T’inscrire à une activité.", (ACTIVITY_ID,), ("join",), "rest"),
-        Route(("activite", "quitter"), "activite", "Te désinscrire d’une activité.", (ACTIVITY_ID,), ("leave",), "rest"),
+        Route(("activite", "rejoindre"), "activite", "Voir les sorties, les places et t’inscrire.", (ACTIVITY_PICKER_ID,), ("join",), "rest"),
+        Route(("activite", "quitter"), "activite", "Voir tes inscriptions et quitter une sortie.", (ACTIVITY_PICKER_ID,), ("leave",), "rest"),
         Route(("activite", "annuler"), "activite", "Annuler une activité que tu organises.", (ACTIVITY_ID,), ("annuler",), "rest"),
         Route(("rune", "aide"), "rune", "Consulter le guide de calcul des runes."),
         Route(("rune", "calculer"), "rune", "Calculer les probabilités de runes pour un jet.", (Option("jet", "Valeur du jet à briser.", app_commands.Range[int, 1, 10000]), Option("statistique", "Exemple : force, intelligence, vitalité ou sagesse.")), ("jet",), "rest"),
@@ -305,10 +313,14 @@ def format_arguments(route: Route, values: dict[str, object]) -> str:
         return ""
     parts = [str(getattr(values[o.name], "mention", values[o.name]))
              for o in route.options if values.get(o.name) is not None]
-    if route.target == "activite" and "identifiant" in values:
+    if route.target == "activite" and values.get("identifiant") not in (None, ""):
         identifier = str(values["identifiant"])
         if not re.fullmatch(r"[0-9]{1,20}", identifier) or int(identifier) == 0:
             raise SlashInputError("Choisis une activité proposée ou indique son identifiant numérique.")
+    if route.mode == "activity_form":
+        return " ".join([*route.fixed, *(
+            [str(values["identifiant"])] if values.get("identifiant") else []
+        )])
     if route.mode == "activity":
         activity_datetime(values["date"])
         if "\n" in str(values.get("titre", "")):

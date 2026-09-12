@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -12,7 +13,9 @@ PARIS = ZoneInfo("Europe/Paris")
 DEFAULT_CAPACITY = 8
 MAX_CAPACITY = 100
 MAX_WAITLIST = 100
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+DEFAULT_DURATION_MINUTES = 180
+MAX_DURATION_MINUTES = 10080
 
 
 class ActivityError(ValueError):
@@ -23,6 +26,40 @@ def utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=PARIS)
     return value.astimezone(timezone.utc)
+
+
+
+def duration_minutes(value: object = None) -> int:
+    """An explicit elapsed duration, independent of Paris daylight-saving changes."""
+    if value in (None, ""):
+        value = os.getenv("ACTIVITE_DEFAULT_DURATION_MINUTES", str(DEFAULT_DURATION_MINUTES))
+    if isinstance(value, bool) or not re.fullmatch(r"[0-9]{1,5}", str(value).strip()):
+        raise ActivityError("La durée doit être un nombre entier de minutes (exemple : 180 pour 3 h).")
+    duration = int(str(value).strip())
+    if not 1 <= duration <= MAX_DURATION_MINUTES:
+        raise ActivityError("Choisis une durée de 1 à 10 080 minutes (7 jours maximum).")
+    return duration
+
+
+def activity_end(record: dict) -> datetime:
+    """Read stored end time or derive a conservative end for a legacy record."""
+    if record.get("ends_at"):
+        return utc(datetime.fromisoformat(record["ends_at"]))
+    start = utc(datetime.fromisoformat(record.get("starts_at") or record["date_str"]))
+    return start + timedelta(minutes=int(record.get("duration_minutes", DEFAULT_DURATION_MINUTES)))
+
+
+def activity_status(record: dict, now: datetime) -> str:
+    if record.get("cancelled"):
+        return "Annulée"
+    if activity_end(record) <= utc(now):
+        return "Terminée"
+    start = utc(datetime.fromisoformat(record.get("starts_at") or record["date_str"]))
+    if start <= utc(now):
+        return "En cours"
+    if len(record.get("participants", [])) >= int(record.get("capacity", DEFAULT_CAPACITY)):
+        return "Complet · liste d'attente ouverte"
+    return "Inscriptions ouvertes"
 
 
 def clean_text(value: object, maximum: int, label: str, *, required: bool = False) -> str:
@@ -101,10 +138,13 @@ def validate_draft(values: dict, *, now: datetime | None = None) -> dict:
     if not 1 <= capacity <= MAX_CAPACITY:
         raise ActivityError("Choisis entre 1 et 100 places, organisateur compris.")
     starts = parse_activity_when(str(values.get("date") or ""), now=now)
+    duration = duration_minutes(values.get("duree"))
     return {
         "titre": title,
         "date_str": starts.strftime("%Y-%m-%d %H:%M:%S"),
         "starts_at": utc(starts).isoformat(),
+        "duration_minutes": duration,
+        "ends_at": (utc(starts) + timedelta(minutes=duration)).isoformat(),
         "lieu": location,
         "description": description,
         "capacity": capacity,
@@ -168,7 +208,7 @@ class ActiviteData:
         starts = datetime.fromisoformat(data.get("starts_at") or data["date_str"])
         event = ActiviteData(
             data["id"], data["titre"], starts, data.get("description", ""),
-            data["creator_id"], data.get("role_id"),
+            data["creator_id"], int(data["role_id"]) if data.get("role_id") else None,
             data.get("reminder_24_sent", False), data.get("reminder_1_sent", False),
         )
         event.participants = unique_ids(data.get("participants", []))
@@ -211,6 +251,14 @@ def migrate_snapshot(payload: dict, guild_id: int | None) -> dict:
             data.setdefault("capacity", DEFAULT_CAPACITY)
             data.setdefault("lieu", "")
             data.setdefault("revision", 0)
+            data.setdefault("duration_minutes", DEFAULT_DURATION_MINUTES)
+            data["duration_minutes"] = duration_minutes(data["duration_minutes"])
+            end = activity_end(data)
+            if end <= utc(event.date_obj):
+                raise ActivityError("La fin doit être postérieure au début.")
+            data["ends_at"] = end.isoformat()
+            if not data.get("message_id") and not data.get("cancelled") and end > datetime.now(timezone.utc):
+                data.setdefault("publication_pending", True)
             events[key] = data
         except (KeyError, TypeError, ValueError, OverflowError):
             quarantined[key] = copy.deepcopy(record)
@@ -274,3 +322,4 @@ def apply_draft(record: dict, draft: dict, *, revision: int | None = None) -> No
     if previous_start != utc(datetime.fromisoformat(draft["starts_at"])):
         record["reminder_24_sent"] = record["reminder_1_sent"] = False
         record["closed"] = False
+        record["completed"] = False

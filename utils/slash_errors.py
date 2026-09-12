@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 
@@ -65,16 +66,21 @@ def log_command_error(logger: logging.Logger, error: Exception, *, command: str)
 
 
 async def send_interaction_error(interaction, message: str) -> bool:
-    """Un échec d'envoi ne doit jamais provoquer une seconde exception non traitée."""
+    """Finish loading responses on errors too, without ever leaking a private error publicly."""
     if interaction.is_expired():
         return False
-    try:
+
+    async def deliver():
         if interaction.response.is_done():
             if getattr(interaction.response, "type", None) is discord.InteractionResponseType.deferred_channel_message:
                 original = await interaction.original_response()
-                if original.flags.loading and not original.flags.ephemeral:
-                    # Une première réponse différée publique ne peut pas devenir privée.
-                    # Terminer l'attente sans détail avant le véritable message éphémère.
+                if original.flags.loading:
+                    if original.flags.ephemeral:
+                        await interaction.edit_original_response(
+                            content=message, embed=None, view=None, attachments=[],
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                        return
                     await interaction.edit_original_response(
                         content="Une réponse à cette commande t'est envoyée en privé.",
                         embed=None, view=None, attachments=[],
@@ -87,7 +93,10 @@ async def send_interaction_error(interaction, message: str) -> bool:
             await interaction.response.send_message(
                 message, ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
             )
-    except discord.HTTPException:
+
+    try:
+        await asyncio.wait_for(deliver(), timeout=10)
+    except (discord.HTTPException, asyncio.TimeoutError):
         logging.getLogger(__name__).debug("Slash : interaction devenue indisponible.", exc_info=True)
         return False
     return True

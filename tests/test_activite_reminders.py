@@ -66,6 +66,7 @@ def activity_env(monkeypatch, tmp_path, clock):
     monkeypatch.setenv("ACTIVITE_HISTORY_LIMIT", "200")
     cog = activite.ActiviteCog(bot)
     cog.initialized = True
+    cog._sync_legacy_roles = AsyncMock(return_value=True)
     cog._resolve_organisation_channel = lambda _guild: organisation
     cog._resolve_console_channel = lambda _guild: console
     return SimpleNamespace(
@@ -133,7 +134,8 @@ async def test_reminder_boundaries(activity_env, clock, remaining_seconds, expec
 
     if expected_flags is None:
         env.organisation.send.assert_not_awaited()
-        env.role.delete.assert_awaited_once_with(reason="Activité terminée")
+        env.role.delete.assert_not_awaited()
+        env.cog._sync_legacy_roles.assert_awaited_once_with(env.guild, "1")
         stored = env.cog.activities_data["events"]["1"]
         assert stored["closed"] is True
         assert stored["participants"] == [7, 8]
@@ -252,6 +254,7 @@ async def test_console_restoration_preserves_reminders_and_historical_data(
     }
     env.path.write_text('{"next_id": 1, "events": {}}', encoding="utf-8")
     restored = activite.ActiviteCog(env.bot)
+    restored._sync_legacy_roles = AsyncMock(return_value=True)
     restored._resolve_console_channel = env.cog._resolve_console_channel
     restored._resolve_organisation_channel = env.cog._resolve_organisation_channel
 
@@ -266,18 +269,18 @@ async def test_console_restoration_preserves_reminders_and_historical_data(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancelled_start", [datetime(2026, 9, 11, 23), datetime(2026, 9, 10, 23)])
-async def test_cancelled_activity_keeps_history_and_cleans_legacy_role(activity_env, cancelled_start):
+async def test_cancelled_activity_keeps_history_and_requests_role_cleanup(activity_env, cancelled_start):
     env = activity_env
     original = add_activity(env, cancelled_start, cancelled=True).to_dict()
 
     await env.cog.check_events_loop()
 
     env.organisation.send.assert_not_awaited()
-    env.role.delete.assert_awaited_once()
+    env.cog._sync_legacy_roles.assert_awaited_once_with(env.guild, "1")
     retained = env.cog.activities_data["events"]["1"]
     assert retained["participants"] == original["participants"]
     assert retained["cancelled"] and retained["closed"]
-    assert retained["role_id"] is None
+    assert retained["completed"] and retained["role_id"] == 42
 
 
 @pytest.mark.asyncio

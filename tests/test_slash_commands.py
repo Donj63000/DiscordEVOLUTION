@@ -490,7 +490,8 @@ def test_poll_and_activity_fields_are_translated_to_existing_syntax():
     assert format_arguments(routes[("sondage",)], {
         "titre": "Sortie ?", "choix": "Oui | Non", "duree": "00:02:00",
     }) == "Sortie ? ; Oui ; Non ; temps=00:02:00"
-    assert routes[("activite", "creer")].options == ()
+    assert [option.name for option in routes[("activite", "creer")].options] == ["duree"]
+    assert routes[("activite", "creer")].options[0].default is None
     assert format_arguments(routes[("activite", "creer")], {}) == "creer"
     assert format_arguments(routes[("activite", "modifier")], {"identifiant": "7"}) == "modifier 7"
 
@@ -730,4 +731,4 @@ async def test_autocomplete_activities_excludes_cancelled_events(slash_bot, monk
     }})
     monkeypatch.setattr(slash_bot, "get_cog", lambda name: cog)
     choices = await SlashCommandsCog(slash_bot).autocomplete_activities(SimpleNamespace(), "donjon")
-    assert [(choice.name, choice.value) for choice in choices] == [("10/01 21:00 · Donjon guilde · #1", "1")]
+    assert [(choice.name, choice.value) for choice in choices] == [("10/01/2099 21:00 · Donjon guilde · 0/8 inscrits · 8 libres · #1", "1")]

@@ -201,7 +201,7 @@ class CalendrierView(CalendarSession):
         *, source: EventSource | None = None, state: CalendarState | None = None,
         guild=None, renderer: MonthlyRenderer | None = None, action: ActivityAction | None = None,
         clock: Callable[[], datetime] | None = None, attach_files: bool = True,
-        attachment_limit: int = 8 * 1024 * 1024, private: bool = False,
+        attachment_limit: int = 8 * 1024 * 1024, private: bool = False, registry=None,
     ):
         super().__init__(author.id, getattr(guild, "id", None))
         self.events = events
@@ -213,6 +213,7 @@ class CalendrierView(CalendarSession):
         self.attach_files = attach_files
         self.attachment_limit = attachment_limit
         self.private = private
+        self.registry = registry
         self.state = state or CalendarState(highlight or self.highlight_date)
         self._load()
 
@@ -435,6 +436,27 @@ class CalendrierView(CalendarSession):
         self._last_embed = embed
         return embed, files
 
+    async def refresh_from_source(self):
+        """Refresh an open session after a durable activity change, without a user click."""
+        async with self._lock:
+            if self.is_finished() or self.message is None:
+                return
+            files = []
+            try:
+                embed, files = await self.build_payload()
+                retained = {item.filename: item for item in getattr(self.message, "attachments", ())}
+                attachments = [retained.get(file.filename, file) for file in files]
+                message = await self.message.edit(
+                    content=None, embed=embed, attachments=attachments, view=self,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                if message is not None:
+                    self.message = message
+                self._last_embed = embed
+                log.debug("Calendar: synchronized from activity store author_id=%s", self.author_id)
+            finally:
+                close_files(files)
+
     async def send_initial(self, sender: Callable[..., Awaitable[Any]]) -> None:
         """Partage l'envoi initial et son repli texte entre la commande et les copies privées."""
         files = []
@@ -462,6 +484,8 @@ class CalendrierView(CalendarSession):
                 )
             self.message = message
             self._last_embed = embed
+            if self.registry is not None:
+                self.registry.add(self)
         except BaseException:
             self.stop()
             raise
@@ -484,6 +508,7 @@ class CalendrierView(CalendarSession):
             interaction.user, {}, source=self.source, state=state,
             guild=self.guild, renderer=self.renderer, action=self.action, clock=self.clock,
             attach_files=self.attach_files, attachment_limit=self.attachment_limit, private=True,
+            registry=self.registry,
         )
 
         async def sender(**kwargs):

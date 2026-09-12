@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 import re
@@ -17,6 +18,7 @@ from utils.slash_errors import (
 )
 
 log = logging.getLogger(__name__)
+ACTIVITY_COMMAND_TIMEOUT = 45.0
 PRIVATE_WORKFLOWS = {
     "aide", "ticket", "event", "avis", "ia", "iaend", "profil set", "profil import",
     "warnings", "resetwarnings", "defenderstatus", "clear", "recrutement",
@@ -74,25 +76,43 @@ class SlashContext(commands.Context):
         self._public_deferred = False
 
     async def send(self, content=None, **kwargs):
-        # Le caractère privé est irréversible, y compris après expiration du jeton.
-        private = self.private_response or self.command_failed or kwargs.pop("ephemeral", False)
-        kwargs["ephemeral"] = private
+        """Explicitly finish a deferred original; never rely on the deprecated followup shortcut."""
+        requested_private = kwargs.pop("ephemeral", False)
+        private = self.private_response or self.command_failed or requested_private
+        deferred = (
+            self.response_count == 0
+            and getattr(self.interaction.response, "type", None)
+            is discord.InteractionResponseType.deferred_channel_message
+        )
         if private and self.interaction.is_expired():
-            kwargs.pop("ephemeral", None)
             kwargs.pop("reference", None)
             kwargs.pop("mention_author", None)
             message = await self.author.send(content, **kwargs)
+        elif private and self._public_deferred and self.response_count == 0:
+            await self.interaction.edit_original_response(
+                content="Une réponse à cette commande t'est envoyée en privé.",
+                embed=None, view=None, attachments=[],
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            self._public_deferred = False
+            message = await super().send(content, ephemeral=True, **kwargs)
+        elif deferred:
+            attachments = kwargs.pop("files", None)
+            file = kwargs.pop("file", None)
+            if file is not None:
+                attachments = [file]
+            if attachments is not None:
+                kwargs["attachments"] = attachments
+            delete_after = kwargs.pop("delete_after", None)
+            allowed = {"embed", "embeds", "attachments", "view", "allowed_mentions", "poll"}
+            message = await self.interaction.edit_original_response(
+                content=content, **{key: value for key, value in kwargs.items() if key in allowed},
+            )
+            self._public_deferred = False
+            if delete_after is not None:
+                await message.delete(delay=delete_after)
         else:
-            if private and self._public_deferred and self.response_count == 0:
-                # L'éphémérité du premier message différé ne peut pas être modifiée.
-                # On termine donc publiquement l'attente sans divulguer le détail.
-                await self.interaction.edit_original_response(
-                    content="Une réponse à cette commande t'est envoyée en privé.",
-                    embed=None, view=None, attachments=[],
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-                self._public_deferred = False
-            message = await super().send(content, **kwargs)
+            message = await super().send(content, ephemeral=private, **kwargs)
         self.response_count += 1
         return message
 
@@ -183,17 +203,50 @@ async def invoke_from_slash(
     return await _invoke_checked_context(bot, command, ctx)
 
 
+async def _activity_deadline(operation):
+    """Discord's command wrapper may swallow cancellation; a missed deadline is still an error."""
+    worker = asyncio.create_task(operation)
+    worker.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    try:
+        completed, _ = await asyncio.wait({worker}, timeout=ACTIVITY_COMMAND_TIMEOUT)
+        if not completed:
+            worker.cancel()
+            await asyncio.wait({worker}, timeout=1)
+            raise asyncio.TimeoutError()
+        return await worker
+    finally:
+        if not worker.done():
+            worker.cancel()
+
+
 async def _invoke_checked_context(bot, command, ctx):
     """Conserve conversions, contrôles, hooks et événements sans doubler les erreurs."""
     bot.dispatch("command", ctx)
-    try:
+    async def run():
         if not await bot.can_run(ctx, call_once=True):
             raise commands.CheckFailure("Le contrôle global a refusé cette commande.")
         for parent in reversed(command.parents):
             if not await parent.can_run(ctx):
                 raise commands.CheckFailure("Le contrôle du groupe a refusé cette commande.")
         await commands.Command.invoke(command, ctx)
-    except commands.CommandError as error:
+
+    try:
+        if command.qualified_name in {"activite", "calendrier"}:
+            await _activity_deadline(run())
+        else:
+            await run()
+    except Exception as failure:
+        if isinstance(failure, asyncio.TimeoutError):
+            text = (
+                "Ta modification est enregistrée. L'affichage ou le rôle est encore en attente ; "
+                "le bot réessaiera automatiquement. Ne recrée pas l'activité."
+                if getattr(ctx, "activity_committed", False) else
+                "Discord met trop de temps à répondre. L'attente est arrêtée. "
+                "Vérifie /activite liste avant de réessayer."
+            )
+            error = commands.CommandInvokeError(SlashInputError(text))
+        else:
+            error = failure if isinstance(failure, commands.CommandError) else commands.CommandInvokeError(failure)
         ctx.command_failed = True
         ctx.slash_error_handled = True
         before = ctx.response_count
@@ -201,13 +254,13 @@ async def _invoke_checked_context(bot, command, ctx):
         try:
             # Les gestionnaires métiers gardent la priorité. Le gestionnaire global
             # de main.py ignore cette erreur, déjà prise en charge par le pont.
-            await command.dispatch_error(ctx, error)
+            await asyncio.wait_for(command.dispatch_error(ctx, error), timeout=10)
         except Exception as handler_error:
             log_command_error(log, handler_error, command=command.qualified_name)
         if ctx.response_count == before:
             try:
-                await ctx.send(error_message(error))
-            except discord.HTTPException:
+                await asyncio.wait_for(ctx.send(error_message(error)), timeout=10)
+            except (discord.HTTPException, asyncio.TimeoutError):
                 log.warning("Slash : réponse d'erreur impossible pour %s.", command.qualified_name,
                             exc_info=True)
     else:
