@@ -52,6 +52,7 @@ Les commandes de recherche suggèrent les noms pendant la saisie.
 | Je veux… | Commande |
 | --- | --- |
 | Découvrir le bot | `/aide` |
+| Simuler un exo, suivre le puits nominal, calculer les probabilités | `/exo` · [Guide complet](docs/EXO.md) |
 | Consulter un objet | `/objet nom:Gelano` |
 | Préparer trois fabrications | `/recette objet:Gelano quantite:3` |
 | Chercher une coiffe jusqu'au niveau 100 | `/equipement type:Chapeau niveau:100` |

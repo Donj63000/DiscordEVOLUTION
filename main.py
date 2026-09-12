@@ -148,6 +148,7 @@ class EvoBot(commands.Bot):
             "member_guard",
             "calcul",
             "dofus_wiki",
+            "exo",
             "perco",
             "avis",
             "organisation",
