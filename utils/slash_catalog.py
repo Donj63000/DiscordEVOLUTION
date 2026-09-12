@@ -37,7 +37,7 @@ DESCRIPTIONS = {
     "ticket": "Contacter le Staff : ouvrir un échange privé guidé.",
     "staff": "Afficher les membres du Staff.",
     "avis": "Donner ton avis sur la guilde en message privé.",
-    "calendrier": "Consulter le calendrier interactif des activités.",
+    "calendrier": "Ouvrir le calendrier du mois en cours, sans date à saisir.",
     "event": "Staff : préparer un événement Discord avec le guide en message privé.",
     "veteran": "Staff : consulter les candidats Vétéran et les promouvoir par bouton.",
     "recrutement": "Staff : enregistrer un nouveau joueur dans la guilde.",
@@ -156,10 +156,10 @@ DESCRIPTION = Option("description", "Informations utiles pour les participants."
 def custom_routes() -> tuple[Route, ...]:
     confirmation = os.getenv("CLEAR_CONSOLE_CONFIRMATION", "CONFIRMER")
     return (
-        Route(("calendrier",), "calendrier", "Consulter l’agenda, filtrer les sorties et s’inscrire.", (
-            Option("vue", "Agenda de la semaine ou aperçu du mois.", default="semaine",
+        Route(("calendrier",), "calendrier", "Ouvrir le mois en cours, consulter les sorties et s’inscrire.", (
+            Option("vue", "Vue du mois par défaut, ou agenda de la semaine.", default="mois",
                    choices=("semaine", "mois")),
-            Option("date", "Date à afficher, au format JJ/MM/AAAA ; vide pour aujourd’hui.", default=""),
+            Option("date", "Date facultative au format JJ/MM/AAAA ; aujourd’hui à Paris si omise.", default=""),
             Option("filtre", "Toutes, tes inscriptions, ou les sorties avec des places.", default="toutes",
                    choices=("toutes", "inscrit", "disponibles")),
             Option("prive", "Afficher ce calendrier uniquement pour toi.", bool, False),

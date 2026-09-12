@@ -168,6 +168,7 @@ class HelpCog(commands.Cog):
         embed.add_field(
             name=":calendar_spiral: Commandes Activités",
             value=(
+                "`/calendrier` : ouvre le mois en cours, sans date à saisir.\n\n"
                 "__**!activite creer <Titre> <JJ/MM/AAAA HH:MM> [desc]**__\n"
                 "> Crée une activité (donjon/sortie) + rôle éphémère + annonce dans #organisation.\n\n"
                 "__**!activite liste**__\n"

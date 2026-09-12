@@ -2,8 +2,8 @@
 
 ## Objectif et périmètre
 
-Cette mise à jour remplace le calendrier essentiellement graphique par un agenda
-hebdomadaire natif Discord, avec un aperçu mensuel complémentaire. Elle concerne
+Le calendrier ouvre le mois en cours avec un aperçu graphique et la liste des
+activités dans Discord. Une vue hebdomadaire reste disponible. Il concerne
 les activités de `ActiviteCog`, créées avec `/activite creer` ou `!activite creer`.
 
 Le patch est construit sur l'archive `DiscordEVOLUTION-main (1).zip` fournie.
@@ -14,7 +14,7 @@ de sauvegarde dans `#console`. Aucun nouveau paquet n'est ajouté aux dépendanc
 
 | Problème constaté dans le code | Correction |
 | --- | --- |
-| Un mois complet affiché, même pour consulter la semaine | Agenda de la semaine par défaut ; vue mensuelle au choix |
+| Une seule échelle de consultation | Mois courant par défaut ; agenda de la semaine au choix |
 | Texte minuscule et coupé, sur un fond décoratif chargé | Informations en texte Discord ; PNG opaque et contrasté en complément |
 | Copie des événements conservée à l'ouverture | Relecture du stockage en mémoire à chaque navigation et actualisation |
 | Détails et inscriptions absents du calendrier | Fiche privée et boutons reliés aux commandes d'activité existantes |
@@ -23,11 +23,13 @@ de sauvegarde dans `#console`. Aucun nouveau paquet n'est ajouté aux dépendanc
 
 ## Utilisation
 
-Les paramètres sont facultatifs et se choisissent dans le menu `/` de Discord.
+Tape simplement `/calendrier` pour ouvrir le mois en cours, déterminé avec la date
+du jour en Europe/Paris. Aucune date ni autre option n’est demandée à l’ouverture.
+Les paramètres restent facultatifs et se choisissent dans le menu `/` de Discord.
 
 ```text
 /calendrier
-/calendrier vue:mois
+/calendrier vue:semaine
 /calendrier date:11/09/2026
 /calendrier filtre:inscrit prive:True
 /calendrier vue:mois date:01/10/2026 filtre:disponibles
@@ -35,7 +37,7 @@ Les paramètres sont facultatifs et se choisissent dans le menu `/` de Discord.
 
 | Paramètre | Valeurs | Par défaut |
 | --- | --- | --- |
-| `vue` | `semaine`, `mois` | `semaine` |
+| `vue` | `semaine`, `mois` | `mois` |
 | `date` | `JJ/MM/AAAA`, entre 1970 et 2100 | Aujourd'hui à Paris |
 | `filtre` | `toutes`, `inscrit`, `disponibles` | `toutes` |
 | `prive` | Booléen Discord, vrai ou faux | Faux : message visible dans le salon |
@@ -70,7 +72,7 @@ Le PNG mensuel montre au maximum deux activités par jour et un indicateur `+N`
 pour les suivantes. Il est un aperçu, pas la seule source d'information :
 les listes paginées et les fiches restent disponibles pour toutes les activités.
 
-Le préfixe historique fonctionne toujours :
+Le préfixe historique `!calendrier` ouvre lui aussi le mois en cours sans argument :
 
 ```text
 !calendrier
@@ -227,8 +229,8 @@ le code ; il n'annule pas les inscriptions effectuées entre-temps.
 
 ## Recette à effectuer sur un serveur de test
 
-1. Ouvrir `/calendrier` sur ordinateur et mobile : semaine correcte, horaires Paris,
-   activités lisibles sans agrandir une image ; ouvrir ensuite la vue mensuelle.
+1. Ouvrir `/calendrier` sans argument sur ordinateur et mobile : mois courant à Paris,
+   aperçu mensuel et liste lisible ; basculer ensuite vers la vue semaine.
 2. Vérifier une semaine vide, plusieurs activités le même jour, plus de six
    activités, un titre long, des accents et une description avec des mentions.
 3. Changer de période et de filtre, saisir une date invalide, revenir à aujourd'hui

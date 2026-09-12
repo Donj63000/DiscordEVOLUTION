@@ -853,10 +853,10 @@ class ActiviteCog(commands.Cog):
     @commands.guild_only()
     @commands.cooldown(1, 5, commands.BucketType.member)
     async def afficher_calendrier(
-        self, ctx, vue: str = "semaine", date: str = "",
+        self, ctx, vue: str = "mois", date: str = "",
         filtre: str = "toutes", prive: bool = False,
     ):
-        """Affiche l'agenda hebdomadaire ou mensuel des activités à jour."""
+        """J'ouvre le mois en cours à Paris lorsque les options sont omises."""
         if not self.initialized:
             return await ctx.send("Données en cours de chargement. Réessaie dans quelques secondes.")
         if prive and getattr(ctx, "interaction", None) is None:

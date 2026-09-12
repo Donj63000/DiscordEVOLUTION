@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -43,8 +43,60 @@ def component_interaction(env, roles=(activite.VALIDATED_ROLE_NAME,)):
 
 def test_calendar_route_preserves_missing_positional_defaults():
     route = next(route for route in custom_routes() if route.path == ("calendrier",))
-    assert format_arguments(route, {"prive": True}) == '"semaine" "" "toutes" "True"'
-    assert format_arguments(route, {"date": "11/09/2026"}) == '"semaine" "11/09/2026" "toutes" "False"'
+    assert format_arguments(route, {}) == '"mois" "" "toutes" "False"'
+    assert format_arguments(route, {"prive": True}) == '"mois" "" "toutes" "True"'
+    assert format_arguments(route, {"date": "11/09/2026"}) == '"mois" "11/09/2026" "toutes" "False"'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["slash", "prefix"])
+@pytest.mark.parametrize("now_utc,today_paris", [
+    (datetime(2026, 9, 11, 19, 32, tzinfo=timezone.utc), date(2026, 9, 11)),
+    (datetime(2026, 9, 30, 22, 30, tzinfo=timezone.utc), date(2026, 10, 1)),
+    (datetime(2026, 12, 31, 23, 30, tzinfo=timezone.utc), date(2027, 1, 1)),
+])
+async def test_calendar_without_arguments_opens_current_paris_month(
+    calendar_bot, clock, transport, now_utc, today_paris,
+):
+    """Je vérifie les deux parcours complets sans date ni vue fournies."""
+    env = calendar_bot
+    clock.current = now_utc
+    env.cog.calendar_renderer.render = AsyncMock(return_value=b"png")
+    command = env.bot.tree.get_command("calendrier")
+    click = make_interaction(env.bot, command)
+    click.response.send_modal = AsyncMock()
+    if transport == "slash":
+        namespace = discord.app_commands.Namespace(click, {}, [])
+        await command._invoke_with_namespace(click, namespace)
+        payload = click.followup.send.await_args.kwargs
+        click.response.send_modal.assert_not_awaited()
+    else:
+        message = discord.Message(state=env.bot._connection, channel=click.channel, data={
+            "id": "901", "type": 0, "content": "!calendrier", "attachments": [], "embeds": [],
+            "author": {"id": str(AUTHOR_ID), "username": "Hero", "discriminator": "0", "avatar": None},
+        })
+        ctx = await env.bot.get_context(message)
+        ctx.send = AsyncMock(return_value=SimpleNamespace(id=902))
+        await env.bot.invoke(ctx)
+        assert not ctx.command_failed
+        payload = ctx.send.await_args.kwargs
+    view = payload["view"]
+    try:
+        assert view.state.mode == "mois"
+        assert view.state.anchor == today_paris
+        assert (view.year, view.month) == (today_paris.year, today_paris.month)
+        assert view.state.filter == "toutes"
+        assert payload["embed"].image.url.startswith("attachment://calendrier-")
+        assert len(payload["files"]) == 1
+        assert payload["files"][0].fp.closed
+        assert view.children and not view.is_finished()
+        assert {option.value for option in view.choose_mode.options} == {"mois", "semaine"}
+        env.cog.calendar_renderer.render.assert_awaited_once()
+        assert env.cog.calendar_renderer.render.await_args.args[1:] == (
+            today_paris.year, today_paris.month, today_paris,
+        )
+    finally:
+        view.stop()
 
 
 @pytest.mark.asyncio
@@ -54,11 +106,13 @@ async def test_real_calendar_slash_bridge_and_privacy(calendar_bot, private):
     command = env.bot.tree.get_command("calendrier")
     schema = command.to_dict(env.bot.tree)
     assert [option["name"] for option in schema["options"]] == ["vue", "date", "filtre", "prive"]
+    assert all(not option.get("required", False) for option in schema["options"])
+    env.cog.calendar_renderer.render = AsyncMock(return_value=b"png")
     click = make_interaction(env.bot, command)
     await command.callback(click, prive=private)
     view = click.followup.send.await_args.kwargs["view"]
     try:
-        assert view.state.mode == "semaine"
+        assert view.state.mode == "mois"
         assert view.state.anchor == date(2026, 9, 11)
         assert click.followup.send.await_args.kwargs["ephemeral"] is private
         if private:
@@ -71,18 +125,24 @@ async def test_real_calendar_slash_bridge_and_privacy(calendar_bot, private):
 
 
 @pytest.mark.asyncio
-async def test_real_slash_parameters_reach_month_filter_and_requested_date(calendar_bot):
+@pytest.mark.parametrize("mode", ["mois", "semaine"])
+async def test_real_slash_parameters_reach_view_filter_and_requested_date(calendar_bot, mode):
     env = calendar_bot
     env.cog.calendar_renderer.render = AsyncMock(return_value=b"png")
     command = env.bot.tree.get_command("calendrier")
     click = make_interaction(env.bot, command)
-    await command.callback(click, vue="mois", date="01/10/2026", filtre="inscrit")
+    await command.callback(click, vue=mode, date="01/10/2026", filtre="inscrit")
     view = click.followup.send.await_args.kwargs["view"]
     try:
-        assert view.state.mode == "mois"
+        assert view.state.mode == mode
         assert view.state.filter == "inscrit"
         assert view.state.anchor == date(2026, 10, 1)
-        assert click.followup.send.await_args.kwargs["files"][0].fp.closed
+        files = click.followup.send.await_args.kwargs["files"]
+        if mode == "mois":
+            assert files[0].fp.closed
+        else:
+            assert files == []
+            env.cog.calendar_renderer.render.assert_not_awaited()
     finally:
         view.stop()
 
@@ -244,12 +304,14 @@ async def test_missing_attachment_permission_does_not_attempt_monthly_render(cal
     click = make_interaction(env.bot, command)
     set_bot_permissions(env, click, monkeypatch, embeds=True, attachments=False)
     env.cog.calendar_renderer.render = AsyncMock()
-    await command.callback(click, vue="mois")
+    await command.callback(click)
     payload = click.followup.send.await_args.kwargs
     try:
         env.cog.calendar_renderer.render.assert_not_awaited()
         assert payload["files"] == []
         assert "Mode texte" in payload["embed"].fields[-1].name
+        assert payload["view"].state.mode == "mois"
+        assert not payload["view"].choose_event.disabled
     finally:
         payload["view"].stop()
 
@@ -262,7 +324,7 @@ async def test_first_upload_refusal_still_opens_native_agenda(calendar_bot):
     env.cog.calendar_renderer.render = AsyncMock(return_value=b"png")
     failure = discord.HTTPException(SimpleNamespace(status=413, reason="Too large"), "upload refused")
     click.followup.send.side_effect = [failure, SimpleNamespace(id=901)]
-    await command.callback(click, vue="mois")
+    await command.callback(click)
     first, second = click.followup.send.await_args_list
     view = second.kwargs["view"]
     try:
@@ -270,6 +332,8 @@ async def test_first_upload_refusal_still_opens_native_agenda(calendar_bot):
         assert not second.kwargs["embed"].image.url
         assert view.message.id == 901
         assert not view.is_finished()
+        assert view.state.mode == "mois"
+        assert not view.choose_event.disabled
     finally:
         view.stop()
 
