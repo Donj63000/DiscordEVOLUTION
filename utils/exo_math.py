@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING, localcontext
+import logging
 import math
 import random
 
 MAX_ATTEMPTS = 1_000_000
 MAX_EXPERIMENTS = 50_000
 MAX_KAMAS = 10**12
+log = logging.getLogger(__name__)
 
 
 def integer(value: object, low: int, high: int, label: str) -> int:
@@ -47,6 +49,7 @@ def no_success(p: float, n: int) -> float:
 
 
 def geometric_quantile(p: float, confidence: float) -> int | None:
+    """Je calcule le seuil avec une precision adaptee et des corrections bornees."""
     p, confidence = probability(p), probability(confidence)
     if confidence == 0:
         return 0
@@ -56,19 +59,26 @@ def geometric_quantile(p: float, confidence: float) -> int | None:
         return 1
     if confidence == 1:
         return None
-    ratio = math.log1p(-confidence) / math.log1p(-p)
-    if not math.isfinite(ratio):
-        with localcontext() as context:
-            context.prec = 400
-            quotient = Decimal(math.log1p(-confidence)) / Decimal(math.log1p(-p))
-            return int(quotient.to_integral_value(rounding=ROUND_CEILING))
-    n = max(1, math.ceil(ratio))
-    target = math.log1p(-confidence)
-    step = math.log1p(-p)
-    while n > 1 and (n - 1) * step <= target:
-        n -= 1
-    while n * step > target:
-        n += 1
+    if confidence <= p:
+        return 1
+    decimal_p = Decimal.from_float(p)
+    decimal_confidence = Decimal.from_float(confidence)
+    with localcontext() as context:
+        context.prec = max(64, 64 - 2 * min(
+            decimal_p.adjusted(), decimal_confidence.adjusted(),
+        ))
+        failure = 1 - decimal_p
+        target = 1 - decimal_confidence
+        quotient = target.ln() / failure.ln()
+        n = max(1, int(quotient.to_integral_value(rounding=ROUND_CEILING)))
+        correction = 0
+        if n > 1 and failure ** (n - 1) <= target:
+            n -= 1
+            correction = -1
+        elif failure ** n > target:
+            n += 1
+            correction = 1
+        log.debug("exo: quantile_computed precision=%s correction=%s", context.prec, correction)
     return n
 
 

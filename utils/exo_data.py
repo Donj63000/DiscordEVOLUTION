@@ -2,9 +2,31 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
 from utils.exo_engine import Item, normalized, stat_key
+
+log = logging.getLogger(__name__)
+RESISTANCE_ELEMENTS = {
+    "neutre": "ne", "au neutre": "ne",
+    "terre": "te", "a la terre": "te",
+    "feu": "fe", "au feu": "fe",
+    "eau": "ea", "a l eau": "ea",
+    "air": "ai", "a l air": "ai",
+}
+EFFECT_ALIASES = {
+    "a la chance": "cha",
+    **{
+        f"{prefix}{label} {element}{suffix}": stat_prefix + key
+        for element, key in RESISTANCE_ELEMENTS.items()
+        for label in ("resistance", "resistances")
+        for prefix, suffix, stat_prefix in (
+            ("", "", "r_"), ("% ", "", "rp_"),
+            ("% de ", "", "rp_"), ("", " %", "rp_"),
+        )
+    },
+}
 
 MAGEABLE = frozenset({
     "amulette", "amulettes", "anneau", "anneaux", "ceinture", "ceintures",
@@ -56,12 +78,17 @@ def parse_effects(lines: tuple[str, ...] | list[str]) -> tuple[dict, tuple, tupl
         label = re.sub(r"^(?:en |de |d['’])", "", label.strip(), flags=re.IGNORECASE)
         label = label.replace("résistances", "résistance")
         try:
-            key = stat_key(label)
+            key = EFFECT_ALIASES.get(normalized(label.replace("’", "'").replace("‘", "'")))
+            if key is None:
+                key = stat_key(label)
+            else:
+                log.debug("exo: effect_alias_resolved stat=%s", key)
             if key in bounds or not -10000 <= low <= high <= 10000:
                 raise ValueError("Ligne ambiguë.")
             bounds[key] = (low, high)
         except ValueError:
             unsupported.append(text[:300])
+            log.debug("exo: effect_unsupported_or_ambiguous")
     return bounds, tuple(unsupported), tuple(immutable)
 
 

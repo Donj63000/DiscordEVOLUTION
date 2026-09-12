@@ -1,6 +1,9 @@
 import copy
 import json
 import math
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -59,3 +62,25 @@ def test_common_legacy_damage_percent_is_parsed():
     bounds,unknown,_=parse_effects(["Augmente les dommages de 11 à 20%"])
     assert bounds == {"pui":(11,20)}
     assert not unknown
+
+
+@pytest.mark.parametrize("p", [0, 1, .01, 1e-30, 1e-320, math.nextafter(0.0, 1.0)])
+def test_imported_probability_render_has_a_bounded_runtime(p):
+    data = json.loads(export_session(Session.create(demo_item())))
+    data["math"]["p"] = p
+    script = """
+import sys
+from utils.exo_session import import_session
+from utils.exo_embeds import build_embed
+session = import_session(sys.stdin.buffer.read())
+session.tab = 'maths'
+embed = build_embed(session)
+assert len(embed) <= 6000
+print('rendered')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps(data).encode(), capture_output=True, timeout=8,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert result.stdout.strip() == b"rendered"

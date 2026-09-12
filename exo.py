@@ -26,6 +26,7 @@ from utils.xixou_api import XixouError
 
 log = logging.getLogger(__name__)
 MAX_SESSIONS = 120
+MODAL_LOCK_TIMEOUT = 0.1
 TABS = (
     ("atelier", "Atelier de forgemagie", "🔨"),
     ("maths", "Probabilités et budget", "📊"),
@@ -177,14 +178,26 @@ class ExoModal(discord.ui.Modal):
                 None if values["sink"] == "?" else decimal_value(values["sink"]),
             )
             state.validate()
-            if session.mode == "simulation":
-                session.sim = state
-            else:
-                session.observed = state
+            seed = whole(values["seed"], 0, 2**64 - 1, "Graine")
+            changed = state.sink != session.state.sink or any(
+                state.jets.get(stat, 0) != session.state.jets.get(stat, 0) for stat in STATS
+            )
+            if changed:
+                if session.mode == "simulation":
+                    session.sim = state
+                else:
+                    session.observed = state
+            if session.mode == "observation":
                 session.observation_ready = True
             session.goal_stat, session.goal_value = key, value
-            session.seed = whole(values["seed"], 0, 2**64 - 1, "Graine")
-            session.notice = "Jet déclaré. Compteurs du mode courant remis à zéro ; l'autre mode est inchangé."
+            session.seed = seed
+            session.notice = (
+                "Jet ou puits modifié. Compteurs et historique du mode courant remis à zéro ; "
+                "l'autre mode est inchangé."
+                if changed else
+                "Paramètres enregistrés. Jet, puits, compteurs et historique conservés."
+            )
+            log.debug("exo: jet_form_applied mode=%s state_reset=%s", session.mode, changed)
         elif self.kind == "rates":
             if self.rune_key != session.rune_key:
                 raise ValueError("La rune sélectionnée a changé.")
@@ -274,10 +287,22 @@ class ExoView(discord.ui.View):
         return await self.ensure_active(interaction)
 
     async def ensure_active(self, interaction):
-        if self.retired or self.cog.closed or time.monotonic() - self.created >= 840:
-            await private_message(interaction, "Atelier expiré. Ouvrez /exo ; un export JSON permet de reprendre.")
+        try:
+            self.require_active()
+        except WikiError as exc:
+            await private_message(interaction, str(exc))
             return False
         return True
+
+    def require_active(self):
+        if not self.active:
+            log.debug("exo: inactive_panel owner=%s", self.owner_id)
+            raise WikiError("Atelier expiré. Ouvrez /exo ; un export JSON permet de reprendre.")
+
+    @property
+    def active(self):
+        return not (self.retired or self.is_finished() or self.cog.closed
+                    or time.monotonic() - self.created >= 840)
 
     async def on_timeout(self):
         async with self.lock:
@@ -294,6 +319,12 @@ class ExoView(discord.ui.View):
         self.add_item(ActionButton(label, action, row, style, disabled))
 
     def rebuild(self):
+        self._rebuild()
+        if not self.active:
+            for child in self.children:
+                child.disabled = True
+
+    def _rebuild(self):
         self.clear_items()
         s = self.session
         self.add_item(ChoiceSelect(
@@ -371,7 +402,22 @@ class ExoView(discord.ui.View):
         return build_embed(self.session)
 
     async def publish(self, interaction, *, initial=False):
-        embed = self.embed()
+        self.require_active()
+        if self.session.tab == "maths" and not self.search_entries:
+            snapshot = copy.deepcopy(self.session)
+            async with self.cog.compute_slots:
+                self.require_active()
+                log.debug("exo: probability_render_started owner=%s", self.owner_id)
+                worker = asyncio.create_task(asyncio.to_thread(build_embed, snapshot))
+                try:
+                    embed = await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    await asyncio.gather(worker, return_exceptions=True)
+                    raise
+            log.debug("exo: probability_render_finished owner=%s", self.owner_id)
+        else:
+            embed = self.embed()
+        self.require_active()
         image = None if self.search_entries else self.image
         kwargs = {"embed": embed, "view": self, "allowed_mentions": discord.AllowedMentions.none()}
         if image is not None:
@@ -382,6 +428,7 @@ class ExoView(discord.ui.View):
             try:
                 message = await interaction.edit_original_response(**kwargs)
             except discord.HTTPException:
+                self.require_active()
                 embed.set_thumbnail(url=image.source_url)
                 kwargs["attachments"] = []
                 message = await interaction.edit_original_response(**kwargs)
@@ -406,7 +453,7 @@ class ExoView(discord.ui.View):
         self.rebuild()
         try:
             await self.publish(interaction)
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             self.session, self.undo_session = previous, old_undo
             self.rebuild()
             raise
@@ -440,7 +487,7 @@ class ExoView(discord.ui.View):
         self.rebuild()
         try:
             await self.publish(interaction)
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             self.search_entries, self.search_page, self.search_label = old
             self.session.revision -= 1
             self.rebuild()
@@ -451,7 +498,16 @@ class ExoView(discord.ui.View):
             return
         modal_action = "search" if action == "tab" and value == "search" else action
         if modal_action in {"jets", "rates", "observe", "math", "budget", "search"}:
-            async with self.lock:
+            if self.lock.locked():
+                await self.report_busy(interaction, modal_action)
+                return
+            try:
+                async with asyncio.timeout(MODAL_LOCK_TIMEOUT):
+                    await self.lock.acquire()
+            except TimeoutError:
+                await self.report_busy(interaction, modal_action)
+                return
+            try:
                 if not await self.ensure_active(interaction):
                     return
                 for previous_modal in list(self.modals):
@@ -464,6 +520,8 @@ class ExoView(discord.ui.View):
                     self.modals.discard(modal)
                     modal.stop()
                     raise
+            finally:
+                self.lock.release()
             return
         await interaction.response.defer()
         async with self.lock:
@@ -474,6 +532,10 @@ class ExoView(discord.ui.View):
             except (ValueError, WikiError) as exc:
                 log.debug("exo: action_rejected action=%s reason=%s", action, exc)
                 await private_message(interaction, str(exc))
+
+    async def report_busy(self, interaction, action):
+        log.debug("exo: modal_busy action=%s owner=%s", action, self.owner_id)
+        await private_message(interaction, "Une action est en cours. Réessaie dans un instant.")
 
     async def handle(self, interaction, action, value):
         s = copy.deepcopy(self.session)
@@ -507,7 +569,7 @@ class ExoView(discord.ui.View):
             self.undo_session = None
             try:
                 await self.commit(interaction, Session.create(item, self.session.goal_stat))
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 self.image, self.search_entries, self.page = old_image, old_entries, old_page
                 self.undo_session = previous_undo
                 self.rebuild()
@@ -524,7 +586,7 @@ class ExoView(discord.ui.View):
                 ))
             try:
                 await self.commit(interaction, s)
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 self.search_page, self.search_entries = old_page, old_entries
                 self.rebuild()
                 raise
@@ -537,7 +599,7 @@ class ExoView(discord.ui.View):
             s.tab, s.notice = value, ""
             try:
                 await self.commit(interaction, s)
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 self.search_entries = old_entries
                 self.rebuild()
                 raise
@@ -548,7 +610,7 @@ class ExoView(discord.ui.View):
                 self.page = (self.page + 1) % ((len(STATS) + 23) // 24)
                 try:
                     await self.commit(interaction, s)
-                except Exception:
+                except (Exception, asyncio.CancelledError):
                     self.page = old_page
                     self.rebuild()
                     raise
@@ -570,7 +632,7 @@ class ExoView(discord.ui.View):
             s.notice = "Dernière action annulée, y compris sa séquence aléatoire. Une seule étape d'annulation."
             try:
                 await self.commit(interaction, s)
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 self.undo_session = previous_undo
                 self.rebuild()
                 raise

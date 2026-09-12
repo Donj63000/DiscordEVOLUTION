@@ -115,6 +115,12 @@ avec sa séquence aléatoire ; il ne constitue pas un historique d'annulation il
 Exporter avant un changement d'objet, une nouvelle commande `/exo` ou une modification
 manuelle de jet qui remet les compteurs du mode courant à zéro.
 
+Dans « Jet / objectif », changer seulement l'objectif ou la graine conserve le jet,
+le puits, la séquence, les tentatives, les dépenses et le journal. Valider le formulaire
+sans changement, ajouter une ligne à zéro ou omettre une ligne déjà nulle les conserve
+également. Une modification effective du jet ou du puits réinitialise uniquement le
+mode courant ; le message de validation le précise et « Annuler » restaure l'état précédent.
+
 ## Les quatre écrans
 
 ### Atelier
@@ -166,6 +172,10 @@ E[min(T, n)]                        = [1 − (1 − p)^n] / p
 ```
 
 Les cas `p = 0`, `p = 1`, `n = 0` et une cible de 100 % sont traités séparément.
+Les quantiles utilisent une précision décimale adaptée et un nombre fixe de corrections
+d'arrondi, même pour une probabilité très faible importée depuis un export JSON.
+Le rendu de cet écran se fait hors de la boucle Discord, avec au plus deux calculs
+simultanés partagés avec les campagnes et les estimations de risque.
 L'espérance de 100 essais à 1 % n'est pas une garantie à la centième rune :
 avec `p = 0,01`, on obtient environ **63,397 %** de chance d'au moins un succès
 en 100 essais ; la médiane vaut 69, le seuil de 90 % vaut 230, de 95 % vaut 299,
@@ -361,12 +371,17 @@ La fiche Xixou est prioritaire si le client existant a vérifié sa correspondan
 et renvoie des effets. À défaut, la fiche Wiki est utilisée et le repli est affiché.
 Les effets inconnus et les doublons ambigus ne sont pas supprimés silencieusement :
 ils désactivent les pertes automatiques.
+Les libellés « à la chance » et les résistances fixes ou en pourcentage aux cinq
+éléments sont reconnus, y compris les pluriels et les apostrophes échappées du Wiki.
 
 Chaque panneau est privé (`ephemeral`), réservé à son auteur, avec un verrou
 par session. Les formulaires mémorisent une révision ; une soumission devenue
 obsolète est refusée. Les mutations ne sont validées qu'après publication du
 nouvel état. Les simulations lourdes partent d'un instantané et s'exécutent
 dans un thread, avec au plus deux calculs concurrents.
+Pendant une action en cours, demander un formulaire reçoit immédiatement une réponse
+privée invitant à réessayer. Le formulaire déjà ouvert reste intact. Un rendu de
+probabilités terminé après expiration ou déchargement n'est pas publié.
 
 Bornes : 120 ateliers/ouvertures simultanés, un par utilisateur et serveur ;
 deux ouvertures par 15 secondes ; 100 essais par clic ; 1 000 000 d'essais
@@ -411,3 +426,32 @@ Les tests automatisés ajoutés n'ouvrent aucune connexion Discord et n'utilisen
 pas de clé Xixou réelle. Les tests de schéma utilisent de véritables objets
 `discord.py` avec des entrées/sorties réseau simulées.
 La validation automatisée ne remplace pas cette recette sur votre serveur.
+
+## Validation locale des corrections du 12 septembre 2026
+
+Les quatre anomalies de la revue ont été corrigées : quantile non borné,
+libellés de chance/résistances non reconnus, historique effacé par un simple
+changement d'objectif et formulaire bloqué derrière un chargement.
+
+- Tests dédiés `/exo` : **188 réussis**, dont 73 nouveaux cas de non-régression.
+- Suite complète : **1 463 réussis, 1 ignoré**, en 25,01 secondes.
+- Les neuf cas du script de reproduction de la revue passent désormais.
+- Les tests automatiques restent hors ligne. Les processus qui vérifient le rendu
+  des probabilités extrêmes ont un délai maximal de huit secondes.
+- La suite utilise un nouveau `--basetemp` sous le répertoire temporaire Windows.
+  Journal complet : `evolution-exo-fixed-full-279d7607d3c642c788e1e4de6347945d.log`.
+  Des avertissements de dépréciation restent présents ; aucun échec de test.
+
+Une vérification réseau distincte a exercé `ExoCog.load_item` avec les clients
+Wiki, Xixou et images existants, puis les quatre écrans de chaque fiche :
+
+| Objet | Caractéristiques reconnues | Repli Moon | Miniature PNG préparée |
+| --- | ---: | --- | ---: |
+| Gelano | 1 | Bornes identiques | 30 043 octets |
+| Anneau du Dragon Cochon | 10 | Bornes identiques | 25 883 octets |
+| Voile d'encre | 10 | Bornes identiques | 17 174 octets |
+
+Les trois fiches permettent la simulation automatique. Leurs quatre écrans
+respectent les limites des embeds et conservent la miniature. Les envois Discord
+ont été simulés : cette vérification n'est pas une recette manuelle dans le client
+Discord. Les contrôles de diff et de secrets locaux n'ont signalé aucune anomalie.

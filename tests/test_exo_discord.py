@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import threading
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -13,7 +14,7 @@ from exo import ExoCog, ExoModal, ExoView, percentage
 from utils.dofus_wiki import WikiDetail, WikiEntry
 from utils.exo_data import demo_item
 from utils.exo_embeds import build_embed
-from utils.exo_engine import D, Item, Rates, Rune, STATS, State
+from utils.exo_engine import D, Item, Rates, Rune, STATS, State, attempt, observe
 from utils.exo_session import Session, export_session
 from utils.slash_help import category
 from utils.wiki_embeds import utf16_length
@@ -350,3 +351,333 @@ async def test_new_form_retires_previous_forms(panel):
     assert len(panel.modals) == 1
     assert all(form.is_finished() for form in forms[:-1])
     assert not forms[-1].is_finished()
+
+
+def session_with_history(session):
+    attempt(session.item, session.sim, Rune("pm"), None, 1, 250000)
+    observe(session.item, session.observed, Rune("pm"), "EC", {"pa": 1}, 125000)
+    session.observation_ready = True
+
+
+def jet_form(panel, **overrides):
+    modal = ExoModal(panel, "jets")
+    values = {key: str(control.default) for key, control in modal.inputs.items()}
+    values.update(overrides)
+    modal.inputs = {key: SimpleNamespace(value=value) for key, value in values.items()}
+    return modal, values
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["simulation", "observation"])
+@pytest.mark.parametrize("change", ["goal", "seed", "unchanged", "zero_line"])
+async def test_jet_form_preserves_history_without_jet_or_sink_change(panel, mode, change):
+    session_with_history(panel.session)
+    panel.session.mode = mode
+    panel.session.seed = 1
+    before = copy.deepcopy(panel.session)
+    overrides = {
+        "goal": {"goal": "po=1"}, "seed": {"seed": "42"}, "unchanged": {},
+        "zero_line": {"jets": "pa=0; pm=0"},
+    }[change]
+    modal, _ = jet_form(panel, **overrides)
+    await modal.on_submit(interaction())
+    assert panel.session.sim == before.sim
+    assert panel.session.observed == before.observed
+    assert "conservés" in panel.session.notice
+    if change == "goal":
+        assert panel.session.goal_stat == "po"
+    if change == "seed":
+        assert panel.session.seed == 42
+    await panel.dispatch(interaction(), "undo")
+    assert panel.session.sim == before.sim
+    assert panel.session.observed == before.observed
+    assert panel.session.goal_stat == before.goal_stat
+    assert panel.session.seed == before.seed
+
+
+@pytest.mark.asyncio
+async def test_omitted_zero_line_does_not_reset_history(panel):
+    session_with_history(panel.session)
+    panel.session.sim.jets["pm"] = 0
+    before = copy.deepcopy(panel.session.sim)
+    modal, _ = jet_form(panel, jets="pa=0")
+    await modal.on_submit(interaction())
+    assert panel.session.sim == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["simulation", "observation"])
+@pytest.mark.parametrize("change", ["jet", "sink"])
+async def test_jet_form_resets_only_current_mode_after_actual_change(panel, mode, change):
+    session_with_history(panel.session)
+    panel.session.mode = mode
+    before = copy.deepcopy(panel.session)
+    overrides = {"jets": "pa=1"} if change == "jet" else {"sink": "12"}
+    modal, _ = jet_form(panel, **overrides)
+    await modal.on_submit(interaction())
+    state = panel.session.state
+    assert (state.attempts, state.successes, state.spent, state.sequence) == (0, 0, 0, 0)
+    assert state.journal == []
+    assert "remis à zéro" in panel.session.notice
+    if mode == "simulation":
+        assert panel.session.observed == before.observed
+    else:
+        assert panel.session.sim == before.sim
+    await panel.dispatch(interaction(), "undo")
+    assert panel.session.sim == before.sim
+    assert panel.session.observed == before.observed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["simulation", "observation"])
+async def test_goal_publication_failure_restores_complete_state(panel, mode):
+    session_with_history(panel.session)
+    panel.session.mode = mode
+    panel.undo_session = copy.deepcopy(panel.session)
+    panel.rebuild()
+    before = copy.deepcopy(panel.session)
+    undo = copy.deepcopy(panel.undo_session)
+    components = panel.to_components()
+    modal, _ = jet_form(panel, goal="po=1")
+    event = interaction()
+    event.edit_original_response.side_effect = RuntimeError("Discord unavailable")
+    with pytest.raises(RuntimeError, match="Discord unavailable"):
+        await modal.on_submit(event)
+    assert panel.session == before
+    assert panel.undo_session == undo
+    assert panel.to_components() == components
+
+
+@pytest.mark.asyncio
+async def test_first_observation_declaration_without_state_change_is_ready(panel):
+    panel.session.mode = "observation"
+    state = copy.deepcopy(panel.session.observed)
+    modal, _ = jet_form(panel)
+    await modal.on_submit(interaction())
+    assert panel.session.observation_ready
+    assert panel.session.observed == state
+
+
+@pytest.mark.asyncio
+async def test_invalid_seed_rejects_jet_form_atomically(panel):
+    session_with_history(panel.session)
+    before = copy.deepcopy(panel.session)
+    modal, values = jet_form(panel, jets="pa=1", seed="invalid")
+    with pytest.raises(ValueError):
+        modal.apply(panel.session, values)
+    assert panel.session == before
+
+
+@pytest.mark.asyncio
+async def test_busy_modal_replies_during_loading_and_preserves_existing_form(panel):
+    loading, release = asyncio.Event(), asyncio.Event()
+
+    async def load(entry):
+        loading.set()
+        await release.wait()
+        return demo_item(), None
+
+    previous_form = ExoModal(panel, "search")
+    panel.search_entries = [SimpleNamespace(label="Gelano")]
+    panel.cog.load_item = load
+    panel.rebuild()
+    selection = asyncio.create_task(panel.dispatch(interaction(), "item", "0"))
+    try:
+        await asyncio.wait_for(loading.wait(), 1)
+        event = interaction()
+        await asyncio.wait_for(panel.dispatch(event, "tab", "search"), .5)
+        event.response.send_message.assert_awaited_once()
+        assert event.response.send_message.call_args.args == (
+            "Une action est en cours. Réessaie dans un instant.",
+        )
+        kwargs = event.response.send_message.call_args.kwargs
+        assert kwargs["ephemeral"]
+        assert kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
+        event.response.send_modal.assert_not_awaited()
+        assert panel.modals == {previous_form}
+        assert not previous_form.is_finished()
+        assert not selection.done()
+    finally:
+        release.set()
+        await selection
+    event = interaction()
+    await panel.dispatch(event, "tab", "search")
+    event.response.send_modal.assert_awaited_once()
+    assert previous_form.is_finished()
+
+
+@pytest.mark.asyncio
+async def test_modal_lock_wait_is_bounded_when_a_waiter_already_exists(panel):
+    release, held = asyncio.Event(), asyncio.Event()
+
+    async def queued_action():
+        async with panel.lock:
+            held.set()
+            await release.wait()
+
+    await panel.lock.acquire()
+    waiter = asyncio.create_task(queued_action())
+    await asyncio.sleep(0)
+    panel.lock.release()
+    try:
+        event = interaction()
+        await asyncio.wait_for(panel.dispatch(event, "jets"), .5)
+        assert held.is_set()
+        assert panel.lock.locked()
+        event.response.send_message.assert_awaited_once()
+        event.response.send_modal.assert_not_awaited()
+    finally:
+        release.set()
+        await waiter
+
+
+def delayed_math_renderer(panel, monkeypatch):
+    loop = asyncio.get_running_loop()
+    started, release = asyncio.Event(), threading.Event()
+    namespace = ExoView.publish.__globals__
+    original = namespace["build_embed"]
+    loop_thread = threading.get_ident()
+    snapshots = []
+
+    def render(snapshot):
+        assert threading.get_ident() != loop_thread
+        snapshots.append(snapshot)
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(5), "Le test doit liberer le rendu"
+        return original(snapshot)
+
+    monkeypatch.setitem(namespace, "build_embed", render)
+    return started, release, snapshots
+
+
+@pytest.mark.asyncio
+async def test_probability_render_keeps_event_loop_free_and_uses_snapshot(panel, monkeypatch):
+    started, release, snapshots = delayed_math_renderer(panel, monkeypatch)
+    event = interaction()
+    task = asyncio.create_task(panel.dispatch(event, "tab", "maths"))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        assert snapshots[0] is not panel.session
+        assert snapshots[0] == panel.session
+        assert not task.done()
+        event.response.defer.assert_awaited_once()
+        event.edit_original_response.assert_not_awaited()
+        busy = interaction()
+        await asyncio.wait_for(panel.dispatch(busy, "math"), .5)
+        busy.response.send_message.assert_awaited_once()
+    finally:
+        release.set()
+        await task
+    event.edit_original_response.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expiration", ["stop", "deadline", "unload"])
+async def test_probability_render_expiration_prevents_publication(panel, monkeypatch, expiration):
+    started, release, _ = delayed_math_renderer(panel, monkeypatch)
+    before = copy.deepcopy(panel.session)
+    event = interaction()
+    task = asyncio.create_task(panel.dispatch(event, "tab", "maths"))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        if expiration == "stop":
+            panel.stop()
+        elif expiration == "deadline":
+            panel.created -= 841
+        else:
+            await panel.cog.cog_unload()
+    finally:
+        release.set()
+        await task
+    assert panel.session == before
+    event.edit_original_response.assert_not_awaited()
+    event.followup.send.assert_awaited_once()
+    if expiration != "deadline":
+        assert all(child.disabled for child in panel.children)
+
+
+@pytest.mark.asyncio
+async def test_probability_render_cancel_restores_state_and_waits_for_worker(panel, monkeypatch):
+    started, release, _ = delayed_math_renderer(panel, monkeypatch)
+    before = copy.deepcopy(panel.session)
+    event = interaction()
+    task = asyncio.create_task(panel.dispatch(event, "tab", "maths"))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert panel.lock.locked()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert panel.session == before
+    assert not panel.lock.locked()
+    event.edit_original_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_probability_render_checks_expiration_before_starting_queued_work(panel, monkeypatch):
+    renderer = Mock()
+    monkeypatch.setitem(ExoView.publish.__globals__, "build_embed", renderer)
+    await panel.cog.compute_slots.acquire()
+    await panel.cog.compute_slots.acquire()
+    before = copy.deepcopy(panel.session)
+    event = interaction()
+    task = asyncio.create_task(panel.dispatch(event, "tab", "maths"))
+    try:
+        await asyncio.sleep(0)
+        assert not task.done()
+        panel.stop()
+    finally:
+        panel.cog.compute_slots.release()
+        panel.cog.compute_slots.release()
+        await task
+    renderer.assert_not_called()
+    assert panel.session == before
+    event.edit_original_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_probability_renders_share_two_compute_slots(panel, monkeypatch):
+    loop = asyncio.get_running_loop()
+    started, release = asyncio.Event(), threading.Event()
+    counter_lock = threading.Lock()
+    namespace = ExoView.publish.__globals__
+    original = namespace["build_embed"]
+    active, maximum, calls = 0, 0, 0
+
+    def render(snapshot):
+        nonlocal active, maximum, calls
+        with counter_lock:
+            active += 1
+            maximum = max(maximum, active)
+            calls += 1
+            if calls == 2:
+                loop.call_soon_threadsafe(started.set)
+        try:
+            assert release.wait(5)
+            return original(snapshot)
+        finally:
+            with counter_lock:
+                active -= 1
+
+    monkeypatch.setitem(namespace, "build_embed", render)
+    views = [panel]
+    for owner in (43, 44):
+        view = ExoView(panel.cog, owner, 100, Session.create(demo_item()))
+        panel.cog.views[view.key] = view
+        views.append(view)
+    tasks = []
+    for view in views:
+        view.session.tab = "maths"
+        tasks.append(asyncio.create_task(view.publish(interaction(view.owner_id))))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        assert calls == 2
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
+    assert maximum == 2
+    assert calls == 3

@@ -95,3 +95,27 @@ def test_wilson_edges():
     assert wilson_interval(0,0) == (0,1)
     assert 0 <= wilson_interval(0,100)[0] < 1e-10
     assert wilson_interval(100,100)[1] == 1
+
+
+@pytest.mark.parametrize("p,confidence,expected", [
+    (.5, .75, 2), (.25, .578125, 3),
+    (.5, math.nextafter(.75, 0), 2), (.5, math.nextafter(.75, 1), 3),
+    (.5, .5, 1), (.5, math.nextafter(.5, 1), 2),
+    (math.nextafter(0.0, 1.0), math.nextafter(0.0, 1.0), 1),
+])
+def test_quantile_exact_threshold_and_neighbours(p, confidence, expected):
+    assert geometric_quantile(p, confidence) == expected
+
+
+@pytest.mark.parametrize("p", [1e-30, 1e-320, math.nextafter(0.0, 1.0)])
+def test_tiny_probability_quantile_is_the_minimal_integer(p):
+    from decimal import Decimal, localcontext
+
+    n = geometric_quantile(p, .95)
+    assert isinstance(n, int)
+    with localcontext() as context:
+        context.prec = 900
+        failure = 1 - Decimal.from_float(p)
+        target = 1 - Decimal.from_float(.95)
+        assert failure ** n <= target
+        assert failure ** (n - 1) > target
