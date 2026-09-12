@@ -61,7 +61,7 @@ Les commandes de recherche suggèrent les noms pendant la saisie.
 | Ajouter mon personnage ou une mule | `/membre principal` · `/membre ajouter-mule` |
 | Compléter mon profil | `/profil modifier` |
 | Consulter les prochaines sorties | `/activite liste` |
-| Ouvrir le calendrier du mois en cours | `/calendrier` · `/calendrier vue:semaine` |
+| Afficher directement le calendrier du mois | `/calendrier` — aucun champ ; vues et filtres dans le message |
 | Contacter le Staff en privé | `/ticket` |
 
 **Pour le Staff :** `/event` ouvre le parcours guidé en message privé ;

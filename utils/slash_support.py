@@ -118,9 +118,7 @@ async def invoke_from_slash(
         reference = parse_message_reference(
             message_reference, guild_id=interaction.guild_id, channel_id=interaction.channel_id
         )
-    private_response = target in PRIVATE_WORKFLOWS or (
-        target == "calendrier" and bool((values or {}).get("prive", False))
-    )
+    private_response = target in PRIVATE_WORKFLOWS
     if private_response:
         await interaction.response.defer(thinking=True, ephemeral=True)
     else:

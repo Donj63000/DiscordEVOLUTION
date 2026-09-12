@@ -84,10 +84,10 @@ class CalendarEvent:
     def has_started(self, now: datetime) -> bool:
         return self.starts_at.astimezone(timezone.utc) <= paris_time(now).astimezone(timezone.utc)
 
-    def status(self, user_id: int, now: datetime) -> str:
+    def status(self, user_id: int | None, now: datetime) -> str:
         if self.has_started(now):
             return "Début passé"
-        if user_id in self.participants:
+        if user_id is not None and user_id in self.participants:
             return "Inscrit"
         if not self.places:
             return "Complet"

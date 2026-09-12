@@ -52,11 +52,11 @@ async def test_default_week_is_native_text_with_bounded_components(agenda):
     agenda.records.update({str(i): record(titre=f"Activité {i}") for i in range(2, 41)})
     embed, files = await agenda.view.build_payload()
     assert not files
-    assert "Agenda de la semaine" in embed.title
+    assert "Semaine du" in embed.title
     assert len(embed.fields) == 6
     assert len(agenda.view.choose_event.options) == 6
     assert not agenda.view.next_page.disabled
-    assert len(agenda.view.children) == 12
+    assert len(agenda.view.children) == 8
     assert all(0 <= item.row <= 4 for item in agenda.view.children)
     assert len(embed) < 6000
 
@@ -69,7 +69,7 @@ async def test_refresh_reloads_mutations_and_removes_cancelled_events(agenda):
     agenda.records["1"]["participants"] = [7, 8, 9]
     agenda.records["2"] = record(cancelled=True)
     click = interaction()
-    await view.refresh.callback(click)
+    await view.refresh(click)
     embed = click.edit_original_response.await_args.kwargs["embed"]
     assert len(embed.fields) == 1
     assert "Nouveau titre" in embed.fields[0].name
@@ -133,6 +133,7 @@ async def test_timeout_disables_controls_and_never_deletes_activities(agenda):
     agenda.view.message = message
     await agenda.view.on_timeout()
     assert all(child.disabled for child in agenda.view.children)
+    assert message.edit.await_args.kwargs["view"] is None
     assert agenda.view.is_finished()
     assert "Session expirée" in message.edit.await_args.kwargs["embed"].footer.text
     assert agenda.records == original
@@ -143,7 +144,7 @@ async def test_close_removes_controls_not_data(agenda):
     original = copy.deepcopy(agenda.records)
     await agenda.view.build_payload()
     click = interaction()
-    await agenda.view.close.callback(click)
+    await agenda.view.finish(click)
     assert agenda.view.is_finished()
     assert click.edit_original_response.await_args.kwargs["view"] is None
     click.message.delete.assert_not_awaited()
@@ -230,7 +231,7 @@ async def test_deleted_message_stops_session(agenda):
 async def test_malformed_record_does_not_hide_valid_events(agenda):
     agenda.records["bad"] = record(date_str="bad date")
     embed, files = await agenda.view.build_payload()
-    assert "1 entrée(s) invalide(s)" in embed.description
+    assert "1 entrée(s) illisible(s)" in embed.description
     assert "Donjon Blop" in embed.fields[0].name
 
 
@@ -356,7 +357,7 @@ async def test_upcoming_button_selects_the_page_containing_the_event(agenda):
         str(i): record("2026-09-11 20:00:00") for i in range(2, 21)
     })
     click = interaction()
-    await agenda.view.upcoming.callback(click)
+    await agenda.view.upcoming(click)
     assert agenda.view.state.page == 3
     assert "1" in [option.value for option in agenda.view.choose_event.options]
 

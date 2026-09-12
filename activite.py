@@ -20,7 +20,7 @@ from utils.datetime_utils import PARIS
 from utils.discord_history import fetch_channel_history
 from calendrier import MonthlyRenderer
 from utils.calendar_data import GROUP_CAPACITY, CalendarState, parse_anchor
-from utils.calendar_view import CalendrierView as AgendaView, close_files
+from utils.calendar_view import CalendrierView as AgendaView
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -856,11 +856,13 @@ class ActiviteCog(commands.Cog):
         self, ctx, vue: str = "mois", date: str = "",
         filtre: str = "toutes", prive: bool = False,
     ):
-        """J'ouvre le mois en cours à Paris lorsque les options sont omises."""
+        """J'ouvre le mois courant ; les arguments restent compatibles avec l'ancien préfixe."""
         if not self.initialized:
             return await ctx.send("Données en cours de chargement. Réessaie dans quelques secondes.")
         if prive and getattr(ctx, "interaction", None) is None:
-            return await ctx.send("Pour une vue privée, utilise `/calendrier prive:True`.")
+            return await ctx.send(
+                "Ouvre `/calendrier`, puis **Filtres et options → Ouvrir en privé**."
+            )
         try:
             today = datetime.now(PARIS).date()
             state = CalendarState(parse_anchor(date, today), vue.lower(), filtre.lower())
@@ -897,35 +899,9 @@ class ActiviteCog(commands.Cog):
             action=self._calendar_activity_action, attach_files=can_attach,
             attachment_limit=min(getattr(guild, "filesize_limit", 8 * 1024 * 1024), 8 * 1024 * 1024),
         )
-        files = []
-        try:
-            embed, files = await view.build_payload()
-            try:
-                message = await ctx.send(
-                    embed=embed, files=files, view=view,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except discord.HTTPException:
-                if not files:
-                    raise
-                logger.debug("Calendar: attachment send failed; retrying as text", exc_info=True)
-                embed.set_image(url=None)
-                embed.add_field(
-                    name="Aperçu indisponible",
-                    value="Discord a refusé l’image. La liste et les menus restent disponibles.",
-                    inline=False,
-                )
-                message = await ctx.send(
-                    embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none(),
-                )
-            view.message = message
-            logger.debug("Calendar: opened user_id=%s mode=%s anchor=%s",
-                         ctx.author.id, state.mode, state.anchor)
-        except BaseException:
-            view.stop()
-            raise
-        finally:
-            close_files(files)
+        await view.send_initial(ctx.send)
+        logger.debug("Calendar: opened user_id=%s mode=%s anchor=%s",
+                     ctx.author.id, state.mode, state.anchor)
 
     async def _calendar_activity_action(self, interaction, event_id: str, action: str) -> None:
         """Run the existing command pipeline, including checks, roles and console persistence."""

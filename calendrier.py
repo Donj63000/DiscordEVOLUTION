@@ -1,4 +1,4 @@
-"""Opaque, bounded Pillow rendering for the optional monthly overview."""
+"""Aperçu mensuel contrasté : dates, densité des sorties et premier horaire."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ WIDTH = 1120
 MARGIN = 28
 GAP = 8
 CELL_WIDTH = 145
-CELL_HEIGHT = 132
-GRID_TOP = 168
+CELL_HEIGHT = 120
+GRID_TOP = 154
 BACKGROUND = "#141923"
 SURFACE = "#202735"
 WEEKEND = "#252C3B"
@@ -71,14 +71,14 @@ def fit_text(draw: ImageDraw.ImageDraw, text: str, font, width: int) -> str:
 def render_month(
     events: Iterable[CalendarEvent], year: int, month: int, today: date | None = None,
 ) -> bytes:
-    """Render at most two summaries per day; the paginated text remains authoritative."""
+    """Affiche des repères courts ; les titres et inscriptions restent dans le texte Discord."""
     weeks = calendar.Calendar(firstweekday=0).monthdayscalendar(year, month)
     height = GRID_TOP + len(weeks) * (CELL_HEIGHT + GAP) + 66
     image = Image.new("RGB", (WIDTH, height), BACKGROUND)
     draw = ImageDraw.Draw(image)
     small, body, bold = _font(16), _font(18), _font(18, True)
-    time_font = _font(13, True)
-    day_font, title_font = _font(28, True), _font(36, True)
+    time_font = _font(22, True)
+    day_font, title_font = _font(30, True), _font(36, True)
     grouped: dict[int, list[CalendarEvent]] = {}
     ordered = sorted(events, key=lambda event: (event.timestamp, event.id))
     for event in ordered:
@@ -96,7 +96,7 @@ def render_month(
 
     for col, label in enumerate(("LUN", "MAR", "MER", "JEU", "VEN", "SAM", "DIM")):
         x = MARGIN + col * (CELL_WIDTH + GAP)
-        draw.text((x + 12, 140), label, font=bold, fill=MUTED)
+        draw.text((x + 12, 126), label, font=bold, fill=MUTED)
 
     for row, week in enumerate(weeks):
         for col, day in enumerate(week):
@@ -111,35 +111,32 @@ def render_month(
                 outline=ACCENT if is_today else None, width=2,
             )
             if is_today:
-                draw.rounded_rectangle((x + 9, y + 8, x + 53, y + 47), radius=10, fill=ACCENT)
+                draw.rounded_rectangle((x + 9, y + 8, x + 62, y + 47), radius=10, fill=ACCENT)
             draw.text((x + 13, y + 8), str(day), font=day_font,
                       fill=BACKGROUND if is_today else TEXT)
             items = grouped.get(day, [])
-            if len(items) > 2:
-                more = f"+{len(items) - 2}"
-                count_width = draw.textlength(more, font=time_font)
-                draw.text((x + CELL_WIDTH - 12 - count_width, y + 19), more,
-                          font=time_font, fill=ACCENT)
-            elif items:
-                draw.ellipse((x + CELL_WIDTH - 21, y + 20, x + CELL_WIDTH - 13, y + 28),
-                             fill=ACCENT)
-            for index, event in enumerate(items[:2]):
-                line_y = y + 50 + index * 40
-                draw.rounded_rectangle(
-                    (x + 8, line_y, x + CELL_WIDTH - 8, line_y + 36), radius=5, fill=ACTIVITY,
+            if items:
+                draw.ellipse(
+                    (x + CELL_WIDTH - 23, y + 19, x + CELL_WIDTH - 13, y + 29),
+                    fill=ACCENT,
                 )
-                draw.text((x + 12, line_y + 1), f"{event.starts_at:%H:%M}",
-                          font=time_font, fill=MUTED)
-                draw.text((x + 12, line_y + 16),
-                          fit_text(draw, event.title, small, CELL_WIDTH - 24),
-                          font=small, fill=TEXT)
+                draw.rounded_rectangle(
+                    (x + 8, y + 52, x + CELL_WIDTH - 8, y + CELL_HEIGHT - 8),
+                    radius=7, fill=ACTIVITY,
+                )
+                count_label = f"{len(items)} activité{'s' if len(items) > 1 else ''}"
+                draw.text((x + 13, y + 56),
+                          fit_text(draw, count_label, bold, CELL_WIDTH - 26),
+                          font=bold, fill=TEXT)
+                draw.text((x + 13, y + 80), f"{items[0].starts_at:%H:%M}",
+                          font=time_font, fill=ACCENT)
 
     legend_y = height - 45
     draw.rounded_rectangle((28, legend_y, 45, legend_y + 17), radius=4, outline=ACCENT, width=2)
     draw.text((54, legend_y - 2), "Aujourd’hui", font=body, fill=TEXT)
     draw.ellipse((208, legend_y + 5, 216, legend_y + 13), fill=ACCENT)
     draw.text((229, legend_y - 2), "Activité", font=body, fill=TEXT)
-    draw.text((370, legend_y - 2), "Heure de Paris · Détails complets dans la liste Discord",
+    draw.text((370, legend_y - 2), "Premier horaire à Paris · Détails dans la liste Discord",
               font=small, fill=MUTED)
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)
@@ -170,7 +167,8 @@ class MonthlyRenderer:
                         if (event.day.year, event.day.month) == (year, month))
         signature = hashlib.sha256()
         for event in visible:
-            fields = (event.id, one_line(event.title, 1000), event.starts_at.isoformat())
+            # Les titres et participants ne sont pas dessinés : leurs changements réutilisent le PNG.
+            fields = (event.id, event.starts_at.isoformat())
             signature.update(repr(fields).encode("utf-8"))
         key = (year, month, today, signature.digest())
         async with self._semaphore:

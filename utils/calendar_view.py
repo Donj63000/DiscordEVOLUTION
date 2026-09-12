@@ -1,4 +1,4 @@
-"""Discord-native agenda, monthly overview and private activity details."""
+"""Calendrier Discord sans formulaire initial, navigation compacte et inscriptions privées."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ import discord
 
 from calendrier import MonthlyRenderer, gen_cal
 from utils.calendar_data import (
-    DAY_NAMES_FR, FILTERS, GROUP_CAPACITY, MAX_DATE, MIN_DATE, MODES, PAGE_SIZE,
-    CalendarState, make_page, one_line,
+    DAY_NAMES_FR, FILTERS, GROUP_CAPACITY, MAX_DATE, MIN_DATE, PAGE_SIZE,
+    CalendarEvent, CalendarState, make_page, one_line,
     paris_time, parse_anchor, plain_text, shorten, snapshot_events,
 )
 from utils.datetime_utils import PARIS
@@ -67,15 +67,21 @@ class CalendarSession(discord.ui.View):
         self._lock = asyncio.Lock()
         self._last_embed: discord.Embed | None = None
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author_id:
-            await notify(interaction, "Ouvre ton propre agenda avec `/calendrier` pour naviguer ou t’inscrire.")
-            return False
+    async def _check_context(self, interaction: discord.Interaction) -> bool:
+        """Vérifie le serveur et l'expiration avant toute ouverture ou modification."""
         if self.guild_id is not None and interaction.guild_id != self.guild_id:
             await notify(interaction, "Ce calendrier appartient à un autre serveur.")
             return False
         if self.is_finished():
             await notify(interaction, "Cette session est fermée. Relance `/calendrier`.")
+            return False
+        return True
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await self._check_context(interaction):
+            return False
+        if interaction.user.id != self.author_id:
+            await notify(interaction, "Ouvre ton propre agenda avec `/calendrier`.")
             return False
         if self.message is None:
             self.message = interaction.message
@@ -101,7 +107,7 @@ class CalendarSession(discord.ui.View):
             if self.message is not None:
                 try:
                     await self.message.edit(
-                        embed=self._finished_embed("Session expirée"), view=self,
+                        embed=self._finished_embed("Session expirée"), view=None,
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
                 except discord.HTTPException:
@@ -123,10 +129,20 @@ class CalendarSession(discord.ui.View):
     async def publish_edit(
         self, interaction: discord.Interaction, embed: discord.Embed, files: list[discord.File],
     ) -> None:
+        """Réutilise une image inchangée ; chaque objet File est fermé même en cas d'échec."""
+        attachments = files
+        if len(files) == 1 and self.message is not None:
+            retained = next(
+                (item for item in getattr(self.message, "attachments", ())
+                 if item.filename == files[0].filename), None,
+            )
+            if retained is not None:
+                attachments = [retained]
+                log.debug("Calendar: reusing published monthly attachment")
         try:
             try:
                 message = await interaction.edit_original_response(
-                    content=None, embed=embed, attachments=files, view=self,
+                    content=None, embed=embed, attachments=attachments, view=self,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             except discord.NotFound:
@@ -178,12 +194,14 @@ class CalendarDateModal(discord.ui.Modal):
 
 
 class CalendrierView(CalendarSession):
+    """Un mois immédiat, des commandes courantes visibles et des réglages à la demande."""
+
     def __init__(
         self, author, events: Mapping[str, Any], bg_image=None, highlight: date | None = None,
         *, source: EventSource | None = None, state: CalendarState | None = None,
         guild=None, renderer: MonthlyRenderer | None = None, action: ActivityAction | None = None,
         clock: Callable[[], datetime] | None = None, attach_files: bool = True,
-        attachment_limit: int = 8 * 1024 * 1024,
+        attachment_limit: int = 8 * 1024 * 1024, private: bool = False,
     ):
         super().__init__(author.id, getattr(guild, "id", None))
         self.events = events
@@ -194,6 +212,7 @@ class CalendrierView(CalendarSession):
         self.clock = clock or (lambda: datetime.now(PARIS))
         self.attach_files = attach_files
         self.attachment_limit = attachment_limit
+        self.private = private
         self.state = state or CalendarState(highlight or self.highlight_date)
         self._load()
 
@@ -209,47 +228,119 @@ class CalendrierView(CalendarSession):
     def month(self) -> int:
         return self.state.anchor.month
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Les visiteurs peuvent consulter une fiche, mais jamais déplacer la vue d'autrui."""
+        if not await self._check_context(interaction):
+            return False
+        if not self.private and interaction.message is not None:
+            self.message = interaction.message
+        if interaction.user.id == self.author_id:
+            if self.message is None:
+                self.message = interaction.message
+            return True
+        data = getattr(interaction, "data", None) or {}
+        component_id = data.get("custom_id")
+        if not self.private:
+            if component_id == self.choose_event.custom_id:
+                return True
+            if (component_id == self.choose_options.custom_id
+                    and data.get("values") in (["private"], ["inscrit"])):
+                return True
+        await notify(
+            interaction,
+            "La navigation de ce calendrier est réservée à son auteur. "
+            "Choisis **Filtres et options → Ouvrir en privé**, ou lance `/calendrier`.",
+        )
+        return False
+
     def _load(self) -> None:
+        """Chaque action lit un instantané récent sans modifier les données persistées."""
         self.snapshot = snapshot_events(self.source())
         self.page = make_page(self.snapshot, self.state, self.author_id, self.clock())
         self.state = self.page.state
         self._sync_controls()
 
+    def _status(self, event: CalendarEvent) -> str:
+        """Une vue publique ne doit pas présenter l'inscription de son auteur comme la tienne."""
+        return event.status(self.author_id if self.private else None, self.clock())
+
     def _sync_controls(self) -> None:
+        """La pagination et le menu d'activités n'occupent de place que s'ils sont utiles."""
         self.previous_period.disabled = self.state.contains(MIN_DATE)
         self.next_period.disabled = self.state.contains(MAX_DATE)
         self.go_today.disabled = self.state.contains(self.highlight_date) and self.state.page == 0
         self.previous_page.disabled = self.state.page == 0
         self.next_page.disabled = self.state.page + 1 >= self.page.pages
-        self.upcoming.disabled = self.page.next_event is None
-        unit = "semaine" if self.state.mode == "semaine" else "mois"
-        self.previous_period.label = f"{unit.capitalize()} −"
-        self.next_period.label = f"{unit.capitalize()} +"
-        self.choose_mode.options = [
-            discord.SelectOption(label="Agenda de la semaine" if mode == "semaine" else "Vue du mois",
-                                 value=mode, default=self.state.mode == mode)
-            for mode in MODES
-        ]
-        self.choose_filter.options = [
-            discord.SelectOption(label=FILTER_LABELS[name], value=name, default=self.state.filter == name)
-            for name in FILTERS
-        ]
-        self.choose_event.disabled = not bool(self.page.events)
+        self.switch_mode.label = "Semaine" if self.state.mode == "mois" else "Mois"
+        self.switch_mode.emoji = "📋" if self.state.mode == "mois" else "📅"
         self.choose_event.options = [
             discord.SelectOption(
                 label=one_line(event.title, 100), value=event.id,
                 description=one_line(
-                    f"{event.starts_at:%d/%m %H:%M} · {len(event.participants)}/{GROUP_CAPACITY} · "
-                    f"{event.status(self.author_id, self.clock())}", 100,
+                    f"{event.starts_at:%d/%m à %H:%M} · "
+                    f"{len(event.participants)}/{GROUP_CAPACITY} inscrits · {self._status(event)}", 100,
                 ),
             ) for event in self.page.events
         ] or [discord.SelectOption(label="Aucune activité sur cette page", value="empty")]
+        self.choose_event.disabled = not bool(self.page.events)
+        self.choose_event.placeholder = "Choisir une activité · Détails et inscription"
+        self.choose_options.placeholder = f"Filtres et options · {FILTER_LABELS[self.state.filter]}"
+        self.choose_options.options = [
+            discord.SelectOption(
+                label=FILTER_LABELS["toutes"], value="toutes", emoji="📅",
+                description="Afficher toutes les activités de la période.",
+                default=self.state.filter == "toutes",
+            ),
+            discord.SelectOption(
+                label=FILTER_LABELS["inscrit"], value="inscrit", emoji="✅",
+                description="Voir tes sorties dans un calendrier privé.",
+                default=self.state.filter == "inscrit",
+            ),
+            discord.SelectOption(
+                label=FILTER_LABELS["disponibles"], value="disponibles", emoji="🎟️",
+                description="Afficher les sorties à venir qui ne sont pas complètes.",
+                default=self.state.filter == "disponibles",
+            ),
+        ]
+        if self.page.next_event is not None:
+            self.choose_options.add_option(
+                label="Prochaine activité", value="upcoming", emoji="⏭️",
+                description="Aller à la prochaine sortie correspondant au filtre.",
+            )
+        self.choose_options.add_option(
+            label="Actualiser", value="refresh", emoji="🔄",
+            description="Relire les horaires, les inscriptions et les nouvelles sorties.",
+        )
+        self.choose_options.add_option(
+            label="Aller à une date", value="date", emoji="🗓️",
+            description="Choisir une date précise, seulement quand tu en as besoin.",
+        )
+        if not self.private:
+            self.choose_options.add_option(
+                label="Ouvrir en privé", value="private", emoji="🔒",
+                description="Ouvrir ta propre copie, visible uniquement par toi.",
+            )
+        self.choose_options.add_option(
+            label="Fermer le calendrier", value="close", emoji="✖️",
+            description="Retirer les contrôles, sans supprimer d'activité.",
+        )
+        self.clear_items()
+        for item in (
+            self.previous_period, self.go_today, self.next_period, self.switch_mode,
+        ):
+            self.add_item(item)
+        if self.page.events:
+            self.add_item(self.choose_event)
+        self.add_item(self.choose_options)
+        if self.page.pages > 1:
+            self.add_item(self.previous_page)
+            self.add_item(self.next_page)
 
     def build_content(self) -> str:
         return f"Calendrier des activités · {self.state.title}"
 
     def build_file(self) -> discord.File:
-        """Compatibility helper; production rendering uses the asynchronous renderer."""
+        """Préserve l'ancien point d'entrée ; la production utilise le rendu asynchrone."""
         return discord.File(
             gen_cal(self.source(), None, self.year, self.month, self.highlight_date),
             filename="calendrier.png",
@@ -257,44 +348,56 @@ class CalendrierView(CalendarSession):
 
     def build_embed(self) -> discord.Embed:
         count = len(self.page.period_events)
-        label = "Agenda de la semaine" if self.state.mode == "semaine" else "Calendrier du mois"
-        description = (
-            f"**{count} activité{'s' if count != 1 else ''}** · {FILTER_LABELS[self.state.filter]}\n"
-            "Horaires fixes : **Europe/Paris**. Les délais sont calculés par Discord."
-        )
+        now = self.clock()
+        upcoming_count = sum(not event.has_started(now) for event in self.page.period_events)
+        description = f"**{count} activité{'s' if count != 1 else ''}** · {upcoming_count} à venir"
         if self.state.filter != "toutes":
-            description += f"\n{self.page.unfiltered_count} activité(s) avant filtrage."
-        if not count:
+            description += f"\nFiltre : **{FILTER_LABELS[self.state.filter]}**"
+        if count:
+            description += "\nChoisis une activité ci-dessous pour les détails et l’inscription."
+        elif self.state.filter != "toutes" and self.page.unfiltered_count:
             description += (
-                "\n\nAucune activité pour cette période et ce filtre.\n"
-                "Essaie **Prochaine activité**, une autre période ou le filtre **Toutes les activités**.\n"
-                "Pour proposer une sortie : `/activite creer`."
+                "\n\nAucune activité ne correspond à ce filtre sur cette période.\n"
+                "Choisis **Toutes les activités** dans **Filtres et options**."
+            )
+        elif self.page.next_event is not None:
+            event = self.page.next_event
+            description += (
+                f"\n\nRien de prévu ici. Prochaine sortie le **{event.starts_at:%d/%m à %H:%M}**.\n"
+                "Pour y aller : **Filtres et options → Prochaine activité**."
             )
         else:
-            description += "\nChoisis une activité dans le menu pour les détails et l’inscription."
+            description += (
+                "\n\nAucune activité prévue ici, ni à venir avec ce filtre.\n"
+                "Pour proposer une sortie : `/activite creer`."
+            )
         if self.snapshot.skipped:
             description += (
-                f"\n⚠️ {self.snapshot.skipped} entrée(s) invalide(s) ignorée(s). "
-                "Le Staff peut vérifier les logs."
+                f"\n⚠️ {self.snapshot.skipped} entrée(s) illisible(s). Le Staff peut vérifier les logs."
             )
-        embed = discord.Embed(
-            title=f"{label} · {self.state.title}", description=description, color=EMBED_COLOR,
+        title = (
+            f"📅 {self.state.title}" if self.state.mode == "mois"
+            else f"📋 Semaine du {self.state.title}"
         )
+        embed = discord.Embed(title=title, description=description, color=EMBED_COLOR)
         for event in self.page.events:
-            day = f"{DAY_NAMES_FR[event.day.weekday()]} {event.starts_at:%d/%m}"
-            if event.day == self.highlight_date:
-                day += " · Aujourd’hui"
-            name = safe_text(f"{day} · {event.starts_at:%H:%M} — {event.title}", 256)
-            value = (
-                f"**{event.status(self.author_id, self.clock())}** · "
-                f"{len(event.participants)}/{GROUP_CAPACITY} inscrits · <t:{event.timestamp}:R>\n"
-                f"{safe_text(event.description or 'Aucune précision supplémentaire.', 180)}\n"
-                f"ID : `{safe_text(event.id, 100)}`"
+            day = (
+                "Aujourd’hui" if event.day == self.highlight_date
+                else f"{DAY_NAMES_FR[event.day.weekday()]} {event.starts_at:%d/%m}"
             )
+            name = safe_text(f"{day} · {event.starts_at:%H:%M} — {one_line(event.title, 200)}", 256)
+            value = (
+                f"**{self._status(event)}** · {len(event.participants)}/{GROUP_CAPACITY} inscrits"
+                f" · <t:{event.timestamp}:R>"
+            )
+            if event.description:
+                value += f"\n{safe_text(one_line(event.description, 160), 200)}"
             embed.add_field(name=name, value=value, inline=False)
+        visibility = "Vue privée" if self.private else "Vue publique · navigation réservée à l’auteur"
+        pagination = f"Page {self.state.page + 1}/{self.page.pages} · " if self.page.pages > 1 else ""
         embed.set_footer(text=(
-            f"Page {self.state.page + 1}/{self.page.pages} · Actualiser pour les dernières données · "
-            "Session : 10 min d’inactivité · /calendrier pour ta propre vue"
+            f"{pagination}Horaires de Paris · Actualisé à {paris_time(now):%H:%M}\n"
+            f"{visibility} · Expire après 10 min sans action"
         ))
         return embed
 
@@ -326,11 +429,69 @@ class CalendrierView(CalendarSession):
         elif self.state.mode == "mois":
             embed.add_field(
                 name="Mode texte",
-                value="L’aperçu nécessite la permission « Joindre des fichiers ». L’agenda reste utilisable.",
+                value="L’image nécessite « Joindre des fichiers ». La liste reste utilisable.",
                 inline=False,
             )
         self._last_embed = embed
         return embed, files
+
+    async def send_initial(self, sender: Callable[..., Awaitable[Any]]) -> None:
+        """Partage l'envoi initial et son repli texte entre la commande et les copies privées."""
+        files = []
+        try:
+            embed, files = await self.build_payload()
+            try:
+                message = await sender(
+                    embed=embed, files=files, view=self,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.NotFound:
+                raise
+            except discord.HTTPException:
+                if not files:
+                    raise
+                log.debug("Calendar: initial upload failed; retrying as text", exc_info=True)
+                embed.set_image(url=None)
+                embed.add_field(
+                    name="Aperçu indisponible",
+                    value="Discord a refusé l’image. La liste et les menus restent disponibles.",
+                    inline=False,
+                )
+                message = await sender(
+                    embed=embed, view=self, allowed_mentions=discord.AllowedMentions.none(),
+                )
+            self.message = message
+            self._last_embed = embed
+        except BaseException:
+            self.stop()
+            raise
+        finally:
+            close_files(files)
+
+    async def open_private(
+        self, interaction: discord.Interaction, *, selected_filter: str | None = None,
+    ) -> None:
+        """Crée une session indépendante : aucune navigation ni inscription d'autrui n'est copiée."""
+        if not await self._check_context(interaction):
+            return
+        state = replace(
+            self.state,
+            filter=selected_filter or self.state.filter,
+            page=0 if selected_filter is not None else self.state.page,
+        )
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        private_view = CalendrierView(
+            interaction.user, {}, source=self.source, state=state,
+            guild=self.guild, renderer=self.renderer, action=self.action, clock=self.clock,
+            attach_files=self.attach_files, attachment_limit=self.attachment_limit, private=True,
+        )
+
+        async def sender(**kwargs):
+            return await interaction.followup.send(ephemeral=True, wait=True, **kwargs)
+
+        await private_view.send_initial(sender)
+        log.debug("Calendar: private copy opened user_id=%s source_user_id=%s",
+                  interaction.user.id, self.author_id)
 
     async def change(self, interaction, transform: Callable[[CalendarState], CalendarState]) -> None:
         await interaction.response.defer()
@@ -338,8 +499,7 @@ class CalendrierView(CalendarSession):
             if self.is_finished():
                 await notify(interaction, "La session est terminée. Relance `/calendrier`.")
                 return
-            previous = self.state
-            previous_embed = self._last_embed
+            previous = (self.state, self.snapshot, self.page, self._last_embed)
             try:
                 self.state = transform(self.state)
                 embed, files = await self.build_payload()
@@ -353,13 +513,15 @@ class CalendrierView(CalendarSession):
                 self.stop()
                 await notify(interaction, "Le calendrier a été supprimé. Relance `/calendrier`.")
             except Exception:
-                self.state = previous
-                self._last_embed = previous_embed
-                self._load()
+                self.state, self.snapshot, self.page, self._last_embed = previous
+                self._sync_controls()
                 log.exception("Calendar: refresh failed user_id=%s", self.author_id)
-                await notify(interaction, "Mise à jour impossible. Réessaie avec Actualiser.")
+                await notify(
+                    interaction,
+                    "Mise à jour impossible. Réessaie via **Filtres et options → Actualiser**.",
+                )
 
-    @discord.ui.button(label="Semaine −", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="Précédent", emoji="◀️", style=discord.ButtonStyle.secondary, row=0)
     async def previous_period(self, interaction, button):
         await self.change(interaction, lambda state: state.step(-1))
 
@@ -367,65 +529,63 @@ class CalendrierView(CalendarSession):
     async def go_today(self, interaction, button):
         await self.change(interaction, lambda state: replace(state, anchor=self.highlight_date, page=0))
 
-    @discord.ui.button(label="Semaine +", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="Suivant", emoji="▶️", style=discord.ButtonStyle.secondary, row=0)
     async def next_period(self, interaction, button):
         await self.change(interaction, lambda state: state.step(1))
 
-    @discord.ui.button(label="Actualiser", style=discord.ButtonStyle.secondary, row=0)
-    async def refresh(self, interaction, button):
-        await self.change(interaction, lambda state: state)
-
-    @discord.ui.button(label="Aller à…", style=discord.ButtonStyle.secondary, row=0)
-    async def jump(self, interaction, button):
-        await interaction.response.send_modal(CalendarDateModal(self))
-
-    @discord.ui.select(placeholder="Choisir une vue", row=1)
-    async def choose_mode(self, interaction, select):
-        mode = select.values[0]
-        if mode not in MODES:
-            await notify(interaction, "Vue inconnue.")
-            return
-        await self.change(interaction, lambda state: replace(state, mode=mode, page=0))
-
-    @discord.ui.select(placeholder="Filtrer les activités", row=2)
-    async def choose_filter(self, interaction, select):
-        selected = select.values[0]
-        if selected not in FILTERS:
-            await notify(interaction, "Filtre inconnu.")
-            return
-        await self.change(interaction, lambda state: replace(state, filter=selected, page=0))
-
-    @discord.ui.select(placeholder="Détails et inscription · choisir une activité", row=3)
-    async def choose_event(self, interaction, select):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        event_id = select.values[0]
-        detail = ActivityDetailView(
-            self.author_id, self.guild, self.source, event_id, self.action, self.clock,
+    @discord.ui.button(label="Semaine", emoji="📋", style=discord.ButtonStyle.secondary, row=0)
+    async def switch_mode(self, interaction, button):
+        await self.change(
+            interaction,
+            lambda state: replace(
+                state, mode="semaine" if state.mode == "mois" else "mois", page=0,
+            ),
         )
+
+    @discord.ui.select(placeholder="Choisir une activité · Détails et inscription", row=1)
+    async def choose_event(self, interaction, select):
+        event_id = select.values[0] if select.values else ""
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if snapshot_events(self.source()).get(event_id) is None:
-            detail.stop()
             await notify(interaction, "Cette activité a été supprimée ou annulée. Actualise le calendrier.")
             return
-        embed = detail.build_embed()
+        detail = ActivityDetailView(
+            interaction.user.id, self.guild, self.source, event_id, self.action, self.clock,
+        )
         try:
+            embed = detail.build_embed()
             detail.message = await interaction.followup.send(
                 embed=embed, view=detail, ephemeral=True, wait=True,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except Exception:
+        except BaseException:
             detail.stop()
             raise
 
-    @discord.ui.button(label="Page −", style=discord.ButtonStyle.secondary, row=4)
-    async def previous_page(self, interaction, button):
-        await self.change(interaction, lambda state: replace(state, page=state.page - 1))
+    @discord.ui.select(placeholder="Filtres et options", row=2)
+    async def choose_options(self, interaction, select):
+        selected = select.values[0] if select.values else ""
+        if selected == "private":
+            await self.open_private(interaction)
+        elif selected == "inscrit" and not self.private:
+            await self.open_private(interaction, selected_filter="inscrit")
+        elif selected in FILTERS:
+            await self.change(interaction, lambda state: replace(state, filter=selected, page=0))
+        elif selected == "refresh":
+            await self.refresh(interaction)
+        elif selected == "upcoming":
+            await self.upcoming(interaction)
+        elif selected == "date":
+            await interaction.response.send_modal(CalendarDateModal(self))
+        elif selected == "close":
+            await self.finish(interaction)
+        else:
+            await notify(interaction, "Option inconnue. Relance `/calendrier`.")
 
-    @discord.ui.button(label="Page +", style=discord.ButtonStyle.secondary, row=4)
-    async def next_page(self, interaction, button):
-        await self.change(interaction, lambda state: replace(state, page=state.page + 1))
+    async def refresh(self, interaction) -> None:
+        await self.change(interaction, lambda state: state)
 
-    @discord.ui.button(label="Prochaine activité", style=discord.ButtonStyle.secondary, row=4)
-    async def upcoming(self, interaction, button):
+    async def upcoming(self, interaction) -> None:
         def target(state):
             snapshot = snapshot_events(self.source())
             page = make_page(snapshot, state, self.author_id, self.clock())
@@ -438,9 +598,13 @@ class CalendrierView(CalendarSession):
             return replace(target_state, page=index // PAGE_SIZE)
         await self.change(interaction, target)
 
-    @discord.ui.button(label="Fermer", style=discord.ButtonStyle.secondary, row=4)
-    async def close(self, interaction, button):
-        await self.finish(interaction)
+    @discord.ui.button(label="Activités précédentes", style=discord.ButtonStyle.secondary, row=3)
+    async def previous_page(self, interaction, button):
+        await self.change(interaction, lambda state: replace(state, page=state.page - 1))
+
+    @discord.ui.button(label="Activités suivantes", style=discord.ButtonStyle.secondary, row=3)
+    async def next_page(self, interaction, button):
+        await self.change(interaction, lambda state: replace(state, page=state.page + 1))
 
 
 class ActivityDetailView(CalendarSession):
@@ -460,20 +624,29 @@ class ActivityDetailView(CalendarSession):
         return safe_text(getattr(member, "display_name", f"Membre {user_id}"), 80)
 
     def build_embed(self) -> discord.Embed:
+        """Met l'inscription au premier plan et masque les commandes techniques redondantes."""
         event = snapshot_events(self.source()).get(self.event_id)
+        show_full_text = False
         if event is None:
             self.join.disabled = self.leave.disabled = True
             embed = discord.Embed(
                 title="Activité indisponible",
-                description="Elle a été annulée ou retirée du stockage. Actualise le calendrier.",
+                description="Elle a été annulée ou retirée. Actualise le calendrier.",
                 color=EMBED_COLOR,
             )
         else:
+            joined = self.author_id in event.participants
             self.join.disabled = (
-                self.action is None or not event.places or event.has_started(self.clock())
-                or self.author_id in event.participants
+                self.action is None or not event.places or event.has_started(self.clock()) or joined
             )
-            self.leave.disabled = self.action is None or self.author_id not in event.participants
+            self.leave.disabled = self.action is None or not joined
+            self.join.label = (
+                "Déjà commencée" if event.has_started(self.clock())
+                else "Complet" if not event.places else "S’inscrire"
+            )
+            self.join.style = (
+                discord.ButtonStyle.secondary if self.join.disabled else discord.ButtonStyle.success
+            )
             embed = discord.Embed(
                 title=safe_text(event.title, 256),
                 description=safe_text(event.description or "Aucune description renseignée.", 2500),
@@ -481,31 +654,35 @@ class ActivityDetailView(CalendarSession):
             )
             embed.add_field(
                 name="Rendez-vous",
-                value=(f"**{event.starts_at:%d/%m/%Y à %H:%M} · Europe/Paris**\n"
-                       f"Dans ton fuseau Discord : <t:{event.timestamp}:F> · <t:{event.timestamp}:R>"),
+                value=(f"**{event.starts_at:%d/%m/%Y à %H:%M} · Heure de Paris**\n"
+                       f"Chez toi : <t:{event.timestamp}:F> · <t:{event.timestamp}:R>"),
                 inline=False,
             )
-            embed.add_field(name="Statut", value=event.status(self.author_id, self.clock()), inline=True)
+            embed.add_field(name="Ton statut", value=event.status(self.author_id, self.clock()), inline=True)
             embed.add_field(name="Organisateur", value=self._member_name(event.creator_id), inline=True)
             members = "\n".join(self._member_name(user_id) for user_id in event.participants)
             embed.add_field(
                 name=f"Participants · {len(event.participants)}/{GROUP_CAPACITY}",
                 value=shorten(members, 1000) or "Aucun participant pour le moment.", inline=False,
             )
-            embed.add_field(
-                name="Commandes alternatives",
-                value=(f"`/activite rejoindre identifiant:{safe_text(event.id, 100)}`\n"
-                       f"`/activite quitter identifiant:{safe_text(event.id, 100)}`"),
-                inline=False,
-            )
-            if len(event.description) > 2500 or len(event.title) > 256:
+            for raw, limit in ((event.description, 2500), (event.title, 256)):
+                escaped = discord.utils.escape_mentions(discord.utils.escape_markdown(raw))
+                show_full_text |= len(escaped.encode("utf-16-le")) > limit * 2
+            if show_full_text:
                 embed.add_field(
                     name="Texte abrégé",
-                    value="Utilise le bouton Texte complet pour consulter le titre et la description.",
+                    value="Le bouton Texte complet donne accès à l’intégralité du contenu.",
                     inline=False,
                 )
         self.full_text.disabled = event is None
-        embed.set_footer(text=f"ID : {self.event_id} · Détails privés · Session : 10 min d’inactivité")
+        self.clear_items()
+        if event is not None:
+            self.add_item(self.leave if self.author_id in event.participants else self.join)
+        self.add_item(self.refresh)
+        self.add_item(self.close)
+        if show_full_text:
+            self.add_item(self.full_text)
+        embed.set_footer(text=f"ID : {self.event_id} · Fiche privée · Expire après 10 min sans action")
         self._last_embed = embed
         return embed
 
@@ -525,11 +702,11 @@ class ActivityDetailView(CalendarSession):
                     await self.action(interaction, self.event_id, action)
             await self.publish_edit(interaction, self.build_embed(), [])
 
-    @discord.ui.button(label="Rejoindre", style=discord.ButtonStyle.success, row=0)
+    @discord.ui.button(label="S’inscrire", style=discord.ButtonStyle.success, row=0)
     async def join(self, interaction, button):
         await self.update(interaction, "join")
 
-    @discord.ui.button(label="Quitter", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="Se désinscrire", style=discord.ButtonStyle.secondary, row=0)
     async def leave(self, interaction, button):
         await self.update(interaction, "leave")
 
@@ -560,6 +737,6 @@ class ActivityDetailView(CalendarSession):
         finally:
             close_files([file])
 
-    @discord.ui.button(label="Fermer", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Fermer", style=discord.ButtonStyle.secondary, row=0)
     async def close(self, interaction, button):
         await self.finish(interaction)

@@ -156,14 +156,11 @@ DESCRIPTION = Option("description", "Informations utiles pour les participants."
 def custom_routes() -> tuple[Route, ...]:
     confirmation = os.getenv("CLEAR_CONSOLE_CONFIRMATION", "CONFIRMER")
     return (
-        Route(("calendrier",), "calendrier", "Ouvrir le mois en cours, consulter les sorties et s’inscrire.", (
-            Option("vue", "Vue du mois par défaut, ou agenda de la semaine.", default="mois",
-                   choices=("semaine", "mois")),
-            Option("date", "Date facultative au format JJ/MM/AAAA ; aujourd’hui à Paris si omise.", default=""),
-            Option("filtre", "Toutes, tes inscriptions, ou les sorties avec des places.", default="toutes",
-                   choices=("toutes", "inscrit", "disponibles")),
-            Option("prive", "Afficher ce calendrier uniquement pour toi.", bool, False),
-        ), mode="calendar"),
+        Route(
+            ("calendrier",), "calendrier",
+            "Afficher directement le calendrier des activités, sans rien remplir.",
+            mode="calendar",
+        ),
         Route(("objet",), "objet", "Consulter les caractéristiques d'un objet Dofus Rétro.", (
             Option("nom", "Nom de l'objet : choisis une suggestion.", autocomplete="wiki_items"),
         ), mode="rest"),
@@ -217,8 +214,8 @@ def quote_token(value: object) -> str:
 
 def format_arguments(route: Route, values: dict[str, object]) -> str:
     if route.mode == "calendar":
-        return " ".join(quote_token(values.get(option.name, option.default))
-                        for option in route.options)
+        # Les réglages vivent dans le message, jamais dans le formulaire slash.
+        return ""
     if route.mode == "wiki_recipe":
         return f"{values.get('quantite', 1)} {values['objet']}"
     if route.mode == "wiki_equipment":

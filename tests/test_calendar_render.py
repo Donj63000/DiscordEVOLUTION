@@ -18,7 +18,7 @@ def test_monthly_png_is_opaque_and_handles_all_grid_heights(year, month, rows):
     with Image.open(io.BytesIO(data)) as image:
         assert image.format == "PNG"
         assert image.mode == "RGB"
-        assert image.size == (1120, calendrier.GRID_TOP + rows * 140 + 66)
+        assert image.size == (1120, calendrier.GRID_TOP + rows * (calendrier.CELL_HEIGHT + calendrier.GAP) + 66)
     assert len(data) < 1024 * 1024
 
 

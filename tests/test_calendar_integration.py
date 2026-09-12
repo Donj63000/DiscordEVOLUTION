@@ -41,11 +41,14 @@ def component_interaction(env, roles=(activite.VALIDATED_ROLE_NAME,)):
     return click
 
 
-def test_calendar_route_preserves_missing_positional_defaults():
+def test_calendar_route_exposes_no_form_and_invokes_default_arguments():
+    """Le schéma ne propose plus de champs, même facultatifs."""
     route = next(route for route in custom_routes() if route.path == ("calendrier",))
-    assert format_arguments(route, {}) == '"mois" "" "toutes" "False"'
-    assert format_arguments(route, {"prive": True}) == '"mois" "" "toutes" "True"'
-    assert format_arguments(route, {"date": "11/09/2026"}) == '"mois" "11/09/2026" "toutes" "False"'
+    assert route.options == ()
+    assert route.path == ("calendrier",)
+    assert "Afficher directement" in route.description
+    assert format_arguments(route, {}) == ""
+    assert format_arguments(route, {"prive": True, "date": "11/09/2026"}) == ""
 
 
 @pytest.mark.asyncio
@@ -90,7 +93,7 @@ async def test_calendar_without_arguments_opens_current_paris_month(
         assert len(payload["files"]) == 1
         assert payload["files"][0].fp.closed
         assert view.children and not view.is_finished()
-        assert {option.value for option in view.choose_mode.options} == {"mois", "semaine"}
+        assert view.switch_mode.label == "Semaine"
         env.cog.calendar_renderer.render.assert_awaited_once()
         assert env.cog.calendar_renderer.render.await_args.args[1:] == (
             today_paris.year, today_paris.month, today_paris,
@@ -100,48 +103,81 @@ async def test_calendar_without_arguments_opens_current_paris_month(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("private", [False, True])
-async def test_real_calendar_slash_bridge_and_privacy(calendar_bot, private):
+async def test_real_calendar_slash_schema_is_direct_and_public(calendar_bot):
     env = calendar_bot
     command = env.bot.tree.get_command("calendrier")
     schema = command.to_dict(env.bot.tree)
-    assert [option["name"] for option in schema["options"]] == ["vue", "date", "filtre", "prive"]
-    assert all(not option.get("required", False) for option in schema["options"])
+    assert schema.get("options", []) == []
+    assert "Afficher directement" in schema["description"]
     env.cog.calendar_renderer.render = AsyncMock(return_value=b"png")
     click = make_interaction(env.bot, command)
-    await command.callback(click, prive=private)
+    await command._invoke_with_namespace(click, discord.app_commands.Namespace(click, {}, []))
     view = click.followup.send.await_args.kwargs["view"]
     try:
         assert view.state.mode == "mois"
         assert view.state.anchor == date(2026, 9, 11)
-        assert click.followup.send.await_args.kwargs["ephemeral"] is private
-        if private:
-            click.response.defer.assert_awaited_once_with(thinking=True, ephemeral=True)
-        else:
-            click.response.defer.assert_awaited_once_with(thinking=True)
+        assert click.followup.send.await_args.kwargs["ephemeral"] is False
+        click.response.defer.assert_awaited_once_with(thinking=True)
+        assert not view.private
         assert not view.is_finished()
     finally:
         view.stop()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["mois", "semaine"])
-async def test_real_slash_parameters_reach_view_filter_and_requested_date(calendar_bot, mode):
+async def test_private_calendar_is_available_after_opening_without_slash_options(calendar_bot):
     env = calendar_bot
     env.cog.calendar_renderer.render = AsyncMock(return_value=b"png")
     command = env.bot.tree.get_command("calendrier")
-    click = make_interaction(env.bot, command)
-    await command.callback(click, vue=mode, date="01/10/2026", filtre="inscrit")
-    view = click.followup.send.await_args.kwargs["view"]
+    initial = make_interaction(env.bot, command)
+    await command.callback(initial)
+    public = initial.followup.send.await_args.kwargs["view"]
+    click = component_interaction(env)
+    public.choose_options._values = ["private"]
+    try:
+        await public.choose_options.callback(click)
+        child = click.followup.send.await_args.kwargs["view"]
+        try:
+            assert child is not public
+            assert child.private
+            assert child.author_id == click.user.id
+            assert child.state == public.state
+            assert child.renderer is public.renderer
+            click.response.defer.assert_awaited_once_with(thinking=True, ephemeral=True)
+            assert click.followup.send.await_args.kwargs["ephemeral"] is True
+            assert not public.is_finished()
+        finally:
+            child.stop()
+    finally:
+        public.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["mois", "semaine"])
+async def test_legacy_prefix_keeps_advanced_parameters(calendar_bot, mode):
+    """La simplification du slash ne casse pas les appels texte déjà utilisés."""
+    env = calendar_bot
+    env.cog.calendar_renderer.render = AsyncMock(return_value=b"png")
+    click = make_interaction(env.bot, env.bot.tree.get_command("calendrier"))
+    message = discord.Message(state=env.bot._connection, channel=click.channel, data={
+        "id": "901", "type": 0, "content": f'!calendrier {mode} 01/10/2026 inscrit',
+        "attachments": [], "embeds": [],
+        "author": {"id": str(AUTHOR_ID), "username": "Hero", "discriminator": "0", "avatar": None},
+    })
+    ctx = await env.bot.get_context(message)
+    ctx.send = AsyncMock(return_value=SimpleNamespace(id=902))
+    await env.bot.invoke(ctx)
+    assert not ctx.command_failed
+    payload = ctx.send.await_args.kwargs
+    view = payload["view"]
     try:
         assert view.state.mode == mode
         assert view.state.filter == "inscrit"
         assert view.state.anchor == date(2026, 10, 1)
-        files = click.followup.send.await_args.kwargs["files"]
         if mode == "mois":
-            assert files[0].fp.closed
+            assert payload["files"][0].fp.closed
         else:
-            assert files == []
+            assert payload["files"] == []
             env.cog.calendar_renderer.render.assert_not_awaited()
     finally:
         view.stop()
