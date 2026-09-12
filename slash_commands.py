@@ -86,6 +86,7 @@ class SlashCommandsCog(commands.Cog):
         self.owned_commands: dict[str, app_commands.Command | app_commands.Group] = {}
         self.covered_commands: set[str] = set()
         self.excluded_commands: dict[str, str] = {}
+        self.activity_context_menu = None
 
     async def cog_load(self):
         try:
@@ -99,6 +100,9 @@ class SlashCommandsCog(commands.Cog):
             if self.bot.tree.get_command(name) is command:
                 self.bot.tree.remove_command(name)
         self.owned_commands.clear()
+        if self.activity_context_menu is not None:
+            self.bot.tree.remove_command(self.activity_context_menu.name, type=discord.AppCommandType.message)
+            self.activity_context_menu = None
 
     def register_commands(self):
         remove_unavailable_commands(self.bot)
@@ -124,6 +128,12 @@ class SlashCommandsCog(commands.Cog):
         )
         if missing:
             raise RuntimeError(f"Commandes sans accès slash : {', '.join(sorted(missing))}")
+        if self.bot.get_command("activite") is not None:
+            self.activity_context_menu = app_commands.ContextMenu(
+                name="Créer une activité", callback=self.activity_from_message,
+                allowed_installs=app_commands.AppInstallationType(guild=True, user=False),
+            )
+            self.bot.tree.add_command(self.activity_context_menu)
         log.debug(
             "Slash: catalog_registered roots=%s routes=%s covered_prefix_commands=%s",
             len(self.bot.tree.get_commands()), len(self.routes), len(self.covered_commands),
@@ -174,7 +184,8 @@ class SlashCommandsCog(commands.Cog):
                 self.bot, interaction, route.target, arguments, values=values,
                 message_reference=values.get("message") if route.mode == "message_reference" else None,
                 private=route.path in {("job", "ajouter"), ("job", "supprimer"), ("job", "nettoyer")}
-                or route.path[:1] == ("activite",) and route.path[-1] in {"rejoindre", "quitter", "modifier", "creer"},
+                or route.path[:1] == ("activite",),
+                defer_response=route.mode != "activity_form",
             )
 
         callback.__signature__ = inspect.Signature([
@@ -212,6 +223,13 @@ class SlashCommandsCog(commands.Cog):
                 command.autocomplete(option.name)(self.wiki_autocomplete(option.autocomplete))
         return command
 
+    @app_commands.guild_only()
+    async def activity_from_message(self, interaction: discord.Interaction, message: discord.Message):
+        await invoke_from_slash(
+            self.bot, interaction, "activite", "depuis", values={"_source_message": message},
+            private=True, defer_response=False,
+        )
+
     def wiki_autocomplete(self, kind: str):
         async def callback(interaction: discord.Interaction, current: str):
             cog = self.bot.get_cog("DofusWikiCog")
@@ -241,23 +259,42 @@ class SlashCommandsCog(commands.Cog):
         cog = self.bot.get_cog("ActiviteCog")
         if cog is None:
             return []
-        records = cog.activities_data.get("events", {})
         guild_id = getattr(interaction, "guild_id", None)
-        records = {
-            key: event for key, event in records.items()
-            if isinstance(event, dict) and event.get("guild_id", guild_id) == guild_id
-        }
+        if hasattr(cog, "events_for_guild"):
+            records = cog.events_for_guild(guild_id)
+        else:
+            records = {
+                key: event for key, event in cog.activities_data.get("events", {}).items()
+                if isinstance(event, dict) and event.get("guild_id", guild_id) == guild_id
+            }
         now = datetime.now(timezone.utc)
         route_name = getattr(getattr(interaction, "command", None), "name", "")
-        user_id = getattr(getattr(interaction, "user", None), "id", None)
+        user = getattr(interaction, "user", None)
+        user_id = getattr(user, "id", None)
         choices = []
-        for event in snapshot_events(records).events:
-            if event.has_started(now):
+        snapshot = snapshot_events({
+            key: {**record, "cancelled": False} for key, record in records.items()
+        })
+        ordered = sorted(snapshot.events, key=lambda event: (
+            event.has_started(now), event.timestamp if not event.has_started(now) else -event.timestamp,
+        ))
+        for event in ordered:
+            record = records[event.id]
+            participants = record.get("participants", []) + record.get("waitlist", [])
+            if route_name != "info" and (record.get("cancelled") or event.has_started(now)):
                 continue
-            # Une désinscription reste proposée quand un groupe est complet.
-            if route_name == "rejoindre" and not event.places and user_id not in event.participants:
+            if route_name == "quitter" and user_id not in participants:
+                continue
+            if route_name == "rejoindre" and user_id in participants:
+                continue
+            if route_name in {"modifier", "annuler"} and (
+                record.get("creator_id") != user_id
+                and not (hasattr(cog, "is_staff") and cog.is_staff(user))
+            ):
                 continue
             label = f"{event.starts_at:%d/%m %H:%M} · {event.title} · #{event.id}"
+            if record.get("cancelled"):
+                label += " · annulée"
             if _search_key(current) in _search_key(label):
                 choices.append(app_commands.Choice(name=one_line(label, 100), value=event.id))
             if len(choices) == 25:

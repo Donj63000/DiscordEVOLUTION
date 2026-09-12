@@ -29,7 +29,7 @@ Le menu **Filtres et options** regroupe les actions secondaires :
 | Choix | Résultat |
 | --- | --- |
 | Toutes les activités | Enlever le filtre de la période. |
-| Mes inscriptions | Voir ses activités ; depuis une vue publique, ouvrir une copie privée. |
+| Mes inscriptions | Voir ses activités et attentes ; depuis une vue publique, ouvrir une copie privée. |
 | Places disponibles | Garder les activités futures avec une place libre. |
 | Prochaine activité | Aller à la bonne période et à la bonne page de la prochaine sortie filtrée. |
 | Actualiser | Relire les activités, inscriptions, modifications et annulations. |
@@ -60,8 +60,10 @@ peuvent toutefois :
 
 Un clic sur une fiche utilise toujours l'identité de la personne qui clique,
 jamais celle de l'auteur du calendrier. Les contrôles d'inscription existants
-restent exécutés : rôle validé, capacité, début passé, doublons, rôles d'activité,
-sauvegarde locale et publication dans `#console`.
+restent exécutés : rôle validé, capacité propre à la sortie, début passé et doublons.
+Le registre est confirmé dans `#console` avant exposition de la mutation ; le fichier
+local n'est qu'un cache. Les nouvelles activités ne nécessitent plus de rôle dédié.
+Voir [la refonte des activités](ACTIVITES.md).
 
 Une vue publique affiche les places et les statuts généraux, pas un statut
 « Inscrit » qui pourrait être pris pour celui de tous ses lecteurs.
@@ -73,7 +75,9 @@ Elle partage uniquement la source de données et le cache de rendu. Elle ne
 remplace jamais le calendrier public et n'en supprime pas les contrôles.
 
 Dans une fiche, seul le bouton pertinent est affiché : **S'inscrire** ou
-**Se désinscrire**. Le bouton **Texte complet** apparaît uniquement lorsque le
+**Se désinscrire** ; un groupe complet propose **Liste d’attente**. La fiche présente
+aussi le lieu, les membres en attente et le lien de la fiche publique quand il existe.
+Le bouton **Texte complet** apparaît uniquement lorsque le
 titre ou la description est abrégé, y compris pour des textes chargés d'emoji
 ou de syntaxe Markdown. La longueur tient compte des unités UTF-16.
 

@@ -243,7 +243,7 @@ async def test_component_does_not_bypass_global_checks(calendar_bot, monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reason", ["full", "past", "cancelled", "duplicate"])
+@pytest.mark.parametrize("reason", ["past", "cancelled", "duplicate"])
 async def test_existing_join_revalidates_stale_data_without_persisting(calendar_bot, reason):
     env = calendar_bot
     event = env.cog.activities_data["events"]["1"]
@@ -282,7 +282,8 @@ async def test_two_clickers_cannot_overfill_the_last_place(calendar_bot):
         env.cog._calendar_activity_action(second, "1", "join"),
     )
     assert len(env.cog.activities_data["events"]["1"]["participants"]) == 8
-    assert env.cog.save_data_local.await_count == 1
+    assert env.cog.save_data_local.await_count == 2
+    assert len(env.cog.activities_data["events"]["1"]["waitlist"]) == 1
 
 
 @pytest.mark.asyncio

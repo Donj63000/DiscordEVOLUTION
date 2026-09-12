@@ -68,6 +68,7 @@ class HelpView(discord.ui.View):
             available = {command.qualified_name for commands in self.catalog.values() for command in commands}
             shortcuts = {
                 "calendrier": "Voir les sorties et s'inscrire, sans formulaire.",
+                "activite creer": "Proposer une sortie avec un formulaire court et des inscriptions.",
                 "job mes-metiers": "Retrouver ses métiers.",
                 "membre moi": "Consulter ses personnages.",
                 "profil modifier": "Compléter son profil en messages privés.",

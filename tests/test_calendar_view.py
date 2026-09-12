@@ -284,7 +284,8 @@ async def test_detail_buttons_follow_capacity_membership_and_live_cancellation(a
         assert detail.leave.disabled
         agenda.records["1"]["participants"] = list(range(8))
         detail.build_embed()
-        assert detail.join.disabled
+        assert not detail.join.disabled
+        assert detail.join.label == "Liste d’attente"
         agenda.records["1"]["cancelled"] = True
         click = interaction(user_id=8)
         await detail.join.callback(click)

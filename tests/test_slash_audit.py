@@ -216,14 +216,16 @@ def test_poll_inputs_cannot_inject_legacy_directives(payload):
 
 
 def test_emoji_title_is_limited_by_utf16_before_any_side_effect():
-    route = next(route for route in custom_routes() if route.path == ("activite", "creer"))
-    with pytest.raises(SlashInputError):
-        validate_values(route, {"titre": "😀"*43, "date": "01/01/2099 21:00"})
+    from utils.activity_data import ActivityError, validate_draft
+
+    with pytest.raises(ActivityError):
+        validate_draft({"titre": "😀"*43, "date": "01/01/2099 21:00"})
 
 
-def test_activity_modification_preserves_omitted_description():
+def test_activity_modification_opens_a_form_without_empty_fields_overwriting_the_record():
     route = next(route for route in custom_routes() if route.path == ("activite", "modifier"))
-    assert validate_values(route, {"identifiant": "1", "date": "01/01/2099 21:00"})["description"] is None
+    assert [option.name for option in route.options] == ["identifiant"]
+    assert validate_values(route, {"identifiant": "1"}) == {"identifiant": "1"}
 
 
 @pytest.mark.asyncio
@@ -267,7 +269,7 @@ async def test_autocomplete_activities_is_chronological_and_ignores_corrupt_reco
     monkeypatch.setattr(slash_bot, "get_cog", lambda name: SimpleNamespace(activities_data={"events": records}))
     selected = make_interaction(slash_bot, SimpleNamespace(name="info"))
     choices = await SlashCommandsCog(slash_bot).autocomplete_activities(selected, "")
-    assert [choice.value for choice in choices] == ["1", "2"]
+    assert [choice.value for choice in choices] == ["1", "2", "old"]
 
 
 @pytest.mark.asyncio

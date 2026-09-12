@@ -83,6 +83,7 @@ async def fetch_channel_history(
     before: Optional[discord.abc.Snowflake] = None,
     after: Optional[discord.abc.Snowflake] = None,
     reason: str = "",
+    raise_errors: bool = False,
 ) -> list[discord.Message]:
     """Fetch a channel history snapshot with rate-limit backoff and per-channel locks."""
     if limit <= 0:
@@ -152,6 +153,8 @@ async def fetch_channel_history(
                     reason or "unspecified",
                     exc,
                 )
+                if raise_errors:
+                    raise
                 return []
 
 

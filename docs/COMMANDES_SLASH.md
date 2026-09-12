@@ -1,5 +1,10 @@
 # Audit et mise à jour des commandes slash
 
+> Mise à jour activités : la refonte pour `DiscordEVOLUTION-main (3).zip` est décrite dans
+> [ACTIVITES.md](ACTIVITES.md). Les chiffres et résultats de l'audit initial ci-dessous
+> restent historiques ; les résultats du nouveau correctif figurent dans
+> [ACTIVITES-VALIDATION.md](ACTIVITES-VALIDATION.md).
+
 ## Périmètre et base exacte
 
 Ce correctif s'applique à **DiscordEVOLUTION-main (2).zip**, **après**
@@ -25,9 +30,10 @@ classée par usage et paginée par sept commandes. Elle provient de l'arbre rée
 enregistré : pas de liens vers des fonctionnalités désactivées. Elle indique les
 champs obligatoires ; les champs facultatifs peuvent rester vides.
 
-Les créations conservent les champs réellement nécessaires : titre et date d'une
-activité, question et choix d'un sondage, métier et niveau. Supprimer ces données du
-menu pour obliger une conversation ou plusieurs formulaires augmenterait les étapes.
+La création d'activité ouvre désormais un formulaire court sans champs slash, suivi
+d'un aperçu privé : titre et date y restent obligatoires, avec lieu, capacité et précisions
+facultatifs. La modification ne demande que l'identifiant puis ouvre les valeurs existantes.
+Les sondages et métiers conservent leurs champs structurés dans le menu.
 
 L'aide ne prétend pas remplacer les autorisations Discord : une catégorie Staff peut
 être visible, mais les contrôles métier restent exécutés. L'administrateur peut régler
@@ -269,10 +275,10 @@ modules optionnels effectivement démarrés sur votre hébergement.
 | `/accueil statut` | `membre` | Aucun | Staff : consulter l’avancement de l’accueil d’un membre. |
 | `/activite aide` | Aucun | Aucun | Consulter le guide des activités. |
 | `/activite annuler` | `identifiant` | Aucun | Annuler une activité que tu organises. |
-| `/activite creer` | `titre`, `date` | `description` | Créer une activité et ouvrir les inscriptions. |
+| `/activite creer` | Aucun | Aucun | Ouvrir le formulaire puis confirmer la fiche et les inscriptions. |
 | `/activite info` | `identifiant` | Aucun | Consulter les détails d’une activité. |
 | `/activite liste` | Aucun | Aucun | Consulter les prochaines activités. |
-| `/activite modifier` | `identifiant`, `date` | `description` | Modifier la date et la description d’une activité. |
+| `/activite modifier` | `identifiant` | Aucun | Ouvrir le formulaire prérempli, sans perdre les inscrits. |
 | `/activite quitter` | `identifiant` | Aucun | Te désinscrire d’une activité. |
 | `/activite rejoindre` | `identifiant` | Aucun | T’inscrire à une activité. |
 | `/aide` | Aucun | Aucun | Découvrir les commandes et les guides d’Evolution BOT. |

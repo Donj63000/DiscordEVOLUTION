@@ -192,13 +192,14 @@ async def test_activity_create_uses_structured_fields_instead_of_splitting_a_dat
     cog.activities_data = {"events": {}, "next_id": 1}
     cog.save_data_local = AsyncMock()
     cog.dump_data_to_console = AsyncMock()
-    cog._resolve_organisation_channel = lambda guild: None
-    role = SimpleNamespace(id=333)
+    click = make_interaction(slash_bot, None, roles=(activite.VALIDATED_ROLE_NAME,))
+    cog._resolve_organisation_channel = lambda guild: click.channel
+    cog._resolve_console_channel = lambda guild: None
+    cog.sync_card = AsyncMock(return_value=True)
     ctx = SimpleNamespace(
         slash_values={"titre": "Suite du 01/01/2098 10:00", "date": "01/01/2099 21:00",
                       "description": "Première ligne\nDeuxième ligne"},
-        author=SimpleNamespace(id=1, add_roles=AsyncMock()),
-        guild=SimpleNamespace(create_role=AsyncMock(return_value=role)), send=AsyncMock(),
+        author=click.user, guild=click.guild, send=AsyncMock(),
     )
     try:
         await cog.command_creer(ctx, "argument déjà validé")
@@ -219,8 +220,15 @@ async def test_activity_modifier_keeps_description_when_omitted(slash_bot, monke
     cog.activities_data = {"events": {"1": event.to_dict()}}
     cog.save_data_local = AsyncMock()
     cog.dump_data_to_console = AsyncMock()
-    cog.can_modify = lambda ctx, event: True
-    ctx = SimpleNamespace(slash_values={"date": "02/01/2099 22:00", "description": None}, send=AsyncMock())
+    click = make_interaction(slash_bot, None, roles=(activite.VALIDATED_ROLE_NAME,))
+    cog.activities_data["events"]["1"]["creator_id"] = AUTHOR_ID
+    cog._resolve_console_channel = lambda guild: None
+    cog.sync_card = AsyncMock(return_value=True)
+    cog._notify_members = AsyncMock()
+    ctx = SimpleNamespace(
+        guild=click.guild, author=click.user,
+        slash_values={"date": "02/01/2099 22:00", "description": None}, send=AsyncMock(),
+    )
     try:
         await cog.command_modifier(ctx, "1 02/01/2099 22:00")
         assert cog.activities_data["events"]["1"]["description"] == "À conserver"

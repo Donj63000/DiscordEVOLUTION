@@ -68,6 +68,10 @@ class CalendarEvent:
     description: str
     creator_id: int
     participants: tuple[int, ...]
+    capacity: int = GROUP_CAPACITY
+    waitlist: tuple[int, ...] = ()
+    location: str = ""
+    message_url: str | None = None
 
     @property
     def timestamp(self) -> int:
@@ -79,7 +83,7 @@ class CalendarEvent:
 
     @property
     def places(self) -> int:
-        return max(0, GROUP_CAPACITY - len(self.participants))
+        return max(0, self.capacity - len(self.participants))
 
     def has_started(self, now: datetime) -> bool:
         return self.starts_at.astimezone(timezone.utc) <= paris_time(now).astimezone(timezone.utc)
@@ -89,6 +93,8 @@ class CalendarEvent:
             return "Début passé"
         if user_id is not None and user_id in self.participants:
             return "Inscrit"
+        if user_id is not None and user_id in self.waitlist:
+            return f"En attente · {self.waitlist.index(user_id) + 1}"
         if not self.places:
             return "Complet"
         return f"{self.places} place{'s' if self.places > 1 else ''} libre{'s' if self.places > 1 else ''}"
@@ -115,11 +121,20 @@ def snapshot_events(records: Mapping[str, Any]) -> CalendarSnapshot:
             if isinstance(record, Mapping):
                 if record.get("cancelled", False):
                     continue
-                starts_at = datetime.fromisoformat(record["date_str"])
+                starts_at = datetime.fromisoformat(record.get("starts_at") or record["date_str"])
                 title = record.get("titre", "")
                 description = record.get("description", "")
                 creator_id = int(record["creator_id"])
                 participants = record.get("participants", ())
+                capacity = int(record.get("capacity", GROUP_CAPACITY))
+                waitlist = tuple(dict.fromkeys(int(uid) for uid in record.get("waitlist", ())))
+                location = plain_text(record.get("lieu", ""))
+                message_url = None
+                if all(record.get(name) for name in ("guild_id", "channel_id", "message_id")):
+                    message_url = (
+                        f"https://discord.com/channels/{int(record['guild_id'])}/"
+                        f"{int(record['channel_id'])}/{int(record['message_id'])}"
+                    )
             else:
                 if record.cancelled:
                     continue
@@ -128,16 +143,20 @@ def snapshot_events(records: Mapping[str, Any]) -> CalendarSnapshot:
                 description = record.description
                 creator_id = int(record.creator_id)
                 participants = record.participants
+                capacity = int(getattr(record, "capacity", GROUP_CAPACITY))
+                waitlist = tuple(getattr(record, "waitlist", ()))
+                location = plain_text(getattr(record, "extra", {}).get("lieu", ""))
+                message_url = None
             event_id = str(key)
             if (not event_id or one_line(event_id, 100) != event_id
                     or not isinstance(starts_at, datetime)):
                 raise ValueError("invalid event identifier or datetime")
-            if not isinstance(participants, (list, tuple)):
+            if not 1 <= capacity <= 100 or not isinstance(participants, (list, tuple)):
                 raise ValueError("invalid participants")
             participant_ids = tuple(dict.fromkeys(int(value) for value in participants))
             events.append(CalendarEvent(
                 event_id, plain_text(title) or "Sans titre", paris_time(starts_at),
-                plain_text(description), creator_id, participant_ids,
+                plain_text(description), creator_id, participant_ids, capacity, waitlist, location, message_url,
             ))
         except (KeyError, ValueError, TypeError, AttributeError, OverflowError):
             skipped += 1
@@ -213,7 +232,7 @@ class CalendarState:
 
 def matches_filter(event: CalendarEvent, name: str, user_id: int, now: datetime) -> bool:
     if name == "inscrit":
-        return user_id in event.participants
+        return user_id in event.participants or user_id in event.waitlist
     if name == "disponibles":
         return bool(event.places) and not event.has_started(now)
     return True

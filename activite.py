@@ -1,167 +1,66 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+"""Guild activities: one durable roster shared by commands, cards and the calendar."""
 
-import os
-import json
-import tempfile
-import re
+from __future__ import annotations
+
 import asyncio
-import io
+import copy
+import json
 import logging
-import unicodedata
-from typing import Dict, Optional
+import os
+import re
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 import discord
-from utils.slash_catalog import activity_datetime
-from utils.calendar_data import shorten
-
 from discord.ext import commands, tasks
-from datetime import datetime, date, timezone
+
+from calendrier import MonthlyRenderer
+from utils.activity_data import (
+    ActivityError, ActiviteData, DEFAULT_CAPACITY, apply_draft, change_roster,
+    migrate_snapshot, utc, validate_draft,
+)
+from utils.activity_store import ActivitySnapshotStore
+from utils.activity_views import (
+    ActivityCardView, ActivityListView, ActivityManageView, ActivityModal,
+    activity_embed, roster_file, safe,
+)
+from utils.calendar_data import CalendarState, GROUP_CAPACITY, parse_anchor, one_line, shorten
+from utils.calendar_view import CalendrierView as AgendaView
 from utils.channel_resolver import resolve_text_channel
 from utils.datetime_utils import PARIS
 from utils.discord_history import fetch_channel_history
-from calendrier import MonthlyRenderer
-from utils.calendar_data import GROUP_CAPACITY, CalendarState, parse_anchor
-from utils.calendar_view import CalendrierView as AgendaView
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Noms de canaux / rôles
 ORGANISATION_CHANNEL_FALLBACK = os.getenv("ORGANISATION_CHANNEL_NAME", "organisation")
 CONSOLE_CHANNEL_FALLBACK = os.getenv("CHANNEL_CONSOLE", "console")
 VALIDATED_ROLE_NAME = "Membre validé d'Evolution"
-
-# Fichier de persistance
 DATA_FILE = "activities_data.json"
 MARKER_TEXT = "===BOTACTIVITES==="
-
-MONTH_NAMES_FR = [
-    "",
-    "Janvier",
-    "Février",
-    "Mars",
-    "Avril",
-    "Mai",
-    "Juin",
-    "Juillet",
-    "Août",
-    "Septembre",
-    "Octobre",
-    "Novembre",
-    "Décembre",
-]
-
-# Expression régulière pour parse la date/heure
-DATE_TIME_REGEX = re.compile(r"(?P<date>\d{2}/\d{2}/\d{4})\s*(?:;|\s+)\s*(?P<time>\d{2}:\d{2})(?P<desc>.*)$")
-
-# Emojis pour la pagination et l'inscription
-LETTER_EMOJIS = [
-    "🇦","🇧","🇨","🇩","🇪","🇫","🇬","🇭","🇮","🇯","🇰","🇱","🇲","🇳","🇴","🇵",
-    "🇶","🇷","🇸","🇹","🇺","🇻","🇼","🇽","🇾","🇿"
-]
-
-# Emojis d'inscription / désinscription
-SINGLE_EVENT_EMOJI = "✅"
-UNSUB_EMOJI = "❌"
-
-# Taille maximum d'un groupe
 MAX_GROUP_SIZE = GROUP_CAPACITY
+DATE_TIME_REGEX = re.compile(
+    r"(?P<date>\d{2}/\d{2}/\d{4})\s*(?:;|\s+)\s*(?P<time>\d{2}:\d{2})(?P<desc>.*)$",
+    re.DOTALL,
+)
 
-# Verrou asynchrone pour sécuriser la sauvegarde (écritures concurrentes)
-save_lock = asyncio.Lock()
 
-def normalize_string(s: str):
-    """Normalise une chaîne en supprimant les accents et en mettant en minuscule."""
-    nf = unicodedata.normalize('NFD', s.lower())
-    return ''.join(c for c in nf if unicodedata.category(c) != 'Mn')
+def _activity_datetime_utc(value: datetime) -> datetime:
+    return utc(value)
+
 
 def parse_date_time(date_str, time_str):
-    """Convertit une date et une heure (JJ/MM/AAAA, HH:MM) en objet datetime. Retourne None si échec."""
     try:
-        d, m, y = date_str.split("/")
-        h, mi = time_str.split(":")
-        return datetime(int(y), int(m), int(d), int(h), int(mi))
+        return datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %H:%M")
     except ValueError:
         return None
 
 
-def _activity_datetime_utc(value: datetime) -> datetime:
-    """Je convertis les horaires des activités en UTC, avec Paris pour les dates sans fuseau."""
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=PARIS)
-    return value.astimezone(timezone.utc)
-
-
 def parse_date_time_via_regex(line):
-    """
-    Cherche dans une ligne un motif <titre> ... JJ/MM/AAAA HH:MM ... <desc>.
-    Retourne (titre, datetime, description) ou (None, None, None) si échec.
-    """
-    mat = DATE_TIME_REGEX.search(line)
-    if not mat:
+    match = DATE_TIME_REGEX.search(line or "")
+    if not match:
         return None, None, None
-    ds = mat.group("date").strip()
-    ts = mat.group("time").strip()
-    leftover = mat.group("desc").strip()
-    title_part = line[:mat.start()].strip()
-    dt = parse_date_time(ds, ts)
-    if not dt:
-        return None, None, None
-    if not title_part:
-        title_part = "SansTitre"
-    return title_part, dt, leftover
-
-class ActiviteData:
-    """
-    Représente une activité (ID, titre, date, description, etc.).
-    Gère la sérialisation/désérialisation en dictionnaire JSON.
-    """
-    def __init__(self, i, t, dt, desc, cid, rid=None,
-                 reminder_24_sent=False, reminder_1_sent=False):
-        self.id = i
-        self.titre = t
-        self.date_obj = dt
-        self.description = desc
-        self.creator_id = cid
-        self.role_id = rid
-        self.participants = []
-        self.cancelled = False
-        self.reminder_24_sent = reminder_24_sent
-        self.reminder_1_sent = reminder_1_sent
-
-    def to_dict(self):
-        """Transforme l'objet en dict JSON."""
-        return {
-            "id": self.id,
-            "titre": self.titre,
-            "date_str": self.date_obj.strftime("%Y-%m-%d %H:%M:%S"),
-            "description": self.description,
-            "creator_id": self.creator_id,
-            "role_id": self.role_id,
-            "participants": self.participants,
-            "cancelled": self.cancelled,
-            "reminder_24_sent": self.reminder_24_sent,
-            "reminder_1_sent": self.reminder_1_sent
-        }
-
-    @staticmethod
-    def from_dict(d):
-        """Recrée ActiviteData depuis un dict JSON."""
-        dt = datetime.strptime(d["date_str"], "%Y-%m-%d %H:%M:%S")
-        o = ActiviteData(
-            i=d["id"],
-            t=d["titre"],
-            dt=dt,
-            desc=d["description"],
-            cid=d["creator_id"],
-            rid=d["role_id"],
-            reminder_24_sent=d.get("reminder_24_sent", False),
-            reminder_1_sent=d.get("reminder_1_sent", False)
-        )
-        o.participants = d["participants"]
-        o.cancelled = d["cancelled"]
-        return o
+    starts = parse_date_time(match["date"], match["time"])
+    return line[:match.start()].strip() or "Sans titre", starts, match["desc"].strip()
 
 
 class CalendrierView(AgendaView):
@@ -173,693 +72,776 @@ class CalendrierView(AgendaView):
 
 
 class ActiviteCog(commands.Cog):
-    """
-    Cog principal pour la gestion des activités (création, inscriptions, rappels, etc.).
-    """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.activities_data = {
-            "next_id": 1,
-            "events": {}
-        }
+        self.activities_data = {"next_id": 1, "events": {}}
         self.initialized = False
         self.calendar_renderer = MonthlyRenderer()
+        self.snapshot_store = ActivitySnapshotStore(bot)
+        self._mutation_lock = asyncio.Lock()
+        self._initialization_lock = asyncio.Lock()
+        self._source_guild_id = None
+        self._persistent_views = {}
+        self._dirty_cards = set()
+        self._sent_reminders = set()
 
-        # Suivi des messages (IDs) pour la liste paginée et les events uniques
-        self.liste_message_map = {}
-        self.single_event_msg_map = {}
+    def now(self):
+        return datetime.now(timezone.utc)
 
-    def _resolve_console_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
+    def _resolve_console_channel(self, guild):
         return resolve_text_channel(
-            guild,
-            id_env="CHANNEL_CONSOLE_ID",
-            name_env="CHANNEL_CONSOLE",
+            guild, id_env="CHANNEL_CONSOLE_ID", name_env="CHANNEL_CONSOLE",
             default_name=CONSOLE_CHANNEL_FALLBACK,
         )
 
-    def _resolve_organisation_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
+    def _resolve_organisation_channel(self, guild):
         return resolve_text_channel(
-            guild,
-            id_env="ORGANISATION_CHANNEL_ID",
-            name_env="ORGANISATION_CHANNEL_NAME",
+            guild, id_env="ORGANISATION_CHANNEL_ID", name_env="ORGANISATION_CHANNEL_NAME",
             default_name=ORGANISATION_CHANNEL_FALLBACK,
         )
 
+    def _source_guild(self):
+        for guild in self.bot.guilds:
+            if self._source_guild_id is not None:
+                if guild.id == self._source_guild_id:
+                    return guild
+            elif self._resolve_console_channel(guild) is not None:
+                return guild
+        return None
+
+    def _guard(self, ctx):
+        if not self.initialized:
+            raise ActivityError(
+                "Les activités ne sont pas encore chargées. Le Staff doit vérifier l'accès à #console."
+            )
+        guild = getattr(ctx, "guild", None)
+        if guild is None:
+            raise ActivityError("Utilise les activités dans un salon du serveur.")
+        source = self._source_guild()
+        if source is not None and source.id != guild.id:
+            raise ActivityError("Les activités appartiennent au serveur de la console, pas à ce serveur.")
+        if source is None and len(self.bot.guilds) > 1:
+            raise ActivityError("Le serveur des activités n'a pas pu être identifié.")
+
+    def events_for_guild(self, guild_id):
+        source = self._source_guild()
+        if source is not None and source.id != guild_id:
+            return {}
+        if source is None and len(self.bot.guilds) > 1:
+            return {}
+        return {
+            key: record for key, record in self.activities_data.get("events", {}).items()
+            if record.get("guild_id") in (None, guild_id)
+        }
+
+    def _record(self, ctx, identifier):
+        self._guard(ctx)
+        key = str(identifier or "").strip()
+        record = self.events_for_guild(ctx.guild.id).get(key)
+        if record is None:
+            raise ActivityError("Activité introuvable sur ce serveur. Ouvre `/activite liste`.")
+        return record
+
+    @staticmethod
+    def is_staff(member):
+        permissions = getattr(member, "guild_permissions", None)
+        return bool(
+            getattr(permissions, "administrator", False)
+            or getattr(permissions, "manage_guild", False)
+            or any(role.name == "Staff" for role in getattr(member, "roles", ()))
+        )
+
+    def has_validated_role(self, member):
+        configured = os.getenv("ACTIVITE_VALIDATED_ROLE_ID", "").strip()
+        roles = getattr(member, "roles", ())
+        if configured:
+            return any(str(role.id) == configured for role in roles) or self.is_staff(member)
+        return any(role.name == VALIDATED_ROLE_NAME for role in roles) or self.is_staff(member)
+
+    def can_modify(self, ctx, event):
+        creator = event.creator_id if isinstance(event, ActiviteData) else event["creator_id"]
+        return ctx.author.id == creator or self.is_staff(ctx.author)
+
+    def _require_validated(self, ctx):
+        if not self.has_validated_role(ctx.author):
+            raise ActivityError("Rôle invalide : cette action est réservée aux membres validés de la guilde.")
+
     async def cog_load(self):
-        """Chargement asynchrone du Cog."""
         if not self.check_events_loop.is_running():
             self.check_events_loop.start()
 
-    def _mark_initialized(self) -> None:
-        self.initialized = True
-        logger.info("ActiviteCog: données initialisées.")
-
     async def initialize_data(self):
-        """
-        1) On tente de charger le fichier local d’abord (source de vérité).
-        2) Puis, si on trouve un bloc JSON plus récent dans le channel console, on peut surdéfinir.
-        3) On gère aussi la possibilité d’un fichier joint .json dans le channel console.
-        """
-        if self.initialized:
-            return
-        # 1) Charger d'abord depuis le fichier local, s'il existe
-        if os.path.exists(DATA_FILE):
+        async with self._initialization_lock:
+            if self.initialized:
+                return
+            guild = self._source_guild()
+            if guild is None:
+                logger.warning("Activities: console missing; initialization postponed")
+                return
+            channel = self._resolve_console_channel(guild)
             try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    self.activities_data = json.load(f)
-                logger.info("Données chargées depuis le fichier local.")
-            except Exception as e:
-                logger.warning(f"Impossible de charger {DATA_FILE} : {e}")
-        else:
-            logger.info("Pas de fichier local trouvé, on part sur des données vierges.")
-
-        # 2) Chercher éventuellement dans le channel console pour un message plus récent
-        console_channel = None
-        for guild in self.bot.guilds:
-            candidate = self._resolve_console_channel(guild)
-            if candidate:
-                console_channel = candidate
-                break
-        if console_channel:
-            # On va scroller l'historique en commençant par le plus récent
-            limit = max(
-                int(os.getenv("ACTIVITE_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
-                0,
-            )
-            messages = await fetch_channel_history(
-                console_channel,
-                limit=limit,
-                reason="activite.console",
-            )
-            for msg in messages:
-                if msg.author == self.bot.user and MARKER_TEXT in msg.content:
-                    # Priorité 1 : s'il y a un attachement .json
-                    if msg.attachments:
-                        for att in msg.attachments:
-                            if att.filename.endswith(".json"):
-                                try:
-                                    file_bytes = await att.read()
-                                    data_loaded = json.loads(file_bytes.decode("utf-8"))
-                                    self.activities_data = data_loaded
-                                    logger.info(
-                                        "Données surchargées depuis un fichier joint JSON dans %s.",
-                                        console_channel.name,
-                                    )
-                                    logger.debug("ActiviteCog: snapshot console charge via piece jointe.")
-                                    self._mark_initialized()
-                                    return
-                                except Exception as ex:
-                                    logger.warning(f"Impossible de parser le fichier JSON joint : {ex}")
-                        # Si on n’a pas pu lire d’attachement JSON valide, on check le bloc inline
-                    # Priorité 2 : bloc ```json ... ```
-                    if "```json\n" in msg.content:
-                        try:
-                            start_idx = msg.content.index("```json\n") + len("```json\n")
-                            end_idx = msg.content.rindex("\n```")
-                            raw_json = msg.content[start_idx:end_idx]
-                            data_loaded = json.loads(raw_json)
-                            self.activities_data = data_loaded
-                            logger.info(
-                                "Données surchargées depuis %s (bloc texte JSON).",
-                                console_channel.name,
-                            )
-                            logger.debug("ActiviteCog: snapshot console charge via bloc json.")
-                            self._mark_initialized()
-                            return
-                        except Exception as e:
-                            logger.warning(
-                                "Impossible de parser le JSON %s inline: %s",
-                                console_channel.name,
-                                e,
-                            )
-        else:
-            logger.info(
-                "Channel %s introuvable, on reste sur le fichier local.",
-                CONSOLE_CHANNEL_FALLBACK,
-            )
-
-        self._mark_initialized()
+                payload = await self.snapshot_store.load(channel)
+                if payload is None and Path(DATA_FILE).exists():
+                    payload = json.loads(Path(DATA_FILE).read_text(encoding="utf-8"))
+                    logger.warning("Activities: no console snapshot, importing the legacy local cache")
+                migrated = migrate_snapshot(
+                    {"next_id": 1, "events": {}} if payload is None else payload, guild.id,
+                )
+                self._source_guild_id = guild.id
+                if payload is not None and migrated != payload:
+                    await self.snapshot_store.persist(channel, migrated)
+                self.activities_data = migrated
+                self.initialized = True
+                await self.save_data_local()
+                self._register_persistent_views()
+                logger.info("Activities initialized: %s records, %s quarantined",
+                            len(migrated["events"]), len(migrated.get("quarantine", {})))
+            except Exception:
+                self.initialized = False
+                logger.exception("Activities restoration failed; writes remain disabled")
+                return
+        await self._recover_legacy_cards(guild)
 
     async def save_data_local(self):
-        """
-        Sauvegarde des données dans le fichier JSON.
-        On utilise un verrou asynchrone + un fichier temporaire pour éviter la corruption.
-        """
-        async with save_lock:
-            temp_file = DATA_FILE + ".temp"
+        """The local file is a disposable cache, never the authority over a console snapshot."""
+        target = Path(DATA_FILE)
+        temporary = target.with_suffix(target.suffix + ".temp")
+        try:
+            temporary.write_text(
+                json.dumps(self.activities_data, ensure_ascii=False, indent=2), encoding="utf-8",
+            )
+            os.replace(temporary, target)
+        except OSError:
+            logger.warning("Activities local cache unavailable; console remains authoritative",
+                           exc_info=True)
             try:
-                with open(temp_file, "w", encoding="utf-8") as f:
-                    json.dump(self.activities_data, f, indent=4, ensure_ascii=False)
-                # Rename atomique
-                os.replace(temp_file, DATA_FILE)
-                logger.info("Sauvegarde OK (fichier local).")
-            except Exception as e:
-                logger.warning(f"Erreur lors de la sauvegarde : {e}")
-                if os.path.exists(temp_file):
-                    try:
-                        os.remove(temp_file)
-                    except:
-                        pass
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("Activities temporary cache could not be removed", exc_info=True)
 
-    async def dump_data_to_console(self, ctx):
-        """
-        Envoie les données dans le channel console, après une opération critique.
-        Les données peuvent être trop volumineuses => on envoie un fichier joint.
-        """
-        console_channel = self._resolve_console_channel(ctx.guild)
-        if not console_channel:
-            return
-        await self._dump_data(console_channel)
+    async def dump_data_to_console(self, ctx, *, payload=None):
+        return await self.dump_data_to_console_no_ctx(ctx.guild, payload=payload)
 
-    async def dump_data_to_console_no_ctx(self, guild: discord.Guild):
-        """Variante sans ctx, ex. depuis la boucle asynchrone."""
-        console_channel = self._resolve_console_channel(guild)
-        if not console_channel:
-            return
-        await self._dump_data(console_channel)
+    async def dump_data_to_console_no_ctx(self, guild, *, payload=None):
+        channel = self._resolve_console_channel(guild)
+        if channel is None:
+            raise ActivityError("Salon #console introuvable : aucune modification confirmée.")
+        return await self.snapshot_store.persist(
+            channel, self.activities_data if payload is None else payload,
+        )
 
-    async def _dump_data(self, console_channel: discord.TextChannel):
-        data_str = json.dumps(self.activities_data, indent=4, ensure_ascii=False)
-        content_prefix = f"{MARKER_TEXT}"
-        if len(data_str) < 1900:
-            # On peut poster directement en code-block
-            await console_channel.send(f"{content_prefix}\n```json\n{data_str}\n```")
+    async def _commit(self, candidate, *, ctx=None, guild=None):
+        """Call only while holding the mutation lock; expose the state after durable success."""
+        if ctx is not None:
+            await self.dump_data_to_console(ctx, payload=candidate)
         else:
-            # Fichier trop gros, on envoie en pièce jointe
-            tmp = tempfile.NamedTemporaryFile(delete=False, mode="w", encoding="utf-8", suffix=".json")
-            temp_file_path = tmp.name
-            try:
-                tmp.write(data_str)
-                tmp.flush()
-                tmp.close()
-            except Exception as ex:
-                logger.warning(f"Erreur création du fichier temp {CONSOLE_CHANNEL_FALLBACK}: {ex}")
-                try:
-                    os.remove(temp_file_path)
-                except OSError:
-                    pass
-                return
+            await self.dump_data_to_console_no_ctx(guild, payload=candidate)
+        self.activities_data = candidate
+        await self.save_data_local()
+        logger.debug("Activities snapshot committed events=%s", len(candidate["events"]))
 
+    def _register_persistent_views(self):
+        for record in self.activities_data.get("events", {}).values():
+            if record.get("message_id"):
+                self._register_view(record)
+                self._dirty_cards.add(record["id"])
+
+    def _register_view(self, record):
+        old = self._persistent_views.pop(record["id"], None)
+        if old:
+            old.stop()
+        view = ActivityCardView(self, record)
+        self.bot.add_view(view, message_id=int(record["message_id"]))
+        self._persistent_views[record["id"]] = view
+
+    @staticmethod
+    def _message_event_id(message):
+        for row in getattr(message, "components", []):
+            for component in getattr(row, "children", []):
+                match = re.fullmatch(r"evo:activity:([0-9]+):[a-z]+",
+                                     getattr(component, "custom_id", "") or "")
+                if match:
+                    return match[1]
+        for embed in getattr(message, "embeds", []):
+            footer = getattr(getattr(embed, "footer", None), "text", "") or ""
+            match = re.search(r"Activité #([0-9]+)\b", footer)
+            if not match and (embed.title or "").startswith("Nouvelle proposition"):
+                match = re.search(r"\bID\s*=\s*([0-9]+)\b", embed.description or "")
+            if match:
+                return match[1]
+        return None
+
+    async def _recover_legacy_cards(self, guild):
+        """Recover identifiable old cards without relying on the gateway message cache."""
+        channel = self._resolve_organisation_channel(guild)
+        if channel is None:
+            return
+        missing = {
+            key for key, data in self.events_for_guild(guild.id).items()
+            if not data.get("message_id") and not data.get("cancelled")
+        }
+        if not missing:
+            return
+        messages = await fetch_channel_history(channel, limit=200, reason="activities.cards.migrate")
+        async with self._mutation_lock:
+            candidate = copy.deepcopy(self.activities_data)
+            changed = []
+            for message in messages:
+                key = self._message_event_id(message)
+                if message.author == self.bot.user and key in missing:
+                    candidate["events"][key].update(
+                        channel_id=channel.id, message_id=message.id, publication_pending=False,
+                    )
+                    changed.append(key)
+                    missing.remove(key)
+            if changed:
+                try:
+                    await self._commit(candidate, guild=guild)
+                    for key in changed:
+                        self._register_view(candidate["events"][key])
+                        self._dirty_cards.add(key)
+                except Exception:
+                    logger.exception("Activities: old card migration postponed")
+
+    async def sync_card(self, identifier, guild, *, publish=False):
+        """Refresh the canonical message; failure never rolls back a confirmed roster."""
+        key = str(identifier)
+        async with self._mutation_lock:
+            record = self.events_for_guild(guild.id).get(key)
+            if not record:
+                return False
+            channel = self._resolve_organisation_channel(guild)
+            if record.get("channel_id"):
+                channel = guild.get_channel(int(record["channel_id"]))
+            if channel is None:
+                self._dirty_cards.add(key)
+                return False
             try:
-                await console_channel.send(
-                    f"{content_prefix} (fichier)",
-                    file=discord.File(fp=temp_file_path, filename="activities_data.json")
+                message = None
+                if record.get("message_id"):
+                    try:
+                        message = await channel.fetch_message(int(record["message_id"]))
+                    except discord.NotFound:
+                        candidate = copy.deepcopy(self.activities_data)
+                        candidate["events"][key].update(message_id=None, publication_pending=False)
+                        await self._commit(candidate, guild=guild)
+                        record = self.activities_data["events"][key]
+                if message is None and not publish:
+                    self._dirty_cards.discard(key)
+                    return False
+                if message is None:
+                    recent = await fetch_channel_history(
+                        channel, limit=200, reason="activities.card.recover", raise_errors=True,
+                    )
+                    message = next((
+                        msg for msg in recent
+                        if msg.author == self.bot.user and self._message_event_id(msg) == key
+                    ), None)
+                created = False
+                view = ActivityCardView(self, record)
+                if message is None:
+                    message = await channel.send(
+                        embed=activity_embed(record), view=view,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    created = True
+                else:
+                    if message.author != self.bot.user:
+                        raise ActivityError("La fiche enregistrée n'appartient pas au bot.")
+                    await message.edit(
+                        content=None, embed=activity_embed(record), view=view,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                if record.get("message_id") != message.id or record.get("publication_pending"):
+                    candidate = copy.deepcopy(self.activities_data)
+                    candidate["events"][key].update(
+                        channel_id=channel.id, message_id=message.id, publication_pending=False,
+                    )
+                    try:
+                        await self._commit(candidate, guild=guild)
+                    except Exception:
+                        if created:
+                            try:
+                                await message.delete()
+                            except discord.HTTPException:
+                                logger.warning("Activity #%s has an unlinked card; recovery will scan it", key)
+                        raise
+                self._register_view(self.activities_data["events"][key])
+                self._dirty_cards.discard(key)
+                return True
+            except Exception:
+                self._dirty_cards.add(key)
+                logger.exception("Activities card sync failed event_id=%s", key)
+                return False
+
+    def _card_link(self, record):
+        if record.get("message_id") and record.get("channel_id") and record.get("guild_id"):
+            return (
+                f"https://discord.com/channels/{record['guild_id']}/"
+                f"{record['channel_id']}/{record['message_id']}"
+            )
+        return None
+
+    async def _notify_members(self, guild, record, text, member_ids):
+        channel = self._resolve_organisation_channel(guild)
+        if channel is None or not member_ids:
+            return
+        unique = list(dict.fromkeys(member_ids))
+        link = self._card_link(record)
+        for offset in range(0, len(unique), 40):
+            users = [discord.Object(id=uid) for uid in unique[offset:offset + 40]]
+            mentions = " ".join(f"<@{user.id}>" for user in users)
+            try:
+                await channel.send(
+                    f"{mentions}\n{text}" + (f"\n{link}" if link else ""),
+                    allowed_mentions=discord.AllowedMentions(
+                        everyone=False, roles=False, users=users, replied_user=False,
+                    ),
                 )
-            finally:
-                try:
-                    os.remove(temp_file_path)
-                except OSError:
-                    pass
+            except discord.HTTPException:
+                logger.warning("Activities notification failed event_id=%s", record["id"], exc_info=True)
 
-    @tasks.loop(minutes=5)
+    async def _sync_legacy_roles(self, guild, identifier, user_ids):
+        """New activities need no role; old event roles remain compatible on a best-effort basis."""
+        async with self._mutation_lock:
+            record = self.activities_data["events"].get(str(identifier))
+            role = guild.get_role(record["role_id"]) if record and record.get("role_id") else None
+            if role is None:
+                return
+            for user_id in set(user_ids):
+                member = guild.get_member(user_id)
+                if member is None:
+                    continue
+                try:
+                    if user_id in record["participants"] and not record.get("cancelled"):
+                        await member.add_roles(role)
+                    else:
+                        await member.remove_roles(role)
+                except discord.HTTPException:
+                    logger.warning("Activity legacy role synchronization failed user_id=%s", user_id)
+
+    @commands.command(name="activite")
+    @commands.guild_only()
+    async def activite_main(self, ctx, action=None, *, args=None):
+        aliases = {"créer": "creer", "rejoindre": "join", "quitter": "leave", "aide": "guide"}
+        action = aliases.get((action or "liste").lower(), (action or "liste").lower())
+        handlers = {
+            "creer": self.command_creer, "modifier": self.command_modifier,
+            "join": self.command_join, "leave": self.command_leave,
+            "annuler": self.command_annuler, "info": self.command_info,
+            "liste": self.command_liste, "guide": self.command_guide,
+            "gerer": self.command_gerer, "publier": self.command_publier,
+            "participants": self.command_participants, "depuis": self.command_depuis,
+        }
+        try:
+            self._guard(ctx)
+            if action not in handlers:
+                raise ActivityError("Action inconnue. Ouvre `/activite aide`.")
+            logger.debug("Activity action=%s guild_id=%s user_id=%s", action, ctx.guild.id, ctx.author.id)
+            await handlers[action](ctx, args)
+        except ActivityError as exc:
+            await ctx.send(str(exc), allowed_mentions=discord.AllowedMentions.none())
+
+    async def command_guide(self, ctx, args=None):
+        await ctx.send(
+            "**Sorties de la guilde**\n"
+            "`/activite creer` ouvre un formulaire : quoi, quand, où, places et précisions.\n"
+            "Exemples de date : `demain 21h`, `vendredi 20h30`, `18/09/2026 21:00` (Paris).\n"
+            "Tu vérifies l'aperçu avant de créer. Tu es inscrit automatiquement et comptes dans les places.\n"
+            "La fiche complète ton annonce habituelle, sans ping général.\n\n"
+            "`/activite liste` : à venir, tes inscriptions (attente incluse), tes sorties, historique.\n"
+            "Les boutons **Rejoindre / Attente** et **Quitter** gèrent le groupe. "
+            "Une place libérée revient au premier membre en attente.\n"
+            "**Gérer** : modifier, annuler avec confirmation, réparer une fiche supprimée.\n"
+            "`/calendrier` utilise exactement les mêmes activités et inscriptions.\n"
+            "Les anciennes commandes `!activite` restent compatibles.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    async def command_depuis(self, ctx, args=None):
+        self._require_validated(ctx)
+        message = getattr(ctx, "slash_values", {}).get("_source_message")
+        channel = self._resolve_organisation_channel(ctx.guild)
+        if message is None or channel is None or message.channel.id != channel.id:
+            raise ActivityError("Utilise ce menu sur une annonce du salon d'organisation.")
+        if message.guild.id != ctx.guild.id or (
+            message.author.id != ctx.author.id and not self.is_staff(ctx.author)
+        ):
+            raise ActivityError("Tu peux convertir tes propres annonces ; le Staff peut aider les autres membres.")
+        if not message.content.strip():
+            raise ActivityError("Cette annonce ne contient pas de texte. Utilise `/activite creer`.")
+        await self._open_form(
+            ctx, initial={"titre": one_line(message.content.splitlines()[0], 85),
+                          "description": shorten(message.content, 1500)},
+            announcement_url=message.jump_url, creation_key=f"announcement:{message.id}",
+        )
+
+    async def _open_form(self, ctx, record=None, *, initial=None, announcement_url=None, creation_key=None):
+        if record is None:
+            self._require_validated(ctx)
+        elif not self.can_modify(ctx, record):
+            raise ActivityError("Seuls l'organisateur et le Staff peuvent modifier cette sortie.")
+        if record and record.get("cancelled"):
+            raise ActivityError("Cette sortie est annulée. Crée une nouvelle sortie.")
+        if getattr(ctx, "interaction", None) is None:
+            await ctx.send(
+                "Ouvre `/activite creer` ou `/activite modifier` pour le formulaire. "
+                "L'ancien format reste accepté : `!activite creer Titre JJ/MM/AAAA HH:MM Description`."
+            )
+            return
+        values = initial
+        if record:
+            values = {
+                "titre": record["titre"],
+                "date": utc(datetime.fromisoformat(record.get("starts_at") or record["date_str"]))
+                        .astimezone(PARIS).strftime("%d/%m/%Y %H:%M"),
+                "lieu": record.get("lieu", ""), "description": record.get("description", ""),
+                "capacite": record.get("capacity", DEFAULT_CAPACITY),
+            }
+        await ctx.interaction.response.send_modal(ActivityModal(
+            self, ctx.author.id, ctx.guild.id, values=values,
+            event_id=record["id"] if record else None,
+            revision=record.get("revision", 0) if record else None,
+            announcement_url=record.get("announcement_url") if record else announcement_url,
+            creation_key=creation_key,
+        ))
+        ctx.response_count += 1
+
+    async def command_creer(self, ctx, line=None):
+        self._guard(ctx)
+        self._require_validated(ctx)
+        supplied = getattr(ctx, "slash_values", {})
+        if not line and not supplied.get("_draft") and not supplied.get("date"):
+            return await self._open_form(ctx)
+        values = dict(supplied)
+        if not supplied.get("date"):
+            title, starts, description = parse_date_time_via_regex(line)
+            if starts is None:
+                raise ActivityError("Utilise `/activite creer` ou Titre JJ/MM/AAAA HH:MM Description.")
+            values.update(titre=title, date=starts.strftime("%d/%m/%Y %H:%M"), description=description)
+        draft = validate_draft(values, now=self.now())
+        source_url = supplied.get("_announcement_url")
+        if source_url:
+            if not re.fullmatch(rf"https://discord\.com/channels/{ctx.guild.id}/[0-9]+/[0-9]+", source_url):
+                raise ActivityError("Le lien d'annonce doit appartenir à ce serveur.")
+            draft["announcement_url"] = source_url
+        creation_key = supplied.get("_creation_key") or (
+            f"message:{ctx.guild.id}:{ctx.message.id}" if getattr(ctx, "message", None) else uuid.uuid4().hex
+        )
+        async with self._mutation_lock:
+            existing = next((
+                data for data in self.events_for_guild(ctx.guild.id).values()
+                if data.get("creation_key") == creation_key and data["creator_id"] == ctx.author.id
+            ), None)
+            if existing:
+                key = existing["id"]
+            else:
+                channel = self._resolve_organisation_channel(ctx.guild)
+                if channel is None:
+                    raise ActivityError("Le salon d'organisation est introuvable. Demande au Staff de le configurer.")
+                candidate = copy.deepcopy(self.activities_data)
+                key = str(candidate.get("next_id", 1))
+                while key in candidate["events"]:
+                    key = str(int(key) + 1)
+                candidate["next_id"] = int(key) + 1
+                candidate["events"][key] = {
+                    **draft, "id": key, "guild_id": ctx.guild.id,
+                    "creator_id": ctx.author.id, "participants": [ctx.author.id], "waitlist": [],
+                    "role_id": None, "cancelled": False, "revision": 0,
+                    "reminder_24_sent": False, "reminder_1_sent": False,
+                    "creation_key": creation_key, "publication_pending": True,
+                }
+                await self._commit(candidate, ctx=ctx)
+        ctx.activity_committed = True
+        synced = await self.sync_card(key, ctx.guild, publish=True)
+        record = self.activities_data["events"][key]
+        link = self._card_link(record)
+        await ctx.send(
+            f"Sortie **{safe(record['titre'], 120)}** enregistrée (#{key}). Tu es inscrit.\n"
+            + (f"Fiche : {link}" if synced and link else
+               "La publication est en attente. Les données sont sauvegardées ; "
+               "utilise `/activite info` → Gérer → Réparer pour réessayer."),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    async def command_liste(self, ctx, args=None):
+        self._guard(ctx)
+        view = ActivityListView(self, ctx.author.id, ctx.guild.id)
+        view.message = await ctx.send(
+            embed=view.build_embed(), view=view, allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    async def command_info(self, ctx, args):
+        record = self._record(ctx, args)
+        await ctx.send(
+            embed=activity_embed(record), view=ActivityCardView(self, record, persistent=False),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    async def command_participants(self, ctx, args):
+        record = self._record(ctx, args)
+        file = roster_file(record, ctx.guild)
+        try:
+            await ctx.send(file=file, allowed_mentions=discord.AllowedMentions.none())
+        finally:
+            file.close()
+
+    async def command_gerer(self, ctx, args):
+        record = self._record(ctx, args)
+        if not self.can_modify(ctx, record):
+            raise ActivityError("Seuls l'organisateur et le Staff peuvent gérer cette sortie.")
+        view = ActivityManageView(self, ctx.author.id, ctx.guild.id, record["id"])
+        view.message = await ctx.send(
+            embed=activity_embed(record), view=view, allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    async def command_publier(self, ctx, args):
+        record = self._record(ctx, args)
+        if not self.can_modify(ctx, record):
+            raise ActivityError("Seuls l'organisateur et le Staff peuvent republier cette fiche.")
+        result = await self.sync_card(record["id"], ctx.guild, publish=True)
+        await ctx.send("Fiche publiée et actualisée." if result else
+                       "Impossible de publier la fiche. Vérifie le salon et les permissions du bot.")
+
+    async def _change_membership(self, ctx, args, action):
+        self._record(ctx, args)
+        if action == "join":
+            self._require_validated(ctx)
+        async with self._mutation_lock:
+            record = self._record(ctx, args)
+            candidate = copy.deepcopy(self.activities_data)
+            changed = candidate["events"][record["id"]]
+            changed["waitlist"] = [
+                uid for uid in changed.get("waitlist", [])
+                if (member := ctx.guild.get_member(uid)) is None or self.has_validated_role(member)
+            ]
+            text, promoted = change_roster(changed, ctx.author.id, action, now=self.now())
+            await self._commit(candidate, ctx=ctx)
+            self._dirty_cards.add(record["id"])
+        await self._sync_legacy_roles(ctx.guild, record["id"], [ctx.author.id, *promoted])
+        await self.sync_card(record["id"], ctx.guild)
+        current = self.activities_data["events"][record["id"]]
+        if promoted:
+            await self._notify_members(
+                ctx.guild, current, f"Une place s'est libérée pour **{safe(current['titre'], 100)}** : "
+                "tu passes de la liste d'attente aux inscrits.", promoted,
+            )
+        await ctx.send(f"{ctx.author.mention} {text} (#{record['id']})",
+                       allowed_mentions=discord.AllowedMentions.none())
+
+    async def command_join(self, ctx, args):
+        await self._change_membership(ctx, args, "join")
+
+    async def command_leave(self, ctx, args):
+        await self._change_membership(ctx, args, "leave")
+
+    async def command_annuler(self, ctx, args):
+        async with self._mutation_lock:
+            record = self._record(ctx, args)
+            if not self.can_modify(ctx, record):
+                raise ActivityError("Seuls l'organisateur et le Staff peuvent annuler cette sortie.")
+            if record.get("cancelled"):
+                raise ActivityError("Cette activité est déjà annulée.")
+            candidate = copy.deepcopy(self.activities_data)
+            candidate["events"][record["id"]]["cancelled"] = True
+            candidate["events"][record["id"]]["revision"] = int(record.get("revision", 0)) + 1
+            await self._commit(candidate, ctx=ctx)
+            self._dirty_cards.add(record["id"])
+        await self.sync_card(record["id"], ctx.guild)
+        await self._notify_members(
+            ctx.guild, self.activities_data["events"][record["id"]],
+            f"Sortie annulée : **{safe(record['titre'], 100)}**.",
+            record.get("participants", []) + record.get("waitlist", []),
+        )
+        await ctx.send(f"Sortie #{record['id']} annulée. L'historique et les listes sont conservés.")
+
+    async def command_modifier(self, ctx, args):
+        parts = str(args or "").split(" ", 1)
+        record = self._record(ctx, parts[0])
+        supplied = getattr(ctx, "slash_values", {})
+        if len(parts) == 1 and not supplied.get("_draft") and not supplied.get("date"):
+            return await self._open_form(ctx, record)
+        if not self.can_modify(ctx, record):
+            raise ActivityError("Seuls l'organisateur et le Staff peuvent modifier cette sortie.")
+        values = {
+            "titre": record["titre"], "lieu": record.get("lieu", ""),
+            "capacite": record.get("capacity", DEFAULT_CAPACITY),
+            "description": record.get("description", ""),
+        }
+        values.update({k: v for k, v in supplied.items() if v is not None})
+        if not supplied.get("date"):
+            _, starts, description = parse_date_time_via_regex(parts[1] if len(parts) > 1 else "")
+            if starts is None:
+                raise ActivityError("Date invalide. Ouvre `/activite modifier` pour le formulaire.")
+            values.update(date=starts.strftime("%d/%m/%Y %H:%M"), description=description)
+        draft = validate_draft(values, now=self.now())
+        async with self._mutation_lock:
+            record = self._record(ctx, parts[0])
+            if not self.can_modify(ctx, record):
+                raise ActivityError("Tu n'es plus autorisé à modifier cette sortie.")
+            candidate = copy.deepcopy(self.activities_data)
+            changed = candidate["events"][record["id"]]
+            apply_draft(changed, draft, revision=supplied.get("_revision"))
+            promoted = []
+            while changed.get("waitlist") and len(changed["participants"]) < changed["capacity"]:
+                uid = changed["waitlist"].pop(0)
+                member = ctx.guild.get_member(uid)
+                if member is None or self.has_validated_role(member):
+                    changed["participants"].append(uid)
+                    promoted.append(uid)
+            await self._commit(candidate, ctx=ctx)
+            self._dirty_cards.add(record["id"])
+        ctx.activity_committed = True
+        await self._sync_legacy_roles(ctx.guild, record["id"], promoted)
+        await self.sync_card(record["id"], ctx.guild)
+        current = self.activities_data["events"][record["id"]]
+        await self._notify_members(
+            ctx.guild, current,
+            f"Sortie **{safe(current['titre'], 100)}** modifiée : consulte la fiche actualisée.",
+            current.get("participants", []) + current.get("waitlist", []),
+        )
+        if promoted:
+            await self._notify_members(
+                ctx.guild, current, "La capacité augmente : tu es maintenant inscrit à la sortie.",
+                promoted,
+            )
+        await ctx.send(f"Sortie #{record['id']} modifiée ; calendrier et inscriptions à jour.")
+
+    @tasks.loop(minutes=1)
     async def check_events_loop(self):
-        """Je vérifie les rappels et nettoie les activités passées toutes les cinq minutes."""
         if not self.bot.is_ready():
             return
         if not self.initialized:
+            await self.initialize_data()
             return
-
-        now = datetime.now(timezone.utc)
-        org_channel = None
-        for guild in self.bot.guilds:
-            candidate = self._resolve_organisation_channel(guild)
-            if candidate:
-                org_channel = candidate
-                break
-        if not org_channel:
+        guild = self._source_guild()
+        if guild is None:
             return
+        channel = self._resolve_organisation_channel(guild)
+        for key in list(self.events_for_guild(guild.id)):
+            try:
+                async with self._mutation_lock:
+                    original = self.activities_data["events"].get(key)
+                    if original is None:
+                        continue
+                    candidate = copy.deepcopy(self.activities_data)
+                    record = candidate["events"][key]
+                    event = ActiviteData.from_dict(record)
+                    remaining = (utc(event.date_obj) - self.now()).total_seconds()
+                    changed = False
+                    reminder_key = None
+                    if record.get("cancelled") or remaining <= 0:
+                        if not record.get("closed"):
+                            record["closed"] = True
+                            self._dirty_cards.add(key)
+                            changed = True
+                        role = guild.get_role(event.role_id) if event.role_id else None
+                        if role:
+                            try:
+                                await role.delete(reason="Activité terminée")
+                            except discord.HTTPException:
+                                logger.warning("Activity legacy role cleanup postponed event_id=%s",
+                                               key, exc_info=True)
+                            else:
+                                record["role_id"] = None
+                                changed = True
+                    elif channel is not None:
+                        kind = (
+                            "1h" if remaining <= 3600 and not event.reminder_1_sent else
+                            "24h" if 3600 < remaining <= 86400 and not event.reminder_24_sent else None
+                        )
+                        if kind:
+                            reminder_key = (key, record.get("revision", 0), kind)
+                            logger.debug(
+                                "Activite rappel selectionne event_id=%s echeance=%s time_left_seconds=%.0f",
+                                key, kind, remaining,
+                            )
+                            sent = reminder_key in self._sent_reminders
+                            if not sent:
+                                sent = await self.envoyer_rappel(channel, event, kind)
+                            if sent:
+                                self._sent_reminders.add(reminder_key)
+                                record["reminder_24_sent"] = True
+                                if kind == "1h":
+                                    record["reminder_1_sent"] = True
+                                changed = True
+                    if changed:
+                        await self._commit(candidate, guild=guild)
+                        if reminder_key:
+                            self._sent_reminders.discard(reminder_key)
+                current = self.activities_data["events"].get(key, {})
+                if key in self._dirty_cards or current.get("publication_pending"):
+                    await self.sync_card(key, guild, publish=bool(current.get("publication_pending")))
+            except Exception:
+                logger.exception("Activity maintenance failed event_id=%s; next event continues", key)
 
-        if "events" not in self.activities_data:
-            return
-
-        to_delete = []
-        modified = False
-
-        for k, e_data in list(self.activities_data["events"].items()):
-            if e_data["cancelled"]:
-                continue
-            evt = ActiviteData.from_dict(e_data)
-            time_left = (_activity_datetime_utc(evt.date_obj) - now).total_seconds()
-
-            if time_left <= 0:
-                logger.debug("Activite nettoyage event_id=%s time_left_seconds=%.0f", k, time_left)
-                if evt.role_id:
-                    rr = org_channel.guild.get_role(evt.role_id)
-                    if rr:
-                        try:
-                            await rr.delete(reason="Activité terminée")
-                        except Exception as ex:
-                            logger.warning(f"Erreur suppression rôle {rr}: {ex}")
-                to_delete.append(k)
-                continue
-
-            reminder_type = None
-            if time_left <= 3600:
-                if not evt.reminder_1_sent:
-                    reminder_type = "1h"
-            elif time_left <= 24 * 3600 and not evt.reminder_24_sent:
-                reminder_type = "24h"
-
-            if reminder_type is not None:
-                logger.debug(
-                    "Activite rappel selectionne event_id=%s echeance=%s time_left_seconds=%.0f",
-                    k, reminder_type, time_left,
-                )
-                if await self.envoyer_rappel(org_channel, evt, reminder_type):
-                    e_data["reminder_24_sent"] = True
-                    if reminder_type == "1h":
-                        e_data["reminder_1_sent"] = True
-                    modified = True
-
-        # Suppression des events passés
-        for kdel in to_delete:
-            del self.activities_data["events"][kdel]
-            modified = True
-
-        if modified:
-            await self.save_data_local()
-            if org_channel and org_channel.guild:
-                logger.debug("Activite rappels: publication du snapshot dans la console")
-                await self.dump_data_to_console_no_ctx(org_channel.guild)
-
-    async def envoyer_rappel(self, channel, e: ActiviteData, t: str) -> bool:
-        """J'envoie le rappel avec son délai Discord et confirme la réussite de l'envoi."""
-        start_utc = _activity_datetime_utc(e.date_obj)
-        ds = start_utc.astimezone(PARIS).strftime("%d/%m/%Y à %H:%M")
-        lines = [f"⏰ **Rappel** : {e.titre}"]
-        if e.role_id:
-            lines.append(f"<@&{e.role_id}>")
-        lines.append(f"Début le {ds} (heure de Paris) • <t:{int(start_utc.timestamp())}:R>")
+    async def envoyer_rappel(self, channel, event: ActiviteData, kind: str) -> bool:
+        start = utc(event.date_obj)
+        record = event.to_dict()
+        text = (
+            f"⏰ **Rappel** : {safe(event.titre, 100)}\n"
+            f"Début le {start.astimezone(PARIS):%d/%m/%Y à %H:%M} (heure de Paris) "
+            f"• <t:{int(start.timestamp())}:R>"
+        )
+        link = self._card_link(record)
+        chunks = [event.participants[i:i + 40] for i in range(0, len(event.participants), 40)] or [[]]
         try:
-            await channel.send("\n".join(lines))
-        except Exception as ex:
-            logger.warning(
-                "Activite rappel echoue event_id=%s echeance=%s: %s", e.id, t, ex,
-                exc_info=True,
-            )
+            for chunk in chunks:
+                users = [discord.Object(id=uid) for uid in chunk]
+                mentions = " ".join(f"<@{user.id}>" for user in users)
+                await channel.send(
+                    text + (f"\n{mentions}" if mentions else "") + (f"\n{link}" if link else ""),
+                    allowed_mentions=discord.AllowedMentions(
+                        everyone=False, roles=False, users=users, replied_user=False,
+                    ),
+                )
+        except Exception:
+            logger.warning("Activite rappel echoue event_id=%s echeance=%s", event.id, kind,
+                           exc_info=True)
             return False
-        logger.debug("Activite rappel envoye event_id=%s echeance=%s", e.id, t)
+        logger.debug("Activite rappel envoye event_id=%s echeance=%s", event.id, kind)
         return True
 
     @commands.Cog.listener()
+    async def on_member_remove(self, member):
+        if not self.initialized or member.guild.id != getattr(self._source_guild(), "id", None):
+            return
+        notifications = []
+        try:
+            async with self._mutation_lock:
+                candidate = copy.deepcopy(self.activities_data)
+                changed_keys = []
+                for key, record in candidate["events"].items():
+                    if record.get("cancelled") or utc(datetime.fromisoformat(
+                        record.get("starts_at") or record["date_str"])) <= self.now():
+                        continue
+                    if member.id not in record.get("participants", []) + record.get("waitlist", []):
+                        continue
+                    _, promoted = change_roster(record, member.id, "leave", now=self.now())
+                    notifications.append((key, promoted))
+                    changed_keys.append(key)
+                if changed_keys:
+                    await self._commit(candidate, guild=member.guild)
+                    self._dirty_cards.update(changed_keys)
+            for key, promoted in notifications:
+                await self._sync_legacy_roles(member.guild, key, promoted)
+                await self.sync_card(key, member.guild)
+                await self._notify_members(
+                    member.guild, self.activities_data["events"][key],
+                    "Un membre a quitté le serveur : une place t'est attribuée.", promoted,
+                )
+        except Exception:
+            logger.exception("Activities: departed member cleanup failed user_id=%s", member.id)
+
+    @commands.Cog.listener()
     async def on_ready(self):
-        """Quand le bot est prêt."""
-        if not self.initialized:
-            await self.initialize_data()
+        await self.initialize_data()
 
     def cog_unload(self):
-        """À la désinstallation du Cog, on arrête la loop."""
         self.check_events_loop.cancel()
-
-    @commands.command(name="activite")
-    async def activite_main(self, ctx, action=None, *, args=None):
-        """
-        Commande principale : !activite <action> <arguments...>
-        - creer / liste / info / join / leave / annuler / modifier / guide
-        """
-        if not self.initialized:
-            return await ctx.send("Données en cours de chargement.")
-        if not action:
-            return await ctx.send("Actions: guide, creer, liste, info, join, leave, annuler, modifier.")
-
-        a = action.lower()
-        if a == "guide":
-            await self.command_guide(ctx)
-        elif a == "creer":
-            if not self.has_validated_role(ctx.author):
-                return await ctx.send("Rôle invalide.")
-            await self.command_creer(ctx, args)
-        elif a == "liste":
-            await self.command_liste(ctx)
-        elif a == "info":
-            await self.command_info(ctx, args)
-        elif a == "join":
-            if not self.has_validated_role(ctx.author):
-                return await ctx.send("Rôle invalide.")
-            await self.command_join(ctx, args)
-        elif a == "leave":
-            if not self.has_validated_role(ctx.author):
-                return await ctx.send("Rôle invalide.")
-            await self.command_leave(ctx, args)
-        elif a == "annuler":
-            if not self.has_validated_role(ctx.author):
-                return await ctx.send("Rôle invalide.")
-            await self.command_annuler(ctx, args)
-        elif a == "modifier":
-            if not self.has_validated_role(ctx.author):
-                return await ctx.send("Rôle invalide.")
-            await self.command_modifier(ctx, args)
-        else:
-            await ctx.send("Action inconnue. Tapez !activite guide pour l'aide.")
-
-    async def command_guide(self, ctx):
-        """Affiche le guide rapide pour la commande !activite."""
-        txt = (
-            "**Guide !activite**\n\n"
-            "`!activite creer <titre> <JJ/MM/AAAA HH:MM> <desc>`\n"
-            "`!activite liste`\n"
-            "`!activite info <id>`\n"
-            "`!activite join <id>` / `!activite leave <id>`\n"
-            "`!activite annuler <id>`\n"
-            "`!activite modifier <id> <JJ/MM/AAAA HH:MM> <desc>`\n"
-        )
-        em = discord.Embed(title="Guide Complet : !activite", description=txt, color=0x00AAFF)
-        await ctx.send(embed=em)
-
-    async def command_creer(self, ctx, line):
-        """Crée une nouvelle activité."""
-        if not line or line.strip() == "":
-            return await ctx.send("Syntaxe: !activite creer <titre> <JJ/MM/AAAA HH:MM> <desc>")
-
-        supplied = getattr(ctx, "slash_values", {})
-        if supplied and "titre" in supplied and "date" in supplied:
-            titre = str(supplied["titre"])
-            dt = activity_datetime(supplied["date"])
-            description = str(supplied.get("description") or "")
-        else:
-            titre, dt, description = parse_date_time_via_regex(line)
-        if not dt:
-            return await ctx.send("Date/heure invalide.")
-
-        guild = ctx.guild
-        role_name = f"Sortie - {titre}"
-        try:
-            new_role = await guild.create_role(name=role_name)
-        except Exception as ex:
-            return await ctx.send(f"Impossible de créer le rôle : {ex}")
-
-        event_id = str(self.activities_data.get("next_id", 1))
-        self.activities_data["next_id"] = int(event_id) + 1
-
-        # Création de l'activité
-        a = ActiviteData(event_id, titre, dt, description, ctx.author.id, new_role.id)
-        # On inscrit directement le créateur
-        a.participants.append(ctx.author.id)
-
-        if "events" not in self.activities_data:
-            self.activities_data["events"] = {}
-        self.activities_data["events"][event_id] = a.to_dict()
-
-        # Sauvegarde + dump console
-        await self.save_data_local()
-        await self.dump_data_to_console(ctx)
-
-        # Ajout du rôle au créateur (logique redondante,
-        # mais permet de donner les perms ou l'identifiant visuel)
-        try:
-            await ctx.author.add_roles(new_role)
-        except Exception as ex:
-            logger.warning(f"Impossible d'ajouter le rôle au créateur: {ex}")
-
-        ds = dt.strftime("%d/%m/%Y à %H:%M")
-        em = discord.Embed(
-            title=f"Création: {titre}",
-            description=description or "Aucune description",
-            color=0x00FF00
-        )
-        em.add_field(name="Date/Heure", value=ds, inline=False)
-        em.add_field(name="ID", value=event_id, inline=True)
-        await ctx.send(embed=em)
-
-        org_chan = self._resolve_organisation_channel(guild)
-        if org_chan:
-            val_role = discord.utils.get(guild.roles, name=VALIDATED_ROLE_NAME)
-            mention = f"<@&{val_role.id}>" if val_role else "@everyone"
-            ev_embed = discord.Embed(
-                title=f"Nouvelle proposition : {titre}",
-                description=(
-                    f"Date : {ds}\n"
-                    f"Desc : {description or '(aucune)'}\n"
-                    f"Réagissez avec {SINGLE_EVENT_EMOJI} pour participer, "
-                    f"{UNSUB_EMOJI} pour vous retirer.\n"
-                    f"ID = {event_id}"
-                ),
-                color=0x44DD55
-            )
-            msg = await org_chan.send(
-                content=f"{mention} Activité proposée par {ctx.author.mention}",
-                embed=ev_embed
-            )
-            await msg.add_reaction(SINGLE_EVENT_EMOJI)
-            await msg.add_reaction(UNSUB_EMOJI)
-            self.single_event_msg_map[msg.id] = event_id
-
-    async def command_liste(self, ctx):
-        """Affiche la liste paginée des activités à venir."""
-        if "events" not in self.activities_data:
-            return await ctx.send("Aucune activité enregistrée.")
-
-        now = datetime.now(timezone.utc)
-        upcoming = []
-        for k, ev_dict in self.activities_data["events"].items():
-            if ev_dict["cancelled"]:
-                continue
-            e = ActiviteData.from_dict(ev_dict)
-            if _activity_datetime_utc(e.date_obj) > now:
-                upcoming.append(e)
-        if not upcoming:
-            return await ctx.send("Aucune activité à venir.")
-
-        # Tri chronologique
-        upcoming.sort(key=lambda x: _activity_datetime_utc(x.date_obj))
-
-        events_per_page = 5
-        pages = []
-        for i in range(0, len(upcoming), events_per_page):
-            chunk = upcoming[i:i+events_per_page]
-            pages.append(chunk)
-
-        total_pages = len(pages)
-        current_page = 0
-
-        def make_embed(page_idx):
-            page_events = pages[page_idx]
-            em = discord.Embed(
-                title=f"Activités à venir (page {page_idx+1}/{total_pages})",
-                color=0x3498db
-            )
-            for ev in page_events:
-                ds = ev.date_obj.strftime("%d/%m %H:%M")
-                pc = len(ev.participants)
-                org = ctx.guild.get_member(ev.creator_id)
-                on = org.display_name if org else "Inconnu"
-                ro = f"<@&{ev.role_id}>" if ev.role_id else "Aucun"
-
-                plist = []
-                for pid in ev.participants:
-                    mem = ctx.guild.get_member(pid)
-                    plist.append(mem.display_name if mem else f"<@{pid}>")
-                pstr = ", ".join(plist) if plist else "Aucun"
-
-                txt = (
-                    f"ID : {ev.id}\n"
-                    f"Date : {ds}\n"
-                    f"Organisateur : {on}\n"
-                    f"Participants ({pc}/{MAX_GROUP_SIZE}) : {pstr}\n"
-                    f"Rôle : {ro}\n"
-                    f"---\n{ev.description or '*Aucune description*'}"
-                )
-                em.add_field(name=shorten(f"• {ev.titre}", 250), value=shorten(txt, 950), inline=False)
-
-            return em
-
-        embed_page = make_embed(current_page)
-        msg_sent = await ctx.send(embed=embed_page)
-
-        if total_pages == 1:
-            return
-
-        await msg_sent.add_reaction("⬅️")
-        await msg_sent.add_reaction("➡️")
-
-        self.liste_message_map[msg_sent.id] = {
-            "pages": pages,
-            "current_page": current_page,
-            "total_pages": total_pages
-        }
-
-    async def command_info(self, ctx, args):
-        """Affiche les détails d'une activité (ID)."""
-        if not args:
-            return await ctx.send("Syntaxe : !activite info <id>")
-
-        if "events" not in self.activities_data or args not in self.activities_data["events"]:
-            return await ctx.send("Activité introuvable.")
-
-        e_dict = self.activities_data["events"][args]
-        e = ActiviteData.from_dict(e_dict)
-
-        em = discord.Embed(title=shorten(f"Infos : {e.titre} (ID={e.id})", 250), color=0xFFC107)
-        em.add_field(name="Date/Heure", value=e.date_obj.strftime("%d/%m/%Y %H:%M"), inline=False)
-        em.add_field(name="Annulée", value="Oui" if e.cancelled else "Non", inline=True)
-        em.add_field(name="Description", value=shorten(e.description or "Aucune", 1000), inline=False)
-
-        org = ctx.guild.get_member(e.creator_id)
-        on = org.display_name if org else "Inconnu"
-        em.add_field(name="Organisateur", value=on, inline=False)
-
-        plist = []
-        for pid in e.participants:
-            mem = ctx.guild.get_member(pid)
-            plist.append(mem.display_name if mem else f"<@{pid}>")
-        pc = len(plist)
-        pstr = ", ".join(plist) if plist else "Aucun"
-        em.add_field(name=f"Participants ({pc}/{MAX_GROUP_SIZE})", value=pstr, inline=False)
-
-        if e.role_id:
-            em.add_field(name="Rôle", value=f"<@&{e.role_id}>", inline=True)
-
-        await ctx.send(embed=em)
-
-    async def command_join(self, ctx, args):
-        """Permet de rejoindre un événement (ID)."""
-        if not args:
-            return await ctx.send("Syntaxe: !activite join <id>")
-
-        if "events" not in self.activities_data or args not in self.activities_data["events"]:
-            return await ctx.send("Activité introuvable.")
-
-        e_dict = self.activities_data["events"][args]
-        e = ActiviteData.from_dict(e_dict)
-        if e.cancelled:
-            return await ctx.send("Activité annulée.")
-        if ctx.author.id in e.participants:
-            return await ctx.send("Déjà inscrit.")
-        if _activity_datetime_utc(e.date_obj) <= datetime.now(timezone.utc):
-            return await ctx.send("Le début de cette activité est déjà passé.")
-        if len(e.participants) >= MAX_GROUP_SIZE:
-            return await ctx.send("Groupe complet.")
-
-        e.participants.append(ctx.author.id)
-        self.activities_data["events"][args] = e.to_dict()
-
-        await self.save_data_local()
-        await self.dump_data_to_console(ctx)
-
-        # Donne le rôle
-        if e.role_id:
-            r = ctx.guild.get_role(e.role_id)
-            if r:
-                try:
-                    await ctx.author.add_roles(r)
-                except Exception as ex:
-                    logger.warning(f"Impossible d'ajouter le rôle: {ex}")
-
-        await ctx.send(f"{ctx.author.mention} rejoint {e.titre} (ID={args}).")
-
-    async def command_leave(self, ctx, args):
-        """Permet de quitter un événement (ID)."""
-        if not args:
-            return await ctx.send("Syntaxe: !activite leave <id>")
-
-        if "events" not in self.activities_data or args not in self.activities_data["events"]:
-            return await ctx.send("Introuvable.")
-
-        e_dict = self.activities_data["events"][args]
-        e = ActiviteData.from_dict(e_dict)
-        if ctx.author.id not in e.participants:
-            return await ctx.send("Pas inscrit sur cet événement.")
-
-        e.participants.remove(ctx.author.id)
-        self.activities_data["events"][args] = e.to_dict()
-
-        await self.save_data_local()
-        await self.dump_data_to_console(ctx)
-
-        # Retire le rôle
-        if e.role_id:
-            r = ctx.guild.get_role(e.role_id)
-            if r:
-                try:
-                    await ctx.author.remove_roles(r)
-                except Exception as ex:
-                    logger.warning(f"Impossible de retirer le rôle: {ex}")
-
-        await ctx.send(f"{ctx.author.mention} se retire de {e.titre} (ID={args}).")
-
-    async def command_annuler(self, ctx, args):
-        """Annule un événement si on est créateur ou admin."""
-        if not args:
-            return await ctx.send("Syntaxe: !activite annuler <id>")
-        if "events" not in self.activities_data or args not in self.activities_data["events"]:
-            return await ctx.send("Introuvable.")
-
-        e_dict = self.activities_data["events"][args]
-        e = ActiviteData.from_dict(e_dict)
-        if not self.can_modify(ctx, e):
-            return await ctx.send("Non autorisé.")
-
-        e.cancelled = True
-        self.activities_data["events"][args] = e.to_dict()
-
-        await self.save_data_local()
-        await self.dump_data_to_console(ctx)
-
-        if e.role_id:
-            r = ctx.guild.get_role(e.role_id)
-            if r:
-                try:
-                    await r.delete(reason="Annulation.")
-                except Exception as ex:
-                    logger.warning(f"Impossible de supprimer le rôle: {ex}")
-
-        await ctx.send(f"{e.titre} (ID={args}) annulée.")
-
-    async def command_modifier(self, ctx, args):
-        """Modifie la date/heure + description d'un événement (ID)."""
-        if not args:
-            return await ctx.send("Syntaxe: !activite modifier <id> <JJ/MM/AAAA HH:MM> <desc>")
-        parts = args.split(" ", 1)
-        if len(parts) < 2:
-            return await ctx.send("Exemple: !activite modifier 3 12/05/2025 19:30 Nouvelle desc")
-
-        event_id = parts[0]
-        rest = parts[1]
-        if "events" not in self.activities_data or event_id not in self.activities_data["events"]:
-            return await ctx.send("Introuvable.")
-
-        e_dict = self.activities_data["events"][event_id]
-        e = ActiviteData.from_dict(e_dict)
-        if not self.can_modify(ctx, e):
-            return await ctx.send("Non autorisé.")
-        if e.cancelled:
-            return await ctx.send("Déjà annulée.")
-
-        supplied = getattr(ctx, "slash_values", {})
-        if supplied and "date" in supplied:
-            dt = activity_datetime(supplied["date"])
-            nd = e.description if supplied.get("description") is None else str(supplied["description"])
-        else:
-            mat = DATE_TIME_REGEX.search(rest)
-            if not mat:
-                return await ctx.send("Date/heure non trouvée.")
-            ds = mat.group("date").strip()
-            ts = mat.group("time").strip()
-            nd = mat.group("desc").strip()
-            dt = parse_date_time(ds, ts)
-            if not dt:
-                return await ctx.send("Date invalide.")
-
-        date_changed = _activity_datetime_utc(e.date_obj) != _activity_datetime_utc(dt)
-        if date_changed:
-            e.reminder_24_sent = False
-            e.reminder_1_sent = False
-        logger.debug(
-            "Activite modification event_id=%s rappels_reinitialises=%s", event_id, date_changed,
-        )
-        e.date_obj = dt
-        e.description = nd
-
-        self.activities_data["events"][event_id] = e.to_dict()
-
-        await self.save_data_local()
-        await self.dump_data_to_console(ctx)
-
-        await ctx.send(
-            f"{e.titre} (ID={event_id}) modifiée.\n"
-            f"Nouvelle date: {dt.strftime('%d/%m/%Y %H:%M')}\n"
-            f"Description: {nd}"
-        )
+        for view in self._persistent_views.values():
+            view.stop()
+        self._persistent_views.clear()
 
     @commands.command(name="calendrier")
     @commands.guild_only()
@@ -906,7 +888,7 @@ class ActiviteCog(commands.Cog):
             can_attach = permissions.attach_files
 
         view = CalendrierView(
-            ctx.author, {}, source=lambda: self.activities_data.get("events", {}),
+            ctx.author, {}, source=lambda: self.events_for_guild(ctx.guild.id),
             state=state, guild=guild, renderer=self.calendar_renderer,
             action=self._calendar_activity_action, attach_files=can_attach,
             attachment_limit=min(getattr(guild, "filesize_limit", 8 * 1024 * 1024), 8 * 1024 * 1024),
@@ -925,249 +907,7 @@ class ActiviteCog(commands.Cog):
             self.bot, interaction, "activite", f"{action} {event_id}",
         )
 
-    @commands.Cog.listener()
-    async def on_reaction_add(self, reaction, user):
-        """
-        Gère les réactions sur :
-        - la liste paginée (pour naviguer / s'inscrire / se désinscrire),
-        - l'événement unique (✅ / ❌).
-        """
-        if user.bot:
-            return
-
-        # 1) Si c'est un message de liste paginée
-        if reaction.message.id in self.liste_message_map:
-            await self.handle_reaction_list_pagination(reaction, user)
-            return
-
-        # 2) Si c'est un message unique (créé par !activite creer)
-        if reaction.message.id in self.single_event_msg_map:
-            await self.handle_reaction_single_event(reaction, user)
-            return
-
-    async def handle_reaction_list_pagination(self, reaction, user):
-        """
-        Possibilité de réagir avec ✅ / ❌ pour s'inscrire ou se désinscrire
-        depuis la liste paginée, puis re-dump dans la console.
-        Mais seulement si la page contient un seul événement.
-        """
-        data = self.liste_message_map[reaction.message.id]
-        pages = data["pages"]
-        current_page = data["current_page"]
-        total_pages = data["total_pages"]
-
-        emj = str(reaction.emoji)
-
-        # Retirer la réaction tout de suite
-        try:
-            await reaction.message.remove_reaction(emj, user)
-        except Exception as ex:
-            logger.warning(f"Impossible de retirer la réaction pagination: {ex}")
-
-        # Navigation pages
-        if emj in ["⬅️", "➡️"]:
-            if emj == "➡️":
-                current_page += 1
-                if current_page >= total_pages:
-                    current_page = 0
-            else:  # "⬅️"
-                current_page -= 1
-                if current_page < 0:
-                    current_page = total_pages - 1
-
-            data["current_page"] = current_page
-            self.liste_message_map[reaction.message.id] = data
-
-            # Reconstruit l'embed
-            page_events = pages[current_page]
-            embed = discord.Embed(
-                title=f"Activités à venir (page {current_page+1}/{total_pages})",
-                color=0x3498db
-            )
-            for ev in page_events:
-                ds = ev.date_obj.strftime("%d/%m %H:%M")
-                pc = len(ev.participants)
-                org = reaction.message.guild.get_member(ev.creator_id)
-                on = org.display_name if org else "Inconnu"
-                ro = f"<@&{ev.role_id}>" if ev.role_id else "Aucun"
-
-                plist = []
-                for pid in ev.participants:
-                    mem = reaction.message.guild.get_member(pid)
-                    plist.append(mem.display_name if mem else f"<@{pid}>")
-                pstr = ", ".join(plist) if plist else "Aucun"
-
-                txt = (
-                    f"ID : {ev.id}\n"
-                    f"Date : {ds}\n"
-                    f"Organisateur : {on}\n"
-                    f"Participants ({pc}/{MAX_GROUP_SIZE}) : {pstr}\n"
-                    f"Rôle : {ro}\n"
-                    f"---\n{ev.description or '*Aucune description*'}"
-                )
-                embed.add_field(name=f"• {ev.titre}", value=txt, inline=False)
-
-            await reaction.message.edit(embed=embed)
-            return
-
-        # Inscription/désinscription sur la page ?
-        if emj not in [SINGLE_EVENT_EMOJI, UNSUB_EMOJI]:
-            return
-
-        page_events = pages[current_page]
-        if len(page_events) != 1:
-            # On ne peut pas savoir quel event viser si plusieurs
-            await reaction.message.channel.send(
-                f"{user.mention} : Cette page contient plusieurs événements. "
-                f"Utilise plutôt `!activite join <id>` ou `!activite leave <id>`."
-            )
-            return
-
-        ev = page_events[0]
-        if not self.has_validated_role(user):
-            await reaction.message.channel.send(f"{user.mention} : rôle invalide.")
-            return
-        if ev.cancelled:
-            await reaction.message.channel.send("Activité annulée.")
-            return
-
-        # On récupère l'ActiviteData à jour
-        e_dict = self.activities_data["events"].get(ev.id)
-        if not e_dict:
-            return
-        e_data = ActiviteData.from_dict(e_dict)
-
-        if emj == SINGLE_EVENT_EMOJI:
-            # S'inscrire
-            if len(e_data.participants) >= MAX_GROUP_SIZE:
-                await reaction.message.channel.send("Groupe complet.")
-                return
-            if user.id in e_data.participants:
-                await reaction.message.channel.send("Déjà inscrit.")
-                return
-
-            e_data.participants.append(user.id)
-            self.activities_data["events"][e_data.id] = e_data.to_dict()
-            await self.save_data_local()
-            await self.dump_data_to_console_no_ctx(reaction.message.guild)
-
-            # Ajout du rôle
-            if e_data.role_id:
-                role = reaction.message.guild.get_role(e_data.role_id)
-                if role:
-                    try:
-                        await user.add_roles(role)
-                    except Exception as ex:
-                        logger.warning(f"Impossible d'ajouter le rôle à {user}: {ex}")
-
-            await reaction.message.channel.send(f"{user.mention} rejoint {e_data.titre} (ID={e_data.id}).")
-
-        else:
-            # emj == UNSUB_EMOJI => se désinscrire
-            if user.id not in e_data.participants:
-                await reaction.message.channel.send("Pas inscrit.")
-                return
-
-            e_data.participants.remove(user.id)
-            self.activities_data["events"][e_data.id] = e_data.to_dict()
-            await self.save_data_local()
-            await self.dump_data_to_console_no_ctx(reaction.message.guild)
-
-            # Retirer le rôle
-            if e_data.role_id:
-                role = reaction.message.guild.get_role(e_data.role_id)
-                if role:
-                    try:
-                        await user.remove_roles(role)
-                    except Exception as ex:
-                        logger.warning(f"Impossible de retirer le rôle: {ex}")
-
-            await reaction.message.channel.send(f"{user.mention} se retire de {e_data.titre} (ID={e_data.id}).")
-
-    async def handle_reaction_single_event(self, reaction, user):
-        """Inscription / désinscription sur un seul event (message unique créé par !activite creer)."""
-        emj = str(reaction.emoji)
-        event_id = self.single_event_msg_map[reaction.message.id]
-        guild = reaction.message.guild
-
-        if "events" not in self.activities_data or event_id not in self.activities_data["events"]:
-            await reaction.message.channel.send("Événement introuvable ou annulé.")
-            return
-
-        e_dict = self.activities_data["events"][event_id]
-        e = ActiviteData.from_dict(e_dict)
-        if e.cancelled:
-            await reaction.message.channel.send("Activité annulée.")
-            return
-
-        if not self.has_validated_role(user):
-            await reaction.message.channel.send(f"{user.mention} rôle invalide.")
-            return
-
-        # On retire la réaction pour éviter qu'elle reste
-        try:
-            await reaction.message.remove_reaction(emj, user)
-        except Exception as ex:
-            logger.warning(f"Impossible de retirer la réaction {emj}: {ex}")
-
-        if emj == SINGLE_EVENT_EMOJI:
-            # Join
-            if len(e.participants) >= MAX_GROUP_SIZE:
-                await reaction.message.channel.send("Groupe complet.")
-                return
-            if user.id in e.participants:
-                await reaction.message.channel.send("Déjà inscrit.")
-                return
-
-            e.participants.append(user.id)
-            self.activities_data["events"][event_id] = e.to_dict()
-            await self.save_data_local()
-            await self.dump_data_to_console_no_ctx(guild)
-
-            if e.role_id:
-                role = guild.get_role(e.role_id)
-                if role:
-                    try:
-                        await user.add_roles(role)
-                    except Exception as ex:
-                        logger.warning(f"Impossible d'ajouter le rôle: {ex}")
-
-            await reaction.message.channel.send(f"{user.mention} rejoint {e.titre} (ID={e.id}).")
-
-        elif emj == UNSUB_EMOJI:
-            # Leave
-            if user.id not in e.participants:
-                await reaction.message.channel.send("Vous n'êtes pas inscrit.")
-                return
-
-            e.participants.remove(user.id)
-            self.activities_data["events"][event_id] = e.to_dict()
-            await self.save_data_local()
-            await self.dump_data_to_console_no_ctx(guild)
-
-            if e.role_id:
-                role = guild.get_role(e.role_id)
-                if role:
-                    try:
-                        await user.remove_roles(role)
-                    except Exception as ex:
-                        logger.warning(f"Impossible de retirer le rôle: {ex}")
-
-            await reaction.message.channel.send(f"{user.mention} se retire de {e.titre} (ID={e.id}).")
-
-    def can_modify(self, ctx, e: ActiviteData):
-        """Autorise l'annulation / modification si créateur ou admin."""
-        if ctx.author.id == e.creator_id:
-            return True
-        if ctx.author.guild_permissions.administrator:
-            return True
-        return False
-
-    def has_validated_role(self, member: discord.Member):
-        """Vérifie la présence du rôle validé."""
-        return any(r.name == VALIDATED_ROLE_NAME for r in member.roles)
 
 
 async def setup(bot: commands.Bot):
-    """Routine d'installation du Cog."""
     await bot.add_cog(ActiviteCog(bot))

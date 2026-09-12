@@ -197,8 +197,8 @@ def custom_routes() -> tuple[Route, ...]:
         Route(("job", "nettoyer"), "job", "Staff : retirer les joueurs absents du serveur.", fixed=("prune",)),
         Route(("activite", "aide"), "activite", "Consulter le guide des activités.", fixed=("guide",)),
         Route(("activite", "liste"), "activite", "Consulter les prochaines activités.", fixed=("liste",)),
-        Route(("activite", "creer"), "activite", "Créer une activité et ouvrir les inscriptions.", (Option("titre", "Nom de l’activité."), DATE, DESCRIPTION), ("creer",), "activity"),
-        Route(("activite", "modifier"), "activite", "Modifier la date et la description d’une activité.", (ACTIVITY_ID, DATE, MODIFIED_DESCRIPTION), ("modifier",), "activity"),
+        Route(("activite", "creer"), "activite", "Créer une sortie avec un formulaire rapide.", (), ("creer",), "activity_form"),
+        Route(("activite", "modifier"), "activite", "Modifier une sortie dans un formulaire prérempli.", (ACTIVITY_ID,), ("modifier",), "activity_form"),
         Route(("activite", "info"), "activite", "Consulter les détails d’une activité.", (ACTIVITY_ID,), ("info",), "rest"),
         Route(("activite", "rejoindre"), "activite", "T’inscrire à une activité.", (ACTIVITY_ID,), ("join",), "rest"),
         Route(("activite", "quitter"), "activite", "Te désinscrire d’une activité.", (ACTIVITY_ID,), ("leave",), "rest"),
@@ -340,6 +340,6 @@ def format_arguments(route: Route, values: dict[str, object]) -> str:
         text = str(values["message"])
         if not re.fullmatch(r"[0-9]{1,20}", text) or not 0 < int(text) < 2**64:
             raise SlashInputError("Choisis un sondage ou indique son identifiant Discord exact.")
-    if route.mode in {"rest", "activity"}:
+    if route.mode in {"rest", "activity", "activity_form"}:
         return " ".join([*route.fixed, *parts]).strip()
     return " ".join(quote_token(part) for part in [*route.fixed, *parts])

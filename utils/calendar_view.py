@@ -278,7 +278,7 @@ class CalendrierView(CalendarSession):
                 label=one_line(event.title, 100), value=event.id,
                 description=one_line(
                     f"{event.starts_at:%d/%m à %H:%M} · "
-                    f"{len(event.participants)}/{GROUP_CAPACITY} inscrits · {self._status(event)}", 100,
+                    f"{len(event.participants)}/{event.capacity} inscrits · {self._status(event)}", 100,
                 ),
             ) for event in self.page.events
         ] or [discord.SelectOption(label="Aucune activité sur cette page", value="empty")]
@@ -387,7 +387,7 @@ class CalendrierView(CalendarSession):
             )
             name = safe_text(f"{day} · {event.starts_at:%H:%M} — {one_line(event.title, 200)}", 256)
             value = (
-                f"**{self._status(event)}** · {len(event.participants)}/{GROUP_CAPACITY} inscrits"
+                f"**{self._status(event)}** · {len(event.participants)}/{event.capacity} inscrits"
                 f" · <t:{event.timestamp}:R>"
             )
             if event.description:
@@ -635,14 +635,14 @@ class ActivityDetailView(CalendarSession):
                 color=EMBED_COLOR,
             )
         else:
-            joined = self.author_id in event.participants
+            joined = self.author_id in event.participants or self.author_id in event.waitlist
             self.join.disabled = (
-                self.action is None or not event.places or event.has_started(self.clock()) or joined
+                self.action is None or event.has_started(self.clock()) or joined
             )
-            self.leave.disabled = self.action is None or not joined
+            self.leave.disabled = self.action is None or not joined or event.has_started(self.clock())
             self.join.label = (
                 "Déjà commencée" if event.has_started(self.clock())
-                else "Complet" if not event.places else "S’inscrire"
+                else "Liste d’attente" if not event.places else "S’inscrire"
             )
             self.join.style = (
                 discord.ButtonStyle.secondary if self.join.disabled else discord.ButtonStyle.success
@@ -658,11 +658,22 @@ class ActivityDetailView(CalendarSession):
                        f"Chez toi : <t:{event.timestamp}:F> · <t:{event.timestamp}:R>"),
                 inline=False,
             )
+            if event.location:
+                embed.add_field(name="Lieu / rendez-vous", value=safe_text(event.location, 200), inline=False)
+            if event.message_url:
+                embed.add_field(name="Fiche de la sortie", value=f"[Ouvrir la fiche]({event.message_url})",
+                                inline=False)
+            if event.waitlist:
+                embed.add_field(
+                    name=f"Liste d'attente · {len(event.waitlist)}",
+                    value=shorten("\n".join(self._member_name(uid) for uid in event.waitlist), 1000),
+                    inline=False,
+                )
             embed.add_field(name="Ton statut", value=event.status(self.author_id, self.clock()), inline=True)
             embed.add_field(name="Organisateur", value=self._member_name(event.creator_id), inline=True)
             members = "\n".join(self._member_name(user_id) for user_id in event.participants)
             embed.add_field(
-                name=f"Participants · {len(event.participants)}/{GROUP_CAPACITY}",
+                name=f"Participants · {len(event.participants)}/{event.capacity}",
                 value=shorten(members, 1000) or "Aucun participant pour le moment.", inline=False,
             )
             for raw, limit in ((event.description, 2500), (event.title, 256)):
@@ -677,7 +688,7 @@ class ActivityDetailView(CalendarSession):
         self.full_text.disabled = event is None
         self.clear_items()
         if event is not None:
-            self.add_item(self.leave if self.author_id in event.participants else self.join)
+            self.add_item(self.leave if self.author_id in event.participants or self.author_id in event.waitlist else self.join)
         self.add_item(self.refresh)
         self.add_item(self.close)
         if show_full_text:

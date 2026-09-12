@@ -133,7 +133,13 @@ async def test_slash_catalog_covers_every_installed_command_with_valid_discord_s
                     assert not optional_seen
 
     for command in slash_bot.tree.get_commands():
-        validate(command.to_dict(slash_bot.tree))
+        schema = command.to_dict(slash_bot.tree)
+        if isinstance(command, app_commands.ContextMenu):
+            assert schema["type"] == discord.AppCommandType.message.value
+            assert 1 <= len(schema["name"]) <= 32
+            assert schema.get("dm_permission") is False
+        else:
+            validate(schema)
     add_job = slash_bot.tree.get_command("job").get_command("ajouter")
     options = {option["name"]: option for option in add_job.to_dict(slash_bot.tree)["options"]}
     assert options["niveau"]["min_value"] == 1
@@ -484,9 +490,9 @@ def test_poll_and_activity_fields_are_translated_to_existing_syntax():
     assert format_arguments(routes[("sondage",)], {
         "titre": "Sortie ?", "choix": "Oui | Non", "duree": "00:02:00",
     }) == "Sortie ? ; Oui ; Non ; temps=00:02:00"
-    assert format_arguments(routes[("activite", "creer")], {
-        "titre": "Donjon guilde", "date": "25/09/2099 21:00", "description": "Venez nombreux",
-    }) == "creer Donjon guilde 25/09/2099 21:00 Venez nombreux"
+    assert routes[("activite", "creer")].options == ()
+    assert format_arguments(routes[("activite", "creer")], {}) == "creer"
+    assert format_arguments(routes[("activite", "modifier")], {"identifiant": "7"}) == "modifier 7"
 
 
 @pytest.mark.parametrize("values", [

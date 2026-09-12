@@ -60,12 +60,16 @@ Les commandes de recherche suggèrent les noms pendant la saisie.
 | Retrouver mes métiers ou ceux d'un membre | `/job mes-metiers` · `/job joueur` |
 | Ajouter mon personnage ou une mule | `/membre principal` · `/membre ajouter-mule` |
 | Compléter mon profil | `/profil modifier` |
-| Consulter les prochaines sorties | `/activite liste` |
+| Proposer une sortie rapidement | `/activite creer` — formulaire et aperçu privé |
+| Consulter les prochaines sorties | `/activite liste` — inscriptions, attente et historique |
 | Afficher directement le calendrier du mois | `/calendrier` — aucun champ ; vues et filtres dans le message |
 | Contacter le Staff en privé | `/ticket` |
 
 **Sans API IA :** `/calendrier` s'ouvre sans champ et `/aide` présente le catalogue disponible.
-`/activite creer` publie une sortie avec inscriptions ; `/sondage` publie un vote.
+`/activite creer` ouvre un formulaire court, puis publie une fiche avec inscriptions et liste
+d'attente. Le calendrier utilise les mêmes données. Les annonces habituelles restent libres ;
+le menu d'une annonce du salon d'organisation peut préremplir la fiche.
+Voir [le guide des activités](docs/ACTIVITES.md). `/sondage` reste l'outil de vote.
 Pour le Staff, `/organisation` reste disponible avec ses modèles sans IA.
 
 Les commandes dépendant de l'IA, dont `/event`, `/annonce` et `/iastaff`, sont retirées

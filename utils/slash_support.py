@@ -129,6 +129,7 @@ async def invoke_from_slash(
     values: dict[str, object] | None = None,
     message_reference: str | None = None,
     private: bool = False,
+    defer_response: bool = True,
 ) -> SlashContext | None:
     """J'exécute conversions, permissions, cooldowns et hooks avant le traitement existant."""
     reason = unavailable_reason(target)
@@ -152,13 +153,14 @@ async def invoke_from_slash(
             message_reference, guild_id=interaction.guild_id, channel_id=interaction.channel_id
         )
     private_response = private or target in PRIVATE_WORKFLOWS
-    if private_response:
-        await interaction.response.defer(thinking=True, ephemeral=True)
-    else:
-        await interaction.response.defer(thinking=True)
+    if defer_response:
+        if private_response:
+            await interaction.response.defer(thinking=True, ephemeral=True)
+        else:
+            await interaction.response.defer(thinking=True)
     ctx = await SlashContext.from_interaction(interaction)
     ctx.private_response = private_response
-    ctx._public_deferred = not private_response
+    ctx._public_deferred = defer_response and not private_response
     ctx.slash_values = dict(values or {})
     ctx.command = command
     ctx.invoked_with = command.name
@@ -226,7 +228,7 @@ class ComponentContext(SlashContext):
 
 async def invoke_from_component(
     bot: commands.Bot, interaction: discord.Interaction, target: str, arguments: str,
-    *, values: dict[str, object] | None = None,
+    *, values: dict[str, object] | None = None, defer_response: bool = True,
 ) -> SlashContext | None:
     """Exécute la commande avec les droits du membre qui clique, jamais ceux du bot."""
     reason = unavailable_reason(target)
@@ -241,7 +243,7 @@ async def invoke_from_component(
         else:
             await interaction.response.send_message(message, ephemeral=True)
         return None
-    if not interaction.response.is_done():
+    if defer_response and not interaction.response.is_done():
         await interaction.response.defer()
     message = copy.copy(interaction.message)
     message.author = interaction.user

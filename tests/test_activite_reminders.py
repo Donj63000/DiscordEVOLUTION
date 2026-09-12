@@ -18,7 +18,7 @@ class RecordingConsoleChannel(FakeConsoleChannel):
         super().__init__([])
         self.author = author
 
-    async def send(self, content, *, file=None):
+    async def send(self, content, *, file=None, **kwargs):
         message = FakeMessage(self.author, content)
         if file is not None:
             file.fp.seek(0)
@@ -55,9 +55,10 @@ def clock(monkeypatch):
 @pytest.fixture
 def activity_env(monkeypatch, tmp_path, clock):
     role = SimpleNamespace(id=42, delete=AsyncMock())
-    guild = SimpleNamespace(get_role=Mock(return_value=role), get_member=Mock(return_value=None))
-    bot = SimpleNamespace(user=object(), guilds=[guild], is_ready=lambda: True)
-    organisation = SimpleNamespace(guild=guild, send=AsyncMock())
+    guild = SimpleNamespace(id=100, get_role=Mock(return_value=role),
+                            get_member=Mock(return_value=None), get_channel=Mock(return_value=None))
+    bot = SimpleNamespace(user=object(), guilds=[guild], is_ready=lambda: True, add_view=Mock())
+    organisation = SimpleNamespace(id=300, guild=guild, send=AsyncMock())
     console = RecordingConsoleChannel(bot.user)
     path = tmp_path / "activities_data.json"
     monkeypatch.setattr(activite, "DATA_FILE", str(path))
@@ -94,10 +95,12 @@ async def test_reported_evening_reminder_uses_actual_paris_start(activity_env, c
     with caplog.at_level(logging.DEBUG, logger="activite"):
         await env.cog.check_events_loop()
 
-    env.organisation.send.assert_awaited_once_with(
-        "⏰ **Rappel** : Donjon Blop\n<@&42>\n"
-        "Début le 11/09/2026 à 23:00 (heure de Paris) • <t:1789160400:R>"
-    )
+    env.organisation.send.assert_awaited_once()
+    sent = env.organisation.send.await_args
+    assert "Début le 11/09/2026 à 23:00 (heure de Paris) • <t:1789160400:R>" in sent.args[0]
+    assert "<@7> <@8>" in sent.args[0]
+    assert sent.kwargs["allowed_mentions"].roles is False
+    assert sent.kwargs["allowed_mentions"].everyone is False
     payload = await env.console.latest_payload()
     assert payload["events"]["1"]["reminder_24_sent"] is True
     assert payload["events"]["1"]["reminder_1_sent"] is False
@@ -131,8 +134,10 @@ async def test_reminder_boundaries(activity_env, clock, remaining_seconds, expec
     if expected_flags is None:
         env.organisation.send.assert_not_awaited()
         env.role.delete.assert_awaited_once_with(reason="Activité terminée")
-        assert "1" not in env.cog.activities_data["events"]
-        assert (await env.console.latest_payload())["events"] == {}
+        stored = env.cog.activities_data["events"]["1"]
+        assert stored["closed"] is True
+        assert stored["participants"] == [7, 8]
+        assert (await env.console.latest_payload())["events"]["1"] == stored
     else:
         event = env.cog.activities_data["events"]["1"]
         assert (event["reminder_24_sent"], event["reminder_1_sent"]) == expected_flags
@@ -159,7 +164,7 @@ async def test_first_reminder_then_only_one_final_reminder(activity_env, clock):
     await env.cog.check_events_loop()
 
     assert env.organisation.send.await_count == 2
-    assert len(env.console._messages) == 2
+    assert len(env.console._messages) == 1
     assert (await env.console.latest_payload())["events"]["1"]["reminder_1_sent"] is True
 
 
@@ -254,23 +259,25 @@ async def test_console_restoration_preserves_reminders_and_historical_data(
     await restored.check_events_loop()
 
     assert restored.initialized is True
-    assert restored.activities_data == saved
+    assert restored.activities_data == activite.migrate_snapshot(saved, env.guild.id)
     env.organisation.send.assert_awaited_once()
     assert len(env.console._messages) == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancelled_start", [datetime(2026, 9, 11, 23), datetime(2026, 9, 10, 23)])
-async def test_cancelled_activity_is_neither_reminded_nor_cleaned(activity_env, cancelled_start):
+async def test_cancelled_activity_keeps_history_and_cleans_legacy_role(activity_env, cancelled_start):
     env = activity_env
     original = add_activity(env, cancelled_start, cancelled=True).to_dict()
 
     await env.cog.check_events_loop()
 
     env.organisation.send.assert_not_awaited()
-    env.role.delete.assert_not_awaited()
-    assert env.cog.activities_data["events"]["1"] == original
-    assert env.console._messages == []
+    env.role.delete.assert_awaited_once()
+    retained = env.cog.activities_data["events"]["1"]
+    assert retained["participants"] == original["participants"]
+    assert retained["cancelled"] and retained["closed"]
+    assert retained["role_id"] is None
 
 
 @pytest.mark.asyncio
@@ -282,6 +289,7 @@ async def test_reminders_wait_until_bot_and_channel_are_available(activity_env, 
         env.bot.is_ready = lambda: False
     elif reason == "not_initialized":
         env.cog.initialized = False
+        env.cog.initialize_data = AsyncMock()
     else:
         env.cog._resolve_organisation_channel = lambda _guild: None
 
@@ -300,7 +308,8 @@ async def test_reminder_without_role_does_not_add_a_broad_mention(activity_env):
     assert await activity_env.cog.envoyer_rappel(activity_env.organisation, event, "24h") is True
 
     message = activity_env.organisation.send.await_args.args[0]
-    assert "<@" not in message
+    assert "<@7> <@8>" in message
+    assert activity_env.organisation.send.await_args.kwargs["allowed_mentions"].roles is False
     assert "@everyone" not in message
     assert "@here" not in message
     assert "\n\n" not in message
@@ -327,7 +336,7 @@ def test_activity_serialization_preserves_legacy_format(activity_env, flags):
     without_flags = {key: value for key, value in original.items() if "reminder" not in key}
     restored = activite.ActiviteData.from_dict(without_flags)
     assert restored.reminder_24_sent is restored.reminder_1_sent is False
-    assert restored.date_obj == datetime(2026, 9, 11, 23)
+    assert activite.utc(restored.date_obj) == datetime(2026, 9, 11, 21, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio
@@ -395,16 +404,18 @@ async def test_list_and_cleanup_use_same_paris_clock(activity_env, clock):
     add_activity(env, datetime(2026, 9, 12, 1), event_id="3")
     add_activity(env, datetime(2026, 9, 12, 0, 15), event_id="4")
     add_activity(env, datetime(2026, 9, 12, 0, 10), event_id="5", cancelled=True)
-    ctx = SimpleNamespace(guild=env.guild, send=AsyncMock())
+    ctx = SimpleNamespace(guild=env.guild, author=SimpleNamespace(id=7), send=AsyncMock())
 
     await env.cog.command_liste(ctx)
 
     fields = ctx.send.await_args.kwargs["embed"].fields
     assert len(fields) == 2
-    assert "ID : 4\nDate : 12/09 00:15" in fields[0].value
-    assert "ID : 3\nDate : 12/09 01:00" in fields[1].value
+    assert "#4" in fields[0].name
+    assert "#3" in fields[1].name
+    ctx.send.await_args.kwargs["view"].stop()
     await env.cog.check_events_loop()
-    assert set(env.cog.activities_data["events"]) == {"3", "4", "5"}
+    assert set(env.cog.activities_data["events"]) == {"1", "2", "3", "4", "5"}
+    assert env.cog.activities_data["events"]["1"]["closed"]
 
 
 @pytest.mark.asyncio
@@ -429,7 +440,7 @@ async def test_calendar_today_uses_paris_in_view_and_command(
 
     monkeypatch.setattr(mpimg, "imread", Mock(return_value=None))
     monkeypatch.setattr(activite.CalendrierView, "build_file", Mock(return_value=object()))
-    ctx = SimpleNamespace(author=author, send=AsyncMock())
+    ctx = SimpleNamespace(guild=activity_env.guild, author=author, send=AsyncMock())
     await activite.ActiviteCog.afficher_calendrier.callback(activity_env.cog, ctx)
     sent_view = ctx.send.await_args.kwargs["view"]
     try:
