@@ -49,7 +49,7 @@ async def cog():
         is_stale=Mock(return_value=False),
         peek=Mock(side_effect=lambda path: MONSTERS if path == INDEX_PATHS[1] else ITEMS),
     )
-    instance = DofusWikiCog(SimpleNamespace(), client=client)
+    instance = DofusWikiCog(SimpleNamespace(), client=client, image_client=None)
     yield instance
     await instance.cog_unload()
 

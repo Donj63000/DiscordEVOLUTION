@@ -197,7 +197,7 @@ async def test_wiki_slash_commands_defer_and_reach_the_real_handlers(slash_bot, 
         detail=AsyncMock(side_effect=detail), warmup=AsyncMock(), close=AsyncMock(),
         peek=Mock(return_value=items), is_stale=Mock(return_value=False),
     )
-    wiki = DofusWikiCog(slash_bot, client=client)
+    wiki = DofusWikiCog(slash_bot, client=client, image_client=None)
     await slash_bot.add_cog(wiki)
     catalog = SlashCommandsCog(slash_bot)
     catalog.register_commands()
@@ -254,7 +254,7 @@ async def network_wiki_bot(slash_bot):
                         "resist": {"neutral": 0, "earth": 25, "fire": -50,
                                    "water": 6, "air": -12}}],
         })
-        wiki = DofusWikiCog(slash_bot, client=DofusWikiClient())
+        wiki = DofusWikiCog(slash_bot, client=DofusWikiClient(), image_client=None)
         await slash_bot.add_cog(wiki)
         await wiki._warmup
         catalog = SlashCommandsCog(slash_bot)

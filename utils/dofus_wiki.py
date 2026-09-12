@@ -366,6 +366,21 @@ class DofusWikiClient:
     async def monsters(self) -> tuple[WikiEntry, ...]:
         return await self.resource(INDEX_PATHS[1], lambda data: parse_entries(data, "monster"))
 
+    async def item_icon(self, entry: WikiEntry) -> str | None:
+        """Je retrouve l'adresse de la miniature en partageant le cache de l'index des images."""
+        if entry.kind != "item" or self._closed:
+            log.debug("Wiki: item_icon_skipped kind=%s closed=%s", entry.kind, self._closed)
+            return None
+        try:
+            icons = await self.resource(INDEX_PATHS[2], parse_icons)
+        except WikiError as exc:
+            log.debug("Wiki: item_icon_unavailable reason=%s", type(exc).__name__)
+            return None
+        icon = icons.get(entry.path)
+        log.debug("Wiki: item_icon_resolved item_id=%s found=%s",
+                  entry.identifier, icon is not None)
+        return icon
+
     async def warmup(self):
         outcomes = await asyncio.gather(
             self.items(), self.monsters(), self.resource(INDEX_PATHS[2], parse_icons),

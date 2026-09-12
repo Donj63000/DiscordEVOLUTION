@@ -398,3 +398,121 @@ async def test_shutdown_cancels_pending_downloads_and_closes_session(client, mon
     with pytest.raises(asyncio.CancelledError):
         await request
     assert not client._inflight
+
+
+@pytest.mark.asyncio
+async def test_item_icon_loads_cold_index_and_reuses_verified_cached_mapping(client):
+    entry = parse_entries(ITEMS, "item")[0]
+    with aioresponses() as http:
+        http.get(WIKI_ORIGIN + INDEX_PATHS[2], payload=[
+            {"u": entry.path, "i": "/icons/item_9_47.png"},
+        ])
+        assert await client.item_icon(entry) == WIKI_ORIGIN + "/icons/item_9_47.png"
+        assert await client.item_icon(entry) == WIKI_ORIGIN + "/icons/item_9_47.png"
+        assert sum(len(calls) for calls in http.requests.values()) == 1
+        assert client.peek(INDEX_PATHS[2]) == {
+            entry.path: WIKI_ORIGIN + "/icons/item_9_47.png",
+        }
+
+
+@pytest.mark.asyncio
+async def test_item_icon_uses_stale_cache_on_failure_but_not_after_one_day(client):
+    entry = parse_entries(ITEMS, "item")[0]
+    now = [100.0]
+    client.clock = lambda: now[0]
+    with aioresponses() as http:
+        http.get(WIKI_ORIGIN + INDEX_PATHS[2], payload=[
+            {"u": entry.path, "i": "/icons/item_9_47.png"},
+        ])
+        expected = await client.item_icon(entry)
+        now[0] += 61
+        http.get(WIKI_ORIGIN + INDEX_PATHS[2], status=503)
+        assert await client.item_icon(entry) == expected
+        assert client.is_stale(INDEX_PATHS[2])
+        assert await client.item_icon(entry) == expected
+        now[0] += 86400
+        http.get(WIKI_ORIGIN + INDEX_PATHS[2], status=503)
+        assert await client.item_icon(entry) is None
+        assert sum(len(calls) for calls in http.requests.values()) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("icon", [
+    "https://evil.test/image.png", "//evil.test/image.png", "/icons/../image.png",
+    "https://wiki.moon-bot.io/icons/image.png?track=1", "javascript:alert(1)",
+])
+async def test_item_icon_does_not_return_untrusted_or_malformed_image_urls(client, icon):
+    entry = parse_entries(ITEMS, "item")[0]
+    with aioresponses() as http:
+        http.get(WIKI_ORIGIN + INDEX_PATHS[2], payload=[{"u": entry.path, "i": icon}])
+        assert await client.item_icon(entry) is None
+
+
+@pytest.mark.asyncio
+async def test_item_icon_returns_none_for_missing_entry(client):
+    with aioresponses() as http:
+        http.get(WIKI_ORIGIN + INDEX_PATHS[2], payload=[
+            {"u": "/items/other/", "i": "/icons/item_9_47.png"},
+        ])
+        assert await client.item_icon(parse_entries(ITEMS, "item")[0]) is None
+
+
+@pytest.mark.asyncio
+async def test_item_icon_failure_logs_only_exception_type(client, monkeypatch, caplog):
+    monkeypatch.setattr(client, "resource", AsyncMock(side_effect=WikiError("private-test-value")))
+    with caplog.at_level("DEBUG", logger="utils.dofus_wiki"):
+        assert await client.item_icon(parse_entries(ITEMS, "item")[0]) is None
+    assert "item_icon_unavailable reason=WikiError" in caplog.text
+    assert "private-test-value" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_item_icon_concurrent_requests_share_get_and_cancel_one_waiter(client):
+    entry = parse_entries(ITEMS, "item")[0]
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def callback(url, **kwargs):
+        entered.set()
+        await release.wait()
+        return CallbackResult(payload=[{"u": entry.path, "i": "/icons/item_9_47.png"}])
+
+    with aioresponses() as http:
+        http.get(WIKI_ORIGIN + INDEX_PATHS[2], callback=callback)
+        first = asyncio.create_task(client.item_icon(entry))
+        await entered.wait()
+        second = asyncio.create_task(client.item_icon(entry))
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        release.set()
+        assert await second == WIKI_ORIGIN + "/icons/item_9_47.png"
+        assert sum(len(calls) for calls in http.requests.values()) == 1
+
+
+@pytest.mark.asyncio
+async def test_item_icon_skips_non_items_and_closed_client_without_network(client):
+    assert await client.item_icon(parse_entries(MONSTERS, "monster")[0]) is None
+    assert client._session is None
+    await client.close()
+    assert await client.item_icon(parse_entries(ITEMS, "item")[0]) is None
+    assert client._session is None
+
+
+@pytest.mark.asyncio
+async def test_item_icon_pending_request_is_cancelled_on_close(client):
+    entered = asyncio.Event()
+
+    async def callback(url, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    with aioresponses() as http:
+        http.get(WIKI_ORIGIN + INDEX_PATHS[2], callback=callback)
+        request = asyncio.create_task(client.item_icon(parse_entries(ITEMS, "item")[0]))
+        await entered.wait()
+        await client.close()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+    assert client._session.closed
+    assert not client._inflight

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
+from io import BytesIO
 import logging
 import os
 import re
@@ -16,12 +17,22 @@ from utils.dofus_wiki import (
     DofusWikiClient, INDEX_PATHS, WikiEntry, WikiError,
     equipment_category, equipment_suggestions, find_entries, search_key,
 )
-from utils.wiki_embeds import display_text, item_embeds, monster_embeds, recipe_embeds
+from utils.wiki_embeds import (
+    display_text, enriched_item_sections, item_embeds, monster_embeds, recipe_embeds,
+)
+from utils.xixou_api import XixouClient
+from utils.xixou_maps import XixouMapRenderer
+from utils.wiki_images import WikiImageClient
 
 
 log = logging.getLogger(__name__)
 PAGE_SIZE = 10
 MAX_QUANTITY = 10000
+AUTO_CLIENT = object()
+ITEM_SECTIONS = {
+    "summary": "Résumé", "details": "Caractéristiques", "drops": "Drops",
+    "zones": "Zones et carte", "harvest": "Récolte", "uses": "Utilisations",
+}
 
 
 @dataclass(frozen=True)
@@ -86,17 +97,24 @@ class WikiView(discord.ui.View):
                     log.debug("Wiki: expired_view_message_unavailable", exc_info=True)
 
     async def ensure_active(self, interaction):
-        if self.is_finished():
+        if self.is_finished() or self.cog._closed:
             await interaction.followup.send("Ce menu a expiré. Relance ta recherche.", ephemeral=True)
             return False
         return True
 
-    async def publish(self, sender):
+    async def send_page(self, sender, *, editing=False):
+        options = {"attachments": []} if editing else {}
+        return await sender(
+            embed=self.embed(), view=self, allowed_mentions=discord.AllowedMentions.none(),
+            **options,
+        )
+
+    async def publish(self, sender, *, editing=False, clear_attachments=False):
         """Je libère le menu si Discord ne peut pas le publier, même après une annulation."""
         try:
-            self.message = await sender(
-                embed=self.embed(), view=self, allowed_mentions=discord.AllowedMentions.none(),
-            )
+            if self.is_finished() or self.cog._closed:
+                raise WikiError("L'encyclopédie redémarre. Relance ta recherche dans un instant.")
+            self.message = await self.send_page(sender, editing=editing or clear_attachments)
         except BaseException:
             self.stop()
             log.debug("Wiki: view_publication_failed view=%s", type(self).__name__, exc_info=True)
@@ -205,14 +223,29 @@ class ResultView(WikiView):
                 view.stop()
                 await self.ensure_active(interaction)
                 return
-            await view.publish(interaction.edit_original_response)
+            await view.publish(interaction.edit_original_response, editing=True)
             self.stop()
 
 
 class DetailView(WikiView):
-    def __init__(self, cog, owner_id, detail, action, quantity=1, *, results=None):
+    def __init__(
+        self, cog, owner_id, detail, action, quantity=1, *, results=None, enrichment=None,
+        item_image=None,
+    ):
         self.detail, self.action, self.quantity = detail, action, quantity
         self.results = results
+        self.item_image = item_image
+        self.enrichment = enrichment
+        self.sections = {}
+        if enrichment is not None and detail.entry.kind == "item":
+            try:
+                self.sections = enriched_item_sections(detail, enrichment)
+            except Exception as exc:
+                log.debug("Wiki: enrichment_display_unavailable error=%s", type(exc).__name__)
+                self.enrichment = None
+        self.section = "summary"
+        self.section_positions = dict.fromkeys(self.sections, 0)
+        self.map_link = None
         self.page = 0
         self.pages = self.build_pages()
         super().__init__(cog, owner_id)
@@ -237,6 +270,17 @@ class DetailView(WikiView):
             self.back.callback = self.return_to_results
             self.add_item(self.back)
         self.add_item(discord.ui.Button(label="Ouvrir le wiki", url=detail.entry.url, row=1))
+        if self.sections or (item_image is not None
+                             and item_image.source_url.startswith("https://xixou.io/")):
+            self.add_item(discord.ui.Button(label="Source Xixou", url="https://xixou.io", row=1))
+        if self.sections:
+            self.section_select = discord.ui.Select(
+                placeholder="Choisis une rubrique", row=2,
+                options=[discord.SelectOption(label=label, value=key)
+                         for key, label in ITEM_SECTIONS.items()],
+            )
+            self.section_select.callback = self.choose_section
+            self.add_item(self.section_select)
         self.refresh()
 
     def build_pages(self):
@@ -244,7 +288,14 @@ class DetailView(WikiView):
             return recipe_embeds(self.detail, self.quantity)
         if self.action == "monster":
             return monster_embeds(self.detail)
+        if self.sections:
+            return [page.embed for page in self.sections[self.section]]
         return item_embeds(self.detail)
+
+    def current_item_page(self):
+        if self.action == "item" and self.sections:
+            return self.sections[self.section][self.page]
+        return None
 
     def refresh(self):
         self.previous.disabled = self.page == 0
@@ -252,6 +303,23 @@ class DetailView(WikiView):
         if hasattr(self, "quantity_button"):
             self.quantity_button.disabled = self.action != "recipe"
             self.toggle.label = "Voir l'objet" if self.action == "recipe" else "Voir la recette"
+        if self.sections:
+            self.section_select.disabled = self.action != "item"
+            for option in self.section_select.options:
+                option.default = option.value == self.section
+            if self.map_link is not None:
+                self.remove_item(self.map_link)
+                self.map_link = None
+            page = self.current_item_page()
+            if page is not None and page.map_url:
+                self.map_link = discord.ui.Button(
+                    label="Explorer la carte", url=page.map_url, row=1,
+                )
+                self.add_item(self.map_link)
+        if self._retired:
+            for child in self.children:
+                if not getattr(child, "url", None):
+                    child.disabled = True
 
     def embed(self):
         return self.pages[self.page]
@@ -267,15 +335,115 @@ class DetailView(WikiView):
         async with self.lock:
             if not await self.ensure_active(interaction):
                 return
-            previous_page = self.page
-            self.page = max(0, min(len(self.pages) - 1, self.page + direction))
-            self.refresh()
+            page = max(0, min(len(self.pages) - 1, self.page + direction))
+            await self.change_page(interaction, page=page)
+
+    async def choose_section(self, interaction):
+        await interaction.response.defer()
+        async with self.lock:
+            if not await self.ensure_active(interaction):
+                return
+            selected = interaction.data.get("values", [])
+            if self.action != "item" or len(selected) != 1 or selected[0] not in self.sections:
+                await interaction.followup.send(
+                    "Cette rubrique n'est pas disponible. Reviens à la fiche objet.", ephemeral=True,
+                )
+                return
+            section = selected[0]
+            await self.change_page(
+                interaction, section=section, page=self.section_positions[section],
+            )
+
+    async def edit_page(self, interaction):
+        """Je remplace ensemble la fiche et sa carte, avec repli sur le texte."""
+        page = self.current_item_page()
+        rendered = None
+        if page is not None and page.map_spec is not None:
             try:
-                self.message = await interaction.edit_original_response(embed=self.embed(), view=self)
-            except BaseException:
-                self.page = previous_page
-                self.refresh()
-                raise
+                rendered = await self.cog.map_renderer.render(page.map_spec)
+            except Exception as exc:
+                log.debug("Wiki: map_render_unavailable error=%s", type(exc).__name__)
+        if not await self.ensure_active(interaction):
+            return False
+        self.message = await self.send_page(
+            interaction.edit_original_response, editing=True, map_data=rendered,
+        )
+        return True
+
+    async def send_page(self, sender, *, editing=False, map_data=None):
+        """Je joins séparément l'objet et sa carte et je garde une miniature distante en secours."""
+        fallback = self.embed().copy()
+        if self.item_image is not None:
+            fallback.set_thumbnail(url=self.item_image.source_url)
+            if self.item_image.stale:
+                fallback.set_footer(text=(fallback.footer.text or "") + " · Illustration en cache")
+        embed = fallback.copy()
+        attachments = []
+        if self.item_image is not None:
+            attachments.append(discord.File(BytesIO(self.item_image.data), filename="objet.png"))
+            embed.set_thumbnail(url="attachment://objet.png")
+        if map_data:
+            attachments.append(discord.File(BytesIO(map_data), filename="carte-xixou.png"))
+            embed.set_image(url="attachment://carte-xixou.png")
+        options = {
+            "embed": embed, "view": self, "allowed_mentions": discord.AllowedMentions.none(),
+        }
+        if editing:
+            options["attachments"] = attachments
+        elif attachments:
+            options["files"] = attachments
+        try:
+            try:
+                return await sender(**options)
+            except discord.HTTPException:
+                if not attachments or self.is_finished() or self.cog._closed:
+                    raise
+                log.debug("Wiki: attachment_unavailable fallback=remote_thumbnail editing=%s", editing)
+                options["embed"] = fallback
+                options.pop("files", None)
+                if editing:
+                    options["attachments"] = []
+                return await sender(**options)
+        finally:
+            for attachment in attachments:
+                attachment.close()
+                attachment.fp.close()
+
+    async def change_page(
+        self, interaction, *, action=None, pages=None, quantity=None, section=None, page=0,
+    ):
+        """Je conserve l'état visible si la publication échoue ou si le menu expire."""
+        previous = (
+            self.action, self.pages, self.page, self.quantity, self.section,
+            self.section_positions.copy(),
+        )
+        try:
+            if self.action == "item" and self.sections:
+                self.section_positions[self.section] = self.page
+            self.action = self.action if action is None else action
+            self.quantity = self.quantity if quantity is None else quantity
+            self.section = self.section if section is None else section
+            if pages is not None:
+                self.pages = pages
+            elif action is not None or quantity is not None or section is not None:
+                self.pages = self.build_pages()
+            self.page = max(0, min(len(self.pages) - 1, page))
+            self.refresh()
+            changed = await self.edit_page(interaction)
+        except BaseException:
+            self.restore_page(previous)
+            raise
+        if not changed:
+            self.restore_page(previous)
+        elif self.action == "item" and self.sections:
+            self.section_positions[self.section] = self.page
+        log.debug("Wiki: detail_navigation action=%s section=%s page=%s changed=%s",
+                  self.action, self.section, self.page, changed)
+
+    def restore_page(self, previous):
+        (self.action, self.pages, self.page, self.quantity,
+         self.section, self.section_positions) = previous
+        self.refresh()
 
     async def toggle_action(self, interaction):
         await interaction.response.defer()
@@ -284,22 +452,18 @@ class DetailView(WikiView):
                 return
             action = "item" if self.action == "recipe" else "recipe"
             try:
-                pages = recipe_embeds(self.detail, self.quantity) if action == "recipe" else item_embeds(self.detail)
+                pages = recipe_embeds(self.detail, self.quantity) if action == "recipe" else (
+                    [page.embed for page in self.sections[self.section]] if self.sections
+                    else item_embeds(self.detail)
+                )
             except WikiError as exc:
                 await interaction.followup.send(str(exc), ephemeral=True)
                 return
-            await self.update_detail(interaction, action, pages, self.quantity)
+            page = self.section_positions.get(self.section, 0) if action == "item" else 0
+            await self.change_page(interaction, action=action, pages=pages, page=page)
 
     async def update_detail(self, interaction, action, pages, quantity):
-        previous = self.action, self.pages, self.page, self.quantity
-        self.action, self.pages, self.page, self.quantity = action, pages, 0, quantity
-        self.refresh()
-        try:
-            self.message = await interaction.edit_original_response(embed=self.embed(), view=self)
-        except BaseException:
-            self.action, self.pages, self.page, self.quantity = previous
-            self.refresh()
-            raise
+        await self.change_page(interaction, action=action, pages=pages, quantity=quantity)
 
     async def return_to_results(self, interaction):
         await interaction.response.defer()
@@ -311,7 +475,7 @@ class DetailView(WikiView):
                 self.cog, self.owner_id, state.entries, state.action, state.quantity,
                 title=state.title, fuzzy=state.fuzzy, stale=state.stale, page=state.page,
             )
-            await view.publish(interaction.edit_original_response)
+            await view.publish(interaction.edit_original_response, clear_attachments=True)
             self.stop()
             log.debug("Wiki: results_restored page=%s quantity=%s", state.page, state.quantity)
 
@@ -376,29 +540,57 @@ class RecipeQuantityModal(discord.ui.Modal, title="Quantité à fabriquer"):
 
 
 class DofusWikiCog(commands.Cog):
-    def __init__(self, bot, *, client=None):
+    def __init__(
+        self, bot, *, client=None, enrichment_client=AUTO_CLIENT, map_renderer=None,
+        image_client=AUTO_CLIENT,
+    ):
         self.bot = bot
         self.client = client or DofusWikiClient(
             ttl=setting("DOFUS_WIKI_CACHE_TTL", 3600),
             timeout=setting("DOFUS_WIKI_TIMEOUT", 10),
         )
+        self.enrichment_client = (
+            XixouClient(
+                api_key=os.getenv("XIXOU_API_KEY", ""),
+                ttl=setting("XIXOU_CACHE_TTL", 3600),
+                timeout=setting("XIXOU_TIMEOUT", 10),
+            ) if enrichment_client is AUTO_CLIENT else enrichment_client
+        )
+        self.map_renderer = map_renderer if map_renderer is not None else XixouMapRenderer()
+        self.image_client = WikiImageClient() if image_client is AUTO_CLIENT else image_client
         self.views: set[WikiView] = set()
         self._warmup = None
+        self._enrichment_warmup = None
+        self._closed = False
 
     async def cog_load(self):
         self.start_warmup()
+        if self.enrichment_client is not None and self.enrichment_client.enabled:
+            self._enrichment_warmup = asyncio.create_task(self.enrichment_client.warmup())
 
     def start_warmup(self):
+        if self._closed:
+            return
         if self._warmup is None or self._warmup.done():
             self._warmup = asyncio.create_task(self.client.warmup())
 
     async def cog_unload(self):
-        if self._warmup:
-            self._warmup.cancel()
-            await asyncio.gather(self._warmup, return_exceptions=True)
+        self._closed = True
+        warmups = [task for task in (self._warmup, self._enrichment_warmup) if task is not None]
+        for task in warmups:
+            task.cancel()
+        await asyncio.gather(*warmups, return_exceptions=True)
         for view in list(self.views):
             view.stop()
-        await self.client.close()
+        clients = [self.client, self.map_renderer]
+        if self.enrichment_client is not None:
+            clients.append(self.enrichment_client)
+        if self.image_client is not None:
+            clients.append(self.image_client)
+        outcomes = await asyncio.gather(*(client.close() for client in clients), return_exceptions=True)
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                log.debug("Wiki: client_close_failed error=%s", type(outcome).__name__)
 
     async def autocomplete(self, kind: str, current: str):
         if kind == "wiki_types":
@@ -418,8 +610,48 @@ class DofusWikiCog(commands.Cog):
                 for entry in matches if len(entry.token) <= 100]
 
     async def detail_view(self, owner_id, entry, action, quantity=1, *, results=None):
+        if self._closed:
+            raise WikiError("L'encyclopédie redémarre. Relance ta recherche dans un instant.")
         detail = await self.client.detail(entry)
-        return DetailView(self, owner_id, detail, action, quantity, results=results)
+        if self._closed:
+            raise WikiError("L'encyclopédie redémarre. Relance ta recherche dans un instant.")
+        enrichment = None
+        if (entry.kind == "item" and self.enrichment_client is not None
+                and self.enrichment_client.enabled):
+            try:
+                async with asyncio.timeout(12):
+                    enrichment = await self.enrichment_client.enrich(detail)
+            except Exception as exc:
+                log.debug("Wiki: enrichment_unavailable error=%s", type(exc).__name__)
+        if self._closed:
+            raise WikiError("L'encyclopédie redémarre. Relance ta recherche dans un instant.")
+        item_image = None
+        if entry.kind == "item" and self.image_client is not None:
+            item_image = await self.resolve_item_image(detail, enrichment)
+            detail = replace(detail, icon=item_image.source_url if item_image is not None else None)
+        if self._closed:
+            raise WikiError("L'encyclopédie redémarre. Relance ta recherche dans un instant.")
+        return DetailView(
+            self, owner_id, detail, action, quantity, results=results, enrichment=enrichment,
+            item_image=item_image,
+        )
+
+    async def resolve_item_image(self, detail, enrichment):
+        """Je résous l'illustration sans retarder indéfiniment la consultation de l'objet."""
+        try:
+            async with asyncio.timeout(5):
+                candidates = enrichment.image_candidates if enrichment is not None else ()
+                resolved = await self.image_client.resolve(candidates) if candidates else None
+                if resolved is not None or self._closed:
+                    return resolved
+                moon_icon = await self.client.item_icon(detail.entry)
+                if self._closed:
+                    return None
+                candidates = tuple(dict.fromkeys(url for url in (moon_icon, detail.icon) if url))
+                return await self.image_client.resolve(candidates) if candidates else None
+        except Exception as exc:
+            log.debug("Wiki: item_image_unavailable error=%s", type(exc).__name__)
+            return None
 
     async def search(self, ctx, query, action, quantity=1):
         if not query or not query.strip():
