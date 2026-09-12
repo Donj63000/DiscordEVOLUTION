@@ -3,6 +3,7 @@
 
 import discord
 from discord.ext import commands
+from utils.slash_help import show_help
 
 def chunk_text(text: str, max_size: int = 3000):
     """
@@ -20,206 +21,13 @@ class HelpCog(commands.Cog):
 
     @commands.command(name="aide", aliases=["help"])
     async def aide_command(self, ctx: commands.Context):
-        """Affiche la liste complète des commandes du bot."""
-        embed = discord.Embed(
-            title="Evolution BOT — Commandes et guides",
-            description=(
-                "Bienvenue sur **Evolution BOT** !\n\n"
-                "Tape `/` dans Discord et choisis **Evolution BOT** pour retrouver les commandes "
-                "avec leurs champs et suggestions. Les commandes `!` restent disponibles.\n\n"
-                "Voici un récapitulatif de toutes les commandes disponibles, "
-                "classées par catégories. Pour toute question ou besoin d’aide, "
-                "n’hésitez pas à contacter un membre du Staff."
-            ),
-            color=discord.Color.blue()
-        )
-
-        embed.add_field(
-            name=":bookmark_tabs: Mini-Guides & Commandes Racines",
-            value=(
-                "__**!ia**__\n"
-                "> Ouvre une session privée avec Gemini 2.5 Pro.\n\n"
-                "__**!iahelp**__\n"
-                "> Guide sur l’IA (ex.: `!bot`, `!analyse`).\n\n"
-                "__**!membre**__\n"
-                "> Récap global des sous-commandes (ex.: `principal`, `addmule`).\n\n"
-                "__**!job**__\n"
-                "> Guide des sous-commandes liées aux métiers (ex.: `!job me`, `!job liste`).\n\n"
-                "__**!rune**__\n"
-                "> Outil de calcul (probabilités runes). Fonctionnalité partielle.\n\n"
-                "__**!regles**__\n"
-                "> Résumé simplifié du règlement d'Evolution.\n"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name=":sparkles: Commandes Générales",
-            value=(
-                "__**!ping**__\n"
-                "> Vérifie que le bot répond (latence « Pong! »).\n\n"
-                "__**!scan <URL>**__ *(Defender)*\n"
-                "> Analyse manuellement un lien (Safe Browsing/VirusTotal), puis supprime la commande.\n\n"
-                "__**!rune jet <valeur_jet> <stat>**__ *(Calcul Runes)*\n"
-                "> Calcule les probabilités d'obtenir des runes (ex.: `!rune jet 30 force`).\n"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name=":busts_in_silhouette: Commandes Membres",
-            value=(
-                "__**!membre principal <NomPerso>**__\n"
-                "> Définit ou met à jour votre personnage principal.\n\n"
-                "__**!membre addmule <NomMule>**__\n"
-                "> Ajoute une mule à votre fiche.\n\n"
-                "__**!membre delmule <NomMule>**__\n"
-                "> Retire une mule.\n\n"
-                "__**!membre moi**__\n"
-                "> Affiche votre fiche (principal + mules).\n\n"
-                "__**!membre liste**__\n"
-                "> Liste tous les joueurs, leurs persos et leurs mules.\n\n"
-                "__**!membre <pseudo_ou_mention>**__\n"
-                "> Affiche la fiche d'un joueur précis.\n"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name=":hammer_and_pick: Commandes Job",
-            value=(
-                "__**!job me**__\n"
-                "> Affiche vos métiers et niveaux.\n\n"
-                "__**!job liste**__\n"
-                "> Liste complète des métiers et qui les possède.\n\n"
-                "__**!job liste metier**__\n"
-                "> Affiche simplement la liste des noms de métiers recensés.\n\n"
-                "__**!job <pseudo>**__\n"
-                "> Donne les métiers d'un joueur.\n\n"
-                "__**!job <job_name>**__\n"
-                "> Indique qui possède ce métier (ex.: `!job Paysan`).\n\n"
-                "__**!job <job_name> <niveau>**__\n"
-                "> Ajoute ou modifie l’un de vos métiers. Ex.: `!job Boulanger 100`.\n"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name=":tickets: Commande Ticket",
-            value=(
-                "__**!ticket**__\n"
-                "> Lance en MP une procédure pour contacter le Staff (problème, aide, suggestion...).\n"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name=":robot: Commandes IA",
-            value=(
-                "__**!bot <message>**__\n"
-                "> Fait appel à l’IA (gemini-1.5-pro) avec le contexte des derniers messages.\n\n"
-                "__**!iaend**__\n"
-                "> Termine votre session IA en cours.\n\n"
-                "__**!analyse**__\n"
-                "> Analyse/résume les 100 derniers messages du salon.\n"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name="Encyclopédie Dofus Rétro",
-            value=(
-                "`/objet` : caractéristiques et image d'un objet.\n"
-                "`/recette` : ingrédients et quantités pour une fabrication.\n"
-                "`/equipement` : type, niveaux minimum/maximum et nom.\n"
-                "`/monstre` : statistiques et résistances par niveau.\n"
-                "Suggestions de noms, retour aux résultats et quantité de recette modifiable.\n"
-                "Aussi avec `!` : `!objet Gelano`, `!recette 3 Gelano`, "
-                "`!equipement coiffe 100`, `!monstre Bouftou Royal`."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="Démarrer avec les commandes /",
-            value=(
-                "`/job ajouter` : choisis ton métier et ton niveau.\n"
-                "`/job mes-metiers` : consulte tes métiers.\n"
-                "`/membre principal` : enregistre ton personnage.\n"
-                "`/profil modifier` : complète ton profil avec le guide.\n"
-                "`/activite liste` : découvre les prochaines sorties.\n"
-                "`/ticket` : contacte le Staff en privé."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name=":bar_chart: Commandes Sondage",
-            value=(
-                "__**!sondage <Titre> ; <Choix1> ; ... ; temps=JJ:HH:MM>**__\n"
-                "> Crée un sondage dans #annonces (mention @everyone). Se ferme au bout du délai (jours:heures:minutes) "
-                "ou manuellement.\n\n"
-                "__**!close_sondage <message_id>**__\n"
-                "> Clôture manuellement le sondage (affiche résultats et édite l'embed d'origine en [Clôturé]).\n"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name=":calendar_spiral: Commandes Activités",
-            value=(
-                "`/calendrier` : affiche directement le mois, sans champ à remplir.\n"
-                "Vues, filtres et inscriptions se choisissent ensuite dans le message.\n\n"
-                "__**!activite creer <Titre> <JJ/MM/AAAA HH:MM> [desc]**__\n"
-                "> Crée une activité (donjon/sortie) + rôle éphémère + annonce dans #organisation.\n\n"
-                "__**!activite liste**__\n"
-                "> Montre les activités à venir (limite 8 participants). Inscriptions par réactions.\n\n"
-                "__**!activite info <id>**__\n"
-                "> Montre les détails d’une activité (date, organisateur, participants...).\n\n"
-                "__**!activite join <id>**__ / __**!activite leave <id>**__\n"
-                "> S’inscrire / Se désinscrire d’une activité.\n\n"
-                "__**!activite annuler <id>**__ / __**!activite modifier <id> ...**__\n"
-                "> Annule ou modifie (date/description) une activité (réservé au créateur ou admin).\n"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name=":shield: Commandes Staff (Rôle requis)",
-            value=(
-                "__**!staff**__\n"
-                "> Liste des membres Staff enregistrés/mentionnés.\n\n"
-                "__**!annonce <texte>**__\n"
-                "> Publie une annonce stylée dans #annonces (mention @everyone).\n\n"
-                "__**!annoncestaff**__\n"
-                "> L'IA pose 7 questions puis publie une annonce dans #annonces.\n\n"
-                "__**!event**__\n"
-                "> Lance une discussion privée pour planifier un événement.\n"
-                "> Après validation, un événement Discord programmé est créé et annoncé dans #organisation (mention Membre validé).\n\n"
-                "__**!veteran**__\n"
-                "> Liste les membres éligibles au rang Vétéran et permet au Staff de les promouvoir manuellement via bouton. "
-                "Une annonce est publiée automatiquement dans #annonces.\n\n"
-                "__**!recrutement <pseudo>**__\n"
-                "> Ajoute un nouveau joueur dans la base.\n\n"
-                "__**!membre del <pseudo>**__\n"
-                "> Supprime un joueur (et ses mules) de la base.\n"
-            ),
-            inline=False
-        )
-
-        embed.set_footer(
-            text=(
-                "Pour réafficher cette liste : /aide, !aide ou !help.\n"
-                "Besoin d’aide ? Contactez un membre du Staff !"
-            )
-        )
-
-        await ctx.send(embed=embed)
+        """Affiche un guide paginé des seules commandes réellement disponibles."""
+        await show_help(ctx, self.bot)
 
     @commands.command(name="regles")
     async def regles_command(self, ctx: commands.Context):
         """
-        Affiche le règlement complet dans un ou plusieurs embeds, 
+        Affiche le règlement complet dans un ou plusieurs embeds,
         sans duplication.
         """
         summary_text = (

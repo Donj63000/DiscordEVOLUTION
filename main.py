@@ -15,6 +15,8 @@ from collections import deque
 from utils.channel_resolver import resolve_text_channel
 from utils.discord_history import fetch_channel_history, fetch_channel_message
 from utils.slash_support import EvolutionCommandTree
+from utils.command_policy import ai_service_enabled
+from utils.slash_sync import sync_application_commands, cleanup_retired_guild_commands
 from utils.bot_branding import sync_bot_branding
 
 load_dotenv()
@@ -153,13 +155,11 @@ class EvoBot(commands.Bot):
         ]
 
         optional_exts = [
-            "ia",
             "music",
             "defender",
             "moderation",
             "up",
             "entree",
-            "slash_events",
             "cogs.profil",
             "cogs.annonce_ai",
         ]
@@ -170,10 +170,13 @@ class EvoBot(commands.Bot):
             if not await self._safe_load(ext):
                 failed_required.append(ext)
 
+        if ai_service_enabled("gemini"):
+            await self._safe_load("ia")
         for ext in optional_exts:
             await self._safe_load(ext)
 
-        await self._load_iastaff_anywhere()
+        if ai_service_enabled("staff"):
+            await self._load_iastaff_anywhere()
 
         if not await self._safe_load("slash_commands"):
             failed_required.append("slash_commands")
@@ -188,23 +191,7 @@ class EvoBot(commands.Bot):
         logging.info("Commandes prefix enregistrées: %s", cmds)
 
     async def _sync_app_commands(self) -> None:
-        if not env_bool("SYNC_SLASH_COMMANDS", True):
-            logging.info("Sync slash commands désactivée (SYNC_SLASH_COMMANDS=0).")
-            return
-
-        guild_id_raw = (os.getenv("SYNC_SLASH_GUILD_ID") or "").strip()
-
-        try:
-            if guild_id_raw:
-                guild = discord.Object(id=int(guild_id_raw))
-                self.tree.copy_global_to(guild=guild)
-                synced = await self.tree.sync(guild=guild)
-                logging.info("Slash commands synchronisées sur guild %s: %d", guild_id_raw, len(synced))
-            else:
-                synced = await self.tree.sync()
-                logging.info("Slash commands globales synchronisées: %d", len(synced))
-        except Exception as exc:
-            logging.warning("Sync slash commands échouée: %s", exc, exc_info=True)
+        await sync_application_commands(self)
 
     async def wait_console_channel(self, timeout=30):
         default_name = os.getenv("CHANNEL_CONSOLE", "console")
@@ -397,6 +384,7 @@ class EvoBot(commands.Bot):
         if not self._branding_attempted and env_bool("SYNC_BOT_IDENTITY", True):
             self._branding_attempted = True
             await sync_bot_branding(self)
+        await cleanup_retired_guild_commands(self)
 
 
 bot = EvoBot()
@@ -409,6 +397,12 @@ async def ping_cmd(ctx):
 
 @bot.event
 async def on_command_error(ctx: commands.Context, error: Exception):
+    if getattr(ctx, "slash_error_handled", False):
+        return
+    if ctx.command is not None and ctx.command.has_error_handler():
+        return
+    if ctx.cog is not None and commands.Cog._get_overridden_method(ctx.cog.cog_command_error):
+        return
     original = getattr(error, "original", error)
 
     if isinstance(original, commands.CommandNotFound):

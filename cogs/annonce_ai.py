@@ -17,6 +17,7 @@ from discord.ext import commands, tasks
 
 from utils.channel_resolver import resolve_text_channel
 from utils.discord_history import fetch_channel_history
+from utils.command_policy import ai_service_enabled
 from utils.openai_config import build_async_openai_client, resolve_reasoning_effort, resolve_staff_model
 
 try:
@@ -616,7 +617,7 @@ class AnnounceAICog(commands.Cog):
         return content, allowed_mentions
 
     async def _moderate(self, text: str) -> Optional[str]:
-        if not self._client or os.getenv("ANNONCE_SAFETY", "1") == "0":
+        if not ai_service_enabled("openai") or not self._client or os.getenv("ANNONCE_SAFETY", "1") == "0":
             return None
         try:
             log.debug("Moderation request")
@@ -1109,7 +1110,9 @@ class AnnounceAICog(commands.Cog):
         message = await ctx.send("Clique pour ouvrir le formulaire d'annonce.", view=view)
         view.message = message
 
-    @app_commands.command(name="annonce", description="Rédiger une annonce avec l'IA.")
+    @app_commands.command(name="annonce", description="Staff : rédiger une annonce avec l'IA.")
+    @app_commands.guild_only()
+    @app_commands.allowed_installs(guilds=True, users=False)
     async def annonce_slash(self, interaction: discord.Interaction) -> None:
         if not isinstance(interaction.user, discord.Member) or not self._is_staff(interaction.user):
             await interaction.response.send_message("❌ Commande réservée au staff.", ephemeral=True)

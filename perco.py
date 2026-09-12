@@ -327,14 +327,17 @@ class PercoCog(commands.Cog):
     async def on_guild_join(self, guild: discord.Guild) -> None:
         await self._load_guild_status(guild)
 
-    @app_commands.command(name="perco", description="Consulte ou met à jour le statut des percepteurs")
+    @app_commands.command(name="perco", description="Voir le statut des percepteurs ; le Staff peut le modifier.")
+    @app_commands.guild_only()
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.checks.cooldown(2, 10, key=lambda interaction: (interaction.guild_id, interaction.user.id))
     @app_commands.describe(
         etat="Laisser vide pour consulter. Choisir 'good' ou 'full' pour mettre à jour (staff uniquement)."
     )
     @app_commands.choices(
         etat=[
-            app_commands.Choice(name="good", value="good"),
-            app_commands.Choice(name="full", value="full"),
+            app_commands.Choice(name="Disponibles (good)", value="good"),
+            app_commands.Choice(name="Pleins (full)", value="full"),
         ]
     )
     async def perco_command(
@@ -349,37 +352,24 @@ class PercoCog(commands.Cog):
             )
             return
 
+        if etat is not None and not self._is_staff(interaction.user):
+            await interaction.response.send_message(
+                "Seuls les membres du Staff peuvent changer le statut des percepteurs.", ephemeral=True,
+            )
+            return
+        if etat is not None and etat.value not in STATUS_CONFIG:
+            await interaction.response.send_message("Choisis un statut proposé par Discord.", ephemeral=True)
+            return
+
+        await interaction.response.defer(thinking=True, ephemeral=etat is not None)
         state = await self._ensure_state(guild)
-
         if etat is None:
-            embed = self._build_status_embed(guild, state)
-            await interaction.response.send_message(embed=embed, ephemeral=False)
+            await interaction.followup.send(embed=self._build_status_embed(guild, state))
             return
-
-        if not self._is_staff(interaction.user):
-            await interaction.response.send_message(
-                "Seuls les membres du staff peuvent changer le statut des percepteurs.",
-                ephemeral=True,
-            )
+        if etat.value == state.status:
+            await interaction.followup.send("Ce statut est déjà enregistré.", ephemeral=True)
             return
-
-        new_status = etat.value
-        if new_status not in STATUS_CONFIG:
-            await interaction.response.send_message(
-                "Statut inconnu. Choisissez `good` ou `full`.", ephemeral=True
-            )
-            return
-
-        if new_status == state.status:
-            await interaction.response.send_message(
-                f"Le statut des percepteurs est déjà `{new_status}`.", ephemeral=True
-            )
-            return
-
-        await interaction.response.defer(ephemeral=True)
-
-        embed, notes = await self._apply_status_update(guild, state, interaction.user, new_status)
-
+        embed, notes = await self._apply_status_update(guild, state, interaction.user, etat.value)
         await interaction.followup.send("\n".join(notes), embed=embed, ephemeral=True)
 
     @commands.command(name="perco")

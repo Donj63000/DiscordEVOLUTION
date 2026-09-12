@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import asyncio
 import json
 import logging
@@ -14,6 +14,7 @@ from discord.ext import commands
 from utils.channel_resolver import resolve_text_channel
 from utils.datetime_utils import parse_fr_datetime
 from utils.discord_history import fetch_channel_history
+from utils.command_policy import ai_service_enabled
 from utils.openai_config import build_async_openai_client, normalise_staff_model, resolve_reasoning_effort, resolve_staff_model
 
 def _ensure_utils() -> None:
@@ -915,7 +916,7 @@ class OrganisationCog(commands.Cog):
         if isinstance(draft, OrganisationDraft):
             dt = parse_fr_datetime(draft.date_time) if draft.date_time else None
             draft.date_ts = int(dt.timestamp()) if dt else None
-            if not AI_ENABLED or not self._client:
+            if not AI_ENABLED or not ai_service_enabled("openai") or not self._client:
                 self._fill_template(draft)
                 return None
             system = self._announcement_system_prompt()
@@ -938,7 +939,7 @@ class OrganisationCog(commands.Cog):
             draft.cta = cta[:500] if cta else ''
             draft.summary = summary[:200] if summary else ''
             return None
-        if not AI_ENABLED or not self._client:
+        if not AI_ENABLED or not ai_service_enabled("openai") or not self._client:
             payload = {
                 'title': 'Sortie guilde',
                 'body': 'Annonce non disponible.',
@@ -1391,7 +1392,9 @@ class OrganisationCog(commands.Cog):
         after = len(self._events)
         await ctx.reply(f'✅ Reload terminé. Chargés={loaded}. Tracking avant={before}, après={after}.', mention_author=False)
 
-    @app_commands.command(name='organisation', description='Créer une sortie guilde (formulaire).')
+    @app_commands.command(name='organisation', description='Staff : préparer une sortie avec le formulaire, sans IA obligatoire.')
+    @app_commands.guild_only()
+    @app_commands.allowed_installs(guilds=True, users=False)
     async def organisation_slash(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             await interaction.response.send_message('❌ Serveur requis.', ephemeral=True)

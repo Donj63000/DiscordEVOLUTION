@@ -9,6 +9,7 @@ from sondage import POLL_STORAGE, SondageCog
 class FakeContext:
     def __init__(self, author):
         self.author = author
+        self.guild = SimpleNamespace(id=100)
         self.sent = []
 
     async def send(self, content=None, *, embed=None):
@@ -19,15 +20,16 @@ class FakeContext:
 async def test_manual_close_requires_author_or_staff():
     POLL_STORAGE.clear()
     poll_id = 123
-    POLL_STORAGE[poll_id] = {"author_id": 1}
+    POLL_STORAGE[poll_id] = {"author_id": 1, "guild_id": 100, "channel_id": 200}
     author = SimpleNamespace(
         id=2,
         roles=[],
         guild_permissions=SimpleNamespace(manage_messages=False, administrator=False),
     )
     ctx = FakeContext(author)
-    cog = SondageCog(SimpleNamespace())
-    cog.close_poll = AsyncMock()
+    cog = SondageCog(SimpleNamespace(get_channel=lambda identifier: None))
+    cog.close_poll = AsyncMock(return_value=True)
+    cog._save_polls_to_console = AsyncMock(return_value=True)
 
     await cog.manual_close_poll.callback(cog, ctx, message_id=poll_id)
 
@@ -41,15 +43,16 @@ async def test_manual_close_requires_author_or_staff():
 async def test_manual_close_allows_author():
     POLL_STORAGE.clear()
     poll_id = 456
-    POLL_STORAGE[poll_id] = {"author_id": 1}
+    POLL_STORAGE[poll_id] = {"author_id": 1, "guild_id": 100, "channel_id": 200}
     author = SimpleNamespace(
         id=1,
         roles=[],
         guild_permissions=SimpleNamespace(manage_messages=False, administrator=False),
     )
     ctx = FakeContext(author)
-    cog = SondageCog(SimpleNamespace())
-    cog.close_poll = AsyncMock()
+    cog = SondageCog(SimpleNamespace(get_channel=lambda identifier: None))
+    cog.close_poll = AsyncMock(return_value=True)
+    cog._save_polls_to_console = AsyncMock(return_value=True)
 
     await cog.manual_close_poll.callback(cog, ctx, message_id=poll_id)
 

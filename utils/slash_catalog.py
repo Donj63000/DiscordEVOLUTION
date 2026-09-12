@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+import re
+from zoneinfo import ZoneInfo
 import os
 
 import discord
 from discord import app_commands
+
+from utils.slash_errors import SlashInputError
 
 
 @dataclass(frozen=True)
@@ -53,7 +57,7 @@ DESCRIPTIONS = {
     "analyse": "Demander à l’IA un résumé des derniers messages du salon.",
     "pl": "Demander à l’IA de préparer une annonce de recherche de groupe.",
     "iastaff": "Staff : demander de l’aide ou une action à l’assistant du serveur.",
-    "organisation": "Préparer une sortie de guilde avec le formulaire guidé.",
+    "organisation": "Staff : préparer une sortie de guilde avec le formulaire guidé.",
     "organisation-model": "Staff : consulter ou changer le modèle IA des sorties.",
     "organisation-sync": "Staff : recharger les événements enregistrés dans la console.",
     "annonce": "Staff : préparer une annonce avec le formulaire IA.",
@@ -149,12 +153,17 @@ PARAMETERS = {
 JOB_NAME = Option("metier", "Choisis un métier ou saisis son nom.", autocomplete="jobs")
 LEVEL = Option("niveau", "Niveau du métier, de 1 à 100.", app_commands.Range[int, 1, 100])
 ACTIVITY_ID = Option("identifiant", "Identifiant de l’activité.", autocomplete="activities")
-DATE = Option("date", "Date et heure au format JJ/MM/AAAA HH:MM.")
+DATE = Option("date", "Date et heure de Paris au format JJ/MM/AAAA HH:MM.")
 DESCRIPTION = Option("description", "Informations utiles pour les participants.", default="")
+MODIFIED_DESCRIPTION = Option(
+    "description", "Nouvelle description ; laisser vide pour conserver celle de l'activité.", default=None,
+)
 
 
 def custom_routes() -> tuple[Route, ...]:
-    confirmation = os.getenv("CLEAR_CONSOLE_CONFIRMATION", "CONFIRMER")
+    confirmation = os.getenv("CLEAR_CONSOLE_CONFIRMATION", "CONFIRMER").strip()
+    if not 1 <= len(confirmation) <= 100 or confirmation.endswith("\\"):
+        raise ValueError("CLEAR_CONSOLE_CONFIRMATION doit compter de 1 à 100 caractères, sans antislash final.")
     return (
         Route(
             ("calendrier",), "calendrier",
@@ -189,7 +198,7 @@ def custom_routes() -> tuple[Route, ...]:
         Route(("activite", "aide"), "activite", "Consulter le guide des activités.", fixed=("guide",)),
         Route(("activite", "liste"), "activite", "Consulter les prochaines activités.", fixed=("liste",)),
         Route(("activite", "creer"), "activite", "Créer une activité et ouvrir les inscriptions.", (Option("titre", "Nom de l’activité."), DATE, DESCRIPTION), ("creer",), "activity"),
-        Route(("activite", "modifier"), "activite", "Modifier la date et la description d’une activité.", (ACTIVITY_ID, DATE, DESCRIPTION), ("modifier",), "activity"),
+        Route(("activite", "modifier"), "activite", "Modifier la date et la description d’une activité.", (ACTIVITY_ID, DATE, MODIFIED_DESCRIPTION), ("modifier",), "activity"),
         Route(("activite", "info"), "activite", "Consulter les détails d’une activité.", (ACTIVITY_ID,), ("info",), "rest"),
         Route(("activite", "rejoindre"), "activite", "T’inscrire à une activité.", (ACTIVITY_ID,), ("join",), "rest"),
         Route(("activite", "quitter"), "activite", "Te désinscrire d’une activité.", (ACTIVITY_ID,), ("leave",), "rest"),
@@ -201,52 +210,136 @@ def custom_routes() -> tuple[Route, ...]:
             Option("choix", "Entre 2 et 26 réponses séparées par |."),
             Option("duree", "Durée JJ:HH:MM ; vide pour clôturer manuellement.", default=""),
         ), mode="poll"),
+        Route(("close_sondage",), "close_sondage", DESCRIPTIONS["close_sondage"], (
+            Option("message", "Identifiant du message : choisis un sondage actif.", autocomplete="polls"),
+        ), mode="rest"),
         Route(("clear", "aide"), "clear", "Staff : consulter les précautions du nettoyage de console."),
         Route(("clear", "console"), "clear", "Staff : nettoyer la console en préservant les données du bot.", (Option("confirmation", "Confirmer le nettoyage des messages temporaires.", choices=(confirmation,)),), ("console",)),
         Route(("profil", "importer"), "profil import", DESCRIPTIONS["profil import"], (Option("message", "Lien ou identifiant du message contenant %stats%, dans ce salon."),), mode="message_reference"),
     )
 
 
+def text_limit(route: Route, option: Option) -> int:
+    """Borne les champs en amont, avant toute création de rôle ou écriture."""
+    if option.name == "titre":
+        return 85 if route.target == "activite" else 180
+    if option.name == "description":
+        return 900
+    if option.name == "date":
+        return 16
+    if option.name == "duree":
+        return 10
+    if option.name == "message" and route.target == "close_sondage":
+        return 20
+    if option.name in {"metier", "personnage", "joueur", "identifiant", "statistique", "modele"}:
+        return 100
+    if option.name == "choix":
+        return 2700
+    return 2000
+
+
+def validate_values(route: Route, supplied: dict[str, object]) -> dict[str, object]:
+    """Ne confond pas une option omise avec une valeur vide explicitement fournie."""
+    values = {}
+    for option in route.options:
+        value = supplied.get(option.name, option.default)
+        if value is ...:
+            raise SlashInputError(f"Le champ « {option.name} » est obligatoire.")
+        if isinstance(value, str):
+            value = value.strip()
+            if option.default is ... and not value:
+                raise SlashInputError(f"Le champ « {option.name} » ne peut pas être vide.")
+            if any(ord(char) < 32 and char not in "\n\t" for char in value):
+                raise SlashInputError(f"Le champ « {option.name} » contient un caractère de contrôle.")
+            try:
+                length = len(value.encode("utf-16-le")) // 2
+            except UnicodeEncodeError as exc:
+                raise SlashInputError("Le texte contient un caractère Unicode invalide.") from exc
+            if length > text_limit(route, option):
+                raise SlashInputError(
+                    f"Le champ « {option.name} » est trop long (maximum {text_limit(route, option)} caractères)."
+                )
+            if option.choices and value not in option.choices:
+                raise SlashInputError(f"Choisis une valeur proposée pour « {option.name} ».")
+        values[option.name] = value
+    return values
+
+
 def quote_token(value: object) -> str:
     text = str(getattr(value, "mention", value))
+    # Le parseur historique ne sait pas représenter un antislash juste avant
+    # le guillemet terminal. Refuser est préférable à modifier silencieusement le nom.
+    if text.endswith("\\"):
+        raise SlashInputError("Cette valeur ne peut pas se terminer par un antislash.")
     return '"' + text.replace('"', '\\"') + '"'
+
+
+def activity_datetime(value: object) -> datetime:
+    try:
+        parsed = datetime.strptime(str(value), "%d/%m/%Y %H:%M")
+    except ValueError as exc:
+        raise SlashInputError("La date doit être au format JJ/MM/AAAA HH:MM, heure de Paris.") from exc
+    paris = ZoneInfo("Europe/Paris")
+    local = parsed.replace(tzinfo=paris)
+    # Au passage à l'heure d'été, certaines heures locales n'existent pas.
+    if local.astimezone(timezone.utc).astimezone(paris).replace(tzinfo=None) != parsed:
+        raise SlashInputError("Cette heure n'existe pas à Paris lors du changement d'heure.")
+    if local <= datetime.now(paris):
+        raise SlashInputError("Choisis une date et une heure à venir, à l'heure de Paris.")
+    return parsed
 
 
 def format_arguments(route: Route, values: dict[str, object]) -> str:
     if route.mode == "calendar":
-        # Les réglages vivent dans le message, jamais dans le formulaire slash.
         return ""
     if route.mode == "wiki_recipe":
         return f"{values.get('quantite', 1)} {values['objet']}"
     if route.mode == "wiki_equipment":
+        if int(values.get("niveau_min", 1)) > int(values.get("niveau", 200)):
+            raise SlashInputError("Le niveau minimum ne peut pas dépasser le niveau maximum.")
         return (
             f"{quote_token(values['type'])} {values.get('niveau', 200)} "
             f"{values.get('niveau_min', 1)} {values.get('nom', '')}"
         ).rstrip()
     if route.mode == "message_reference":
         return ""
-    parts = [str(getattr(values[o.name], "mention", values[o.name])) for o in route.options if values.get(o.name) is not None]
+    parts = [str(getattr(values[o.name], "mention", values[o.name]))
+             for o in route.options if values.get(o.name) is not None]
+    if route.target == "activite" and "identifiant" in values:
+        identifier = str(values["identifiant"])
+        if not re.fullmatch(r"[0-9]{1,20}", identifier) or int(identifier) == 0:
+            raise SlashInputError("Choisis une activité proposée ou indique son identifiant numérique.")
     if route.mode == "activity":
-        try:
-            datetime.strptime(str(values["date"]), "%d/%m/%Y %H:%M")
-        except ValueError as exc:
-            raise ValueError("La date doit être au format JJ/MM/AAAA HH:MM, par exemple 25/09/2026 21:00.") from exc
+        activity_datetime(values["date"])
+        if "\n" in str(values.get("titre", "")):
+            raise SlashInputError("Le titre de l'activité doit tenir sur une seule ligne.")
     if route.mode == "poll":
         title = str(values["titre"]).strip()
         choices = [choice.strip() for choice in str(values["choix"]).split("|")]
-        if not title or ";" in title or not 2 <= len(choices) <= 26:
-            raise ValueError("Indique un titre sans point-virgule et entre 2 et 26 choix séparés par |.")
-        if any(not choice or ";" in choice or choice.lower().startswith("temps=") for choice in choices):
-            raise ValueError("Chaque choix doit être non vide, sans point-virgule ni préfixe temps=.")
+        if not title or ";" in title or title.casefold().startswith("temps="):
+            raise SlashInputError("Le titre ne doit contenir ni point-virgule ni préfixe temps=.")
+        if not 2 <= len(choices) <= 26:
+            raise SlashInputError("Indique entre 2 et 26 choix séparés par |.")
+        if any(
+            not choice or ";" in choice or choice.casefold().startswith("temps=")
+            or len(choice.encode("utf-16-le")) // 2 > 100 for choice in choices
+        ):
+            raise SlashInputError("Chaque choix doit compter de 1 à 100 caractères, sans ; ni préfixe temps=.")
+        if len({choice.casefold() for choice in choices}) != len(choices):
+            raise SlashInputError("Les choix du sondage doivent être différents.")
         duration = str(values.get("duree") or "").strip()
         if duration:
-            components = duration.split(":")
-            if len(components) != 3 or not all(c.isdigit() for c in components):
-                raise ValueError("La durée doit être au format JJ:HH:MM, par exemple 00:02:00.")
-            days, hours, minutes = map(int, components)
-            if hours > 23 or minutes > 59 or not (days or hours or minutes):
-                raise ValueError("Indique une durée positive, avec 0 à 23 heures et 0 à 59 minutes.")
+            if not re.fullmatch(r"[0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}", duration):
+                raise SlashInputError("La durée doit être au format JJ:HH:MM, par exemple 00:02:00.")
+            days, hours, minutes = map(int, duration.split(":"))
+            total = days * 1440 + hours * 60 + minutes
+            if hours > 23 or minutes > 59 or not 0 < total <= 30 * 1440:
+                raise SlashInputError("Indique une durée positive de 30 jours maximum (heures 0–23, minutes 0–59).")
         return " ; ".join([title, *choices, *([f"temps={duration}"] if duration else [])])
+    if route.target == "close_sondage":
+        text = str(values["message"])
+        if not re.fullmatch(r"[0-9]{1,20}", text) or not 0 < int(text) < 2**64:
+            raise SlashInputError("Choisis un sondage ou indique son identifiant Discord exact.")
     if route.mode in {"rest", "activity"}:
         return " ".join([*route.fixed, *parts]).strip()
     return " ".join(quote_token(part) for part in [*route.fixed, *parts])

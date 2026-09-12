@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -245,6 +245,10 @@ async def test_planner_step_collects_and_ready(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generate_announcement_payload(monkeypatch):
+    # Le chemin IA demande désormais un opt-in explicite, même avec un client simulé.
+    monkeypatch.setenv("ENABLE_AI_COMMANDS", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(organisation, "AI_ENABLED", True)
     monkeypatch.setattr(organisation, "AsyncOpenAI", None)
     cog = organisation.OrganisationCog(bot=MagicMock())
     cog._client = DummyClient([

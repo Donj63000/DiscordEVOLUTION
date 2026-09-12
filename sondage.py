@@ -7,6 +7,7 @@ from datetime import timedelta
 import discord
 from discord.ext import commands, tasks
 from utils.slash_support import delete_invocation_message
+from utils.calendar_data import shorten
 
 from utils.channel_resolver import resolve_text_channel
 from utils.console_json_store import ConsoleJSONSnapshotStore
@@ -46,6 +47,7 @@ class SondageCog(commands.Cog):
         self.bot = bot
         self.console_message_id: int | None = None
         self._init_task: asyncio.Task | None = None
+        self._close_lock = asyncio.Lock()
         self.store = ConsoleJSONSnapshotStore(
             bot,
             marker=POLL_MARKER,
@@ -83,6 +85,9 @@ class SondageCog(commands.Cog):
         message = await self.store.save(self._serialize_polls(), current_message_id=self.console_message_id)
         if message is not None:
             self.console_message_id = message.id
+            return True
+        log.warning("Sondages : sauvegarde #console indisponible.")
+        return False
 
     async def _load_polls_from_console(self):
         message, payload = await self.store.load_latest(current_message_id=self.console_message_id)
@@ -114,16 +119,30 @@ class SondageCog(commands.Cog):
         now_ts = int(discord.utils.utcnow().timestamp())
         ended_polls = []
         for message_id, poll_data in list(POLL_STORAGE.items()):
-            end_time_ts = int(poll_data.get("end_time_ts", 0) or 0)
+            try:
+                end_time_ts = int(poll_data.get("end_time_ts", 0) or 0)
+            except (TypeError, ValueError, AttributeError):
+                log.warning("Sondages : échéance invalide ignorée pour %s.", message_id)
+                continue
             if end_time_ts and now_ts >= end_time_ts:
                 ended_polls.append(message_id)
         for msg_id in ended_polls:
-            await self.close_poll(msg_id)
-            POLL_STORAGE.pop(msg_id, None)
-        if ended_polls:
+            await self._finish_poll(msg_id)
+
+    async def _finish_poll(self, message_id: int) -> bool:
+        # La clôture manuelle et le minuteur ne doivent pas se concurrencer.
+        async with self._close_lock:
+            if message_id not in POLL_STORAGE:
+                return True
+            if not await self.close_poll(message_id):
+                return False
+            POLL_STORAGE.pop(message_id, None)
             await self._save_polls_to_console()
+            return True
 
     @commands.command(name="sondage")
+    @commands.guild_only()
+    @commands.cooldown(1, 30, commands.BucketType.member)
     async def create_sondage(self, ctx: commands.Context, *, args: str = None):
         if not args:
             await ctx.send(
@@ -146,13 +165,24 @@ class SondageCog(commands.Cog):
                 except (ValueError, IndexError):
                     pass
                 break
-        if len(parts) < 2:
-            await ctx.send("Veuillez spécifier au moins un titre et un choix.\nEx: `!sondage Titre ; Choix1 ; Choix2`")
+        if len(parts) < 3:
+            await ctx.send("Veuillez spécifier au moins un titre et deux choix.\nEx: `!sondage Titre ; Choix1 ; Choix2`")
             return
         title = parts[0]
         choices = parts[1:]
         if len(choices) > len(ALPHABET_EMOJIS):
             await ctx.send(f"Nombre de choix trop élevé (max = {len(ALPHABET_EMOJIS)}).")
+            return
+
+        if (
+            not title or len(title.encode("utf-16-le")) // 2 > 180
+            or any(not choice or len(choice.encode("utf-16-le")) // 2 > 100 for choice in choices)
+            or len({choice.casefold() for choice in choices}) != len(choices)
+        ):
+            await ctx.send("Le titre est limité à 180 caractères ; chaque choix doit être distinct et compter de 1 à 100 caractères.")
+            return
+        if delay_seconds is not None and not 0 < delay_seconds <= 30 * 86400:
+            await ctx.send("La durée du sondage doit être positive et ne pas dépasser 30 jours.")
             return
 
         description_lines = [f"{ALPHABET_EMOJIS[i]} **{choice}**" for i, choice in enumerate(choices)]
@@ -172,7 +202,7 @@ class SondageCog(commands.Cog):
         if delay_seconds is not None:
             end_dt = discord.utils.utcnow() + timedelta(seconds=delay_seconds)
             end_time_ts = int(end_dt.timestamp())
-            end_time_msg = f"Fin prévue : {end_dt.strftime('%d/%m/%Y %H:%M')}"
+            end_time_msg = f"Fin prévue : <t:{end_time_ts}:F> · <t:{end_time_ts}:R>"
         embed.add_field(name="⏳ Fin du sondage", value=end_time_msg, inline=False)
 
         annonce_channel = resolve_text_channel(
@@ -185,33 +215,41 @@ class SondageCog(commands.Cog):
             await ctx.send("Le canal d'annonces est introuvable. Vérifie ANNONCE_CHANNEL_ID ou ANNONCE_CHANNEL_NAME.")
             return
 
-        sondage_message = await annonce_channel.send("@everyone Nouveau sondage :", embed=embed)
-        embed.set_footer(text=f"ID du message (pour !close_sondage) : {sondage_message.id}")
-        await sondage_message.edit(embed=embed)
-        for i in range(len(choices)):
-            await sondage_message.add_reaction(ALPHABET_EMOJIS[i])
-        try:
-            await delete_invocation_message(ctx)
-        except Exception:
-            pass
-
+        sondage_message = await annonce_channel.send(
+            "Nouveau sondage :", embed=embed, allowed_mentions=discord.AllowedMentions.none(),
+        )
         POLL_STORAGE[sondage_message.id] = {
             "title": title,
             "choices": choices,
             "channel_id": annonce_channel.id,
+            "guild_id": ctx.guild.id,
             "author_id": ctx.author.id,
             "end_time_ts": end_time_ts,
         }
-        await self._save_polls_to_console()
-        if end_time_ts:
-            d = delay_seconds // 86400
-            rem = delay_seconds % 86400
-            h = rem // 3600
-            rem = rem % 3600
-            m = rem // 60
-            await ctx.send(f"Sondage lancé: `{title}`\nFin estimée dans ~{d}j {h}h {m}m.")
+        persisted = await self._save_polls_to_console()
+        embed.set_footer(text=f"Clôture manuelle : /close_sondage · ID {sondage_message.id}")
+        try:
+            await sondage_message.edit(embed=embed)
+            for i in range(len(choices)):
+                await sondage_message.add_reaction(ALPHABET_EMOJIS[i])
+        except discord.HTTPException:
+            log.warning("Sondages : réactions incomplètes pour %s.", sondage_message.id, exc_info=True)
+            await ctx.send(
+                "Le sondage est publié, mais Discord a refusé certaines réactions. "
+                "Le Staff doit vérifier « Ajouter des réactions » et « Voir les anciens messages »."
+            )
+        try:
+            await delete_invocation_message(ctx)
+        except discord.HTTPException:
+            pass
+        link = getattr(sondage_message, "jump_url", None)
+        receipt = f"Sondage publié : {link}" if link else f"Sondage publié (ID `{sondage_message.id}`)."
+        if not persisted:
+            receipt += "\n⚠️ La sauvegarde #console a échoué : le suivi pourrait être perdu au redémarrage."
+        await ctx.send(receipt)
 
     @commands.command(name="close_sondage")
+    @commands.guild_only()
     async def manual_close_poll(self, ctx: commands.Context, message_id: int = None):
         if not message_id:
             await ctx.send("Veuillez préciser l'ID du message. Ex: `!close_sondage 1234567890`")
@@ -220,34 +258,51 @@ class SondageCog(commands.Cog):
         if not poll_data:
             await ctx.send("Aucun sondage trouvé pour cet ID.")
             return
+        channel = self.bot.get_channel(poll_data.get("channel_id"))
+        source_guild = poll_data.get("guild_id") or getattr(getattr(channel, "guild", None), "id", None)
+        if source_guild != ctx.guild.id:
+            await ctx.send("Ce sondage n'appartient pas à ce serveur ou son salon est inaccessible.")
+            return
         if ctx.author.id != poll_data.get("author_id") and not self._is_staff(ctx.author):
             await ctx.send("Vous n'avez pas l'autorisation de fermer ce sondage.")
             return
-        await self.close_poll(message_id)
-        POLL_STORAGE.pop(message_id, None)
-        await self._save_polls_to_console()
+        if await self._finish_poll(message_id):
+            await ctx.send("Sondage clôturé. Les résultats sont affichés sur son message.")
+        else:
+            await ctx.send(
+                "La clôture a échoué. Le sondage reste suivi ; le Staff doit vérifier "
+                "l'accès au salon et les permissions du bot."
+            )
 
-    async def close_poll(self, message_id: int):
+    async def close_poll(self, message_id: int) -> bool:
         poll_data = POLL_STORAGE.get(message_id)
         if not poll_data:
-            return
+            return True
         channel_id = poll_data.get("channel_id")
         get_channel = getattr(self.bot, "get_channel", None)
         channel = get_channel(channel_id) if callable(get_channel) else None
         if not channel:
-            return
+            return False
         try:
             msg_sondage = await channel.fetch_message(message_id)
-        except (discord.NotFound, discord.Forbidden):
-            return
+        except discord.NotFound:
+            # Un message supprimé n'a plus de scrutin à surveiller.
+            return True
+        except discord.HTTPException:
+            log.warning("Sondages : lecture impossible pour %s.", message_id, exc_info=True)
+            return False
         choices = poll_data.get("choices", [])
+        if not isinstance(choices, list) or not 2 <= len(choices) <= len(ALPHABET_EMOJIS):
+            log.warning("Sondages : choix invalides pour %s ; suivi conservé.", message_id)
+            return False
         title = poll_data.get("title", "Sondage")
         vote_counts = [0] * len(choices)
         for reaction in getattr(msg_sondage, "reactions", []) or []:
             if reaction.emoji in ALPHABET_EMOJIS:
                 idx = ALPHABET_EMOJIS.index(reaction.emoji)
                 if idx < len(choices):
-                    vote_counts[idx] = max(reaction.count - 1, 0)
+                    # Soustraire uniquement la réaction effectivement posée par le bot.
+                    vote_counts[idx] = max(reaction.count - int(bool(reaction.me)), 0)
         max_votes = max(vote_counts) if vote_counts else 1
         results_lines = []
         for i, choice in enumerate(choices):
@@ -256,17 +311,20 @@ class SondageCog(commands.Cog):
             bar = make_progress_bar(count, max_votes)
             results_lines.append(f"{emoji} **{choice}** : {count} vote(s)\n    `{bar}`")
         embed = discord.Embed(
-            title=f"Résultats du sondage : {title}",
-            description="\n".join(results_lines),
+            title=shorten(f"Résultats : {title} [Clôturé]", 250),
+            description=shorten("\n".join(results_lines), 4000),
             color=0xFEE75C,
         )
-        embed.set_footer(text="Le sondage est maintenant clôturé.")
-        await channel.send(f"**Fin du sondage** : `{title}`\nVoici le récapitulatif :", embed=embed)
-        if msg_sondage.embeds:
-            closed_embed = msg_sondage.embeds[0].copy()
-            closed_embed.title += " [Clôturé]"
-            closed_embed.color = 0x2C2F33
-            await msg_sondage.edit(embed=closed_embed)
+        embed.set_footer(text="Sondage clôturé · Les réactions ajoutées ensuite ne changent pas ces résultats.")
+        try:
+            # Une édition est idempotente : une reprise ne publie pas deux récapitulatifs.
+            await msg_sondage.edit(embed=embed)
+        except discord.NotFound:
+            return True
+        except discord.HTTPException:
+            log.warning("Sondages : édition impossible pour %s.", message_id, exc_info=True)
+            return False
+        return True
 
 
 async def setup(bot: commands.Bot):

@@ -14,6 +14,8 @@ import pytest_asyncio
 
 from slash_commands import SlashCommandsCog, generic_arguments, generic_route
 from utils.slash_catalog import custom_routes, format_arguments, quote_token
+from utils.slash_errors import SlashInputError
+from utils.command_policy import unavailable_roots
 from utils.slash_support import (
     EvolutionCommandTree, SlashContext, delete_invocation_message, invoke_from_slash,
     notify_private_workflow, parse_message_reference,
@@ -69,6 +71,10 @@ def make_interaction(bot, command, *, roles=(), permission_value=0):
         channel=channel, channel_id=channel.id, guild=guild, guild_id=guild.id,
         user=author, namespace=[], command_failed=False, response=response,
         followup=SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=900))),
+        edit_original_response=AsyncMock(),
+        delete_original_response=AsyncMock(),
+        original_response=AsyncMock(return_value=SimpleNamespace(id=900, edit=AsyncMock())),
+
         is_expired=lambda: False, permissions=discord.Permissions(permission_value),
         app_permissions=discord.Permissions.all(),
     )
@@ -106,11 +112,12 @@ async def test_slash_catalog_covers_every_installed_command_with_valid_discord_s
     cog.register_commands()
 
     assert cog.covered_commands == {command.qualified_name for command in slash_bot.walk_commands()}
-    assert len(cog.covered_commands) >= 60
+    assert len(cog.covered_commands) >= 50
     assert len(slash_bot.tree.get_commands()) <= 100
-    assert slash_bot.tree.get_command("event") is not existing["event-rapide"]
+    assert slash_bot.tree.get_command("event") is None
+    assert slash_bot.tree.get_command("event-rapide") is None
     for name, command in existing.items():
-        assert slash_bot.tree.get_command(name) is command
+        assert slash_bot.tree.get_command(name) is (None if name in unavailable_roots() else command)
 
     def validate(schema):
         assert re.fullmatch(r"[a-z0-9_-]{1,32}", schema["name"])
@@ -133,7 +140,7 @@ async def test_slash_catalog_covers_every_installed_command_with_valid_discord_s
     assert options["niveau"]["max_value"] == 100
     assert options["metier"]["autocomplete"] is True
     cog.cog_unload()
-    assert {command.name for command in slash_bot.tree.get_commands()} == set(existing)
+    assert {command.name for command in slash_bot.tree.get_commands()} == set(existing) - unavailable_roots()
 
 
 @pytest.mark.asyncio
@@ -152,7 +159,7 @@ async def test_slash_job_route_uses_existing_handler_and_preserves_quotes(slash_
     await command.callback(interaction, metier='Forgeur d\'armes "rare"', niveau=100)
 
     assert calls == [("add", 'Forgeur d\'armes "rare"', "100")]
-    interaction.response.defer.assert_awaited_once_with(thinking=True)
+    interaction.response.defer.assert_awaited_once_with(thinking=True, ephemeral=True)
     interaction.followup.send.assert_awaited_once()
     assert interaction.followup.send.call_args.kwargs["content"] == "Métier enregistré."
 
@@ -328,7 +335,7 @@ async def test_wiki_cooldown_is_shared_between_slash_and_prefix(network_wiki_bot
         await command.callback(interaction, nom="Gelano")
     assert len(errors) == 1
     assert isinstance(errors[0], commands.CommandOnCooldown)
-    assert sent.await_count == 4
+    assert sent.await_count == 5  # quatre fiches, puis une erreur privée de cooldown
 
 
 @pytest.mark.asyncio
@@ -341,7 +348,13 @@ async def test_wiki_equipment_rejects_inverted_level_range(network_wiki_bot, mon
         command = bot.tree.get_command("equipement")
         interaction = make_interaction(bot, command)
         interaction.followup.send = sent
-        await command.callback(interaction, type="Sac à dos", niveau=40, niveau_min=100)
+        with pytest.raises(SlashInputError) as raised:
+            await command.callback(interaction, type="Sac à dos", niveau=40, niveau_min=100)
+        await bot.tree.on_error(interaction, app_commands.CommandInvokeError(command, raised.value))
+        assert "minimum" in interaction.response.send_message.call_args.args[0]
+        interaction.response.defer.assert_not_awaited()
+        assert not wiki.views
+        return
     else:
         await invoke_wiki_prefix(bot, '!equipement "Sac à dos" 40 100')
     assert errors == []
@@ -472,8 +485,8 @@ def test_poll_and_activity_fields_are_translated_to_existing_syntax():
         "titre": "Sortie ?", "choix": "Oui | Non", "duree": "00:02:00",
     }) == "Sortie ? ; Oui ; Non ; temps=00:02:00"
     assert format_arguments(routes[("activite", "creer")], {
-        "titre": "Donjon guilde", "date": "25/09/2026 21:00", "description": "Venez nombreux",
-    }) == "creer Donjon guilde 25/09/2026 21:00 Venez nombreux"
+        "titre": "Donjon guilde", "date": "25/09/2099 21:00", "description": "Venez nombreux",
+    }) == "creer Donjon guilde 25/09/2099 21:00 Venez nombreux"
 
 
 @pytest.mark.parametrize("values", [
@@ -561,7 +574,7 @@ async def test_help_embeds_fit_discord_limits(slash_bot):
     from help import HelpCog
 
     cog = HelpCog(slash_bot)
-    ctx = SimpleNamespace(send=AsyncMock())
+    ctx = SimpleNamespace(send=AsyncMock(), author=SimpleNamespace(id=AUTHOR_ID))
     await cog.aide_command.callback(cog, ctx)
     for call in ctx.send.call_args_list:
         embed = call.kwargs["embed"]
@@ -594,7 +607,8 @@ async def test_startup_syncs_slash_commands_by_default(monkeypatch, guild_id):
         monkeypatch.delenv("SYNC_SLASH_GUILD_ID", raising=False)
     else:
         monkeypatch.setenv("SYNC_SLASH_GUILD_ID", guild_id)
-    tree = SimpleNamespace(copy_global_to=Mock(), sync=AsyncMock(return_value=[]))
+    tree = SimpleNamespace(copy_global_to=Mock(), remove_command=Mock(),
+                           sync=AsyncMock(return_value=[]), fetch_commands=AsyncMock(return_value=[]))
     await main.EvoBot._sync_app_commands(SimpleNamespace(tree=tree))
     if guild_id is None:
         tree.copy_global_to.assert_not_called()
@@ -626,14 +640,17 @@ async def test_startup_can_disable_sync_and_loads_catalog_last(monkeypatch):
         _sync_app_commands=AsyncMock(), commands=[],
     )
     await main.EvoBot.setup_hook(bot)
-    assert loaded[-2:] == ["iastaff", "slash_commands"]
+    assert loaded[-1] == "slash_commands"
+    assert "ia" not in loaded and "iastaff" not in loaded
+    assert "event_conversation" in loaded and "cogs.annonce_ai" in loaded
+    assert "slash_events" not in loaded
     bot._sync_app_commands.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
 async def test_tree_returns_a_clear_message_for_invalid_fields(slash_bot):
     interaction = make_interaction(slash_bot, SimpleNamespace(name="sondage", qualified_name="sondage"))
-    error = app_commands.CommandInvokeError(interaction.command, ValueError("Durée invalide."))
+    error = app_commands.CommandInvokeError(interaction.command, SlashInputError("Durée invalide."))
     await slash_bot.tree.on_error(interaction, error)
     message = interaction.response.send_message.call_args.args[0]
     assert "Durée invalide" in message
@@ -700,9 +717,11 @@ async def test_autocomplete_jobs_matches_accents_and_limits_choices(slash_bot, m
 @pytest.mark.asyncio
 async def test_autocomplete_activities_excludes_cancelled_events(slash_bot, monkeypatch):
     cog = SimpleNamespace(activities_data={"events": {
-        "1": {"titre": "Donjon guilde", "cancelled": False},
-        "2": {"titre": "Donjon annulé", "cancelled": True},
+        "1": {"titre": "Donjon guilde", "cancelled": False,
+              "date_str": "2099-01-10 21:00:00", "creator_id": 1, "participants": []},
+        "2": {"titre": "Donjon annulé", "cancelled": True,
+              "date_str": "2099-01-10 21:00:00", "creator_id": 1, "participants": []},
     }})
     monkeypatch.setattr(slash_bot, "get_cog", lambda name: cog)
     choices = await SlashCommandsCog(slash_bot).autocomplete_activities(SimpleNamespace(), "donjon")
-    assert [(choice.name, choice.value) for choice in choices] == [("1 — Donjon guilde", "1")]
+    assert [(choice.name, choice.value) for choice in choices] == [("10/01 21:00 · Donjon guilde · #1", "1")]

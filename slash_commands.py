@@ -14,9 +14,14 @@ from discord.ext import commands
 
 from utils.slash_catalog import (
     COMMAND_NAMES, DESCRIPTIONS, GROUP_DESCRIPTIONS, PARAMETERS,
-    Option, Route, custom_routes, format_arguments, quote_token,
+    Option, Route, custom_routes, format_arguments, quote_token, text_limit, validate_values,
 )
 from utils.slash_support import invoke_from_slash
+from utils.command_policy import remove_unavailable_commands, unavailable_reason
+from utils.slash_confirm import DESTRUCTIVE_ROUTES, request_confirmation
+from utils.slash_errors import SlashInputError
+from utils.calendar_data import one_line, snapshot_events
+from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
 
@@ -80,6 +85,7 @@ class SlashCommandsCog(commands.Cog):
         self.routes: dict[tuple[str, ...], Route] = {}
         self.owned_commands: dict[str, app_commands.Command | app_commands.Group] = {}
         self.covered_commands: set[str] = set()
+        self.excluded_commands: dict[str, str] = {}
 
     async def cog_load(self):
         try:
@@ -95,20 +101,27 @@ class SlashCommandsCog(commands.Cog):
         self.owned_commands.clear()
 
     def register_commands(self):
+        remove_unavailable_commands(self.bot)
         native_names = {command.name for command in self.bot.tree.get_commands()}
         custom = custom_routes()
         custom_targets = {route.target for route in custom}
+        for command in self.bot.walk_commands():
+            if not command.enabled or command.hidden or any(not p.enabled or p.hidden for p in command.parents):
+                self.excluded_commands[command.qualified_name] = "commande désactivée ou masquée"
         for route in custom:
-            if self.bot.get_command(route.target) is not None:
+            if self.bot.get_command(route.target) is not None and route.target not in self.excluded_commands:
                 self._register_route(route)
         for command in sorted(self.bot.walk_commands(), key=lambda cmd: cmd.qualified_name):
-            if command.qualified_name in custom_targets:
+            if command.qualified_name in custom_targets or command.qualified_name in self.excluded_commands:
                 continue
             if command.parent is None and command.name in native_names:
                 self.covered_commands.add(command.qualified_name)
                 continue
             self._register_route(generic_route(command))
-        missing = {command.qualified_name for command in self.bot.walk_commands()} - self.covered_commands
+        missing = (
+            {command.qualified_name for command in self.bot.walk_commands()}
+            - self.covered_commands - self.excluded_commands.keys()
+        )
         if missing:
             raise RuntimeError(f"Commandes sans accès slash : {', '.join(sorted(missing))}")
         log.debug(
@@ -131,6 +144,7 @@ class SlashCommandsCog(commands.Cog):
                     name=root_name,
                     description=GROUP_DESCRIPTIONS.get(root_name, f"Commandes {root_name}."),
                     guild_only=True,
+                    allowed_installs=app_commands.AppInstallationType(guild=True, user=False),
                 )
                 self.bot.tree.add_command(group)
                 self.owned_commands[root_name] = group
@@ -148,14 +162,19 @@ class SlashCommandsCog(commands.Cog):
 
     def _make_command(self, route: Route) -> app_commands.Command:
         async def callback(interaction: discord.Interaction, **values):
+            values = validate_values(route, values)
             target = self.bot.get_command(route.target)
             if route.mode == "generic" and target is not None:
                 arguments = generic_arguments(target, route, values)
             else:
                 arguments = format_arguments(route, values)
+            if route.path in DESTRUCTIVE_ROUTES:
+                return await request_confirmation(self.bot, interaction, route, arguments, values)
             return await invoke_from_slash(
                 self.bot, interaction, route.target, arguments, values=values,
                 message_reference=values.get("message") if route.mode == "message_reference" else None,
+                private=route.path in {("job", "ajouter"), ("job", "supprimer"), ("job", "nettoyer")}
+                or route.path[:1] == ("activite",) and route.path[-1] in {"rejoindre", "quitter", "modifier", "creer"},
             )
 
         callback.__signature__ = inspect.Signature([
@@ -163,13 +182,19 @@ class SlashCommandsCog(commands.Cog):
             *[
                 inspect.Parameter(
                     option.name, inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    annotation=option.annotation,
+                    annotation=(
+                        app_commands.Range[str, 1 if option.default is ... else 0, text_limit(route, option)]
+                        if option.annotation is str else option.annotation
+                    ),
                     default=inspect.Parameter.empty if option.default is ... else option.default,
                 ) for option in route.options
             ],
         ])
         callback = app_commands.describe(**{o.name: o.description for o in route.options})(callback)
         callback = app_commands.guild_only()(callback)
+        callback = app_commands.allowed_installs(guilds=True, users=False)(callback)
+        if route.target == "defenderstatus":
+            callback = app_commands.default_permissions(manage_guild=True)(callback)
         for option in route.options:
             if option.choices:
                 callback = app_commands.choices(**{
@@ -179,6 +204,8 @@ class SlashCommandsCog(commands.Cog):
         for option in route.options:
             if option.autocomplete == "jobs":
                 command.autocomplete(option.name)(self.autocomplete_jobs)
+            elif option.autocomplete == "polls":
+                command.autocomplete(option.name)(self.autocomplete_polls)
             elif option.autocomplete == "activities":
                 command.autocomplete(option.name)(self.autocomplete_activities)
             elif option.autocomplete and option.autocomplete.startswith("wiki_"):
@@ -201,7 +228,8 @@ class SlashCommandsCog(commands.Cog):
         cog = self.bot.get_cog("JobCog")
         if cog is not None:
             for data in cog.jobs_data.values():
-                names.update(data.get("jobs", {}))
+                if isinstance(data, dict) and isinstance(data.get("jobs", {}), dict):
+                    names.update(name for name in data.get("jobs", {}) if isinstance(name, str))
         query = _search_key(current)
         ordered = sorted(names, key=lambda name: (not _search_key(name).startswith(query), _search_key(name)))
         return [
@@ -213,12 +241,50 @@ class SlashCommandsCog(commands.Cog):
         cog = self.bot.get_cog("ActiviteCog")
         if cog is None:
             return []
+        records = cog.activities_data.get("events", {})
+        guild_id = getattr(interaction, "guild_id", None)
+        records = {
+            key: event for key, event in records.items()
+            if isinstance(event, dict) and event.get("guild_id", guild_id) == guild_id
+        }
+        now = datetime.now(timezone.utc)
+        route_name = getattr(getattr(interaction, "command", None), "name", "")
+        user_id = getattr(getattr(interaction, "user", None), "id", None)
         choices = []
-        for key, event in cog.activities_data.get("events", {}).items():
-            label = f"{key} — {event.get('title', event.get('titre', 'Activité'))}"
-            if not event.get("cancelled") and _search_key(current) in _search_key(label):
-                choices.append(app_commands.Choice(name=label[:100], value=str(key)))
-        return choices[:25]
+        for event in snapshot_events(records).events:
+            if event.has_started(now):
+                continue
+            # Une désinscription reste proposée quand un groupe est complet.
+            if route_name == "rejoindre" and not event.places and user_id not in event.participants:
+                continue
+            label = f"{event.starts_at:%d/%m %H:%M} · {event.title} · #{event.id}"
+            if _search_key(current) in _search_key(label):
+                choices.append(app_commands.Choice(name=one_line(label, 100), value=event.id))
+            if len(choices) == 25:
+                break
+        return choices
+
+    async def autocomplete_polls(self, interaction: discord.Interaction, current: str):
+        from sondage import POLL_STORAGE
+
+        cog = self.bot.get_cog("SondageCog")
+        if cog is None or interaction.guild is None:
+            return []
+        staff = cog._is_staff(interaction.user)
+        choices = []
+        for message_id, poll in list(POLL_STORAGE.items()):
+            channel = self.bot.get_channel(poll.get("channel_id"))
+            guild_id = poll.get("guild_id") or getattr(getattr(channel, "guild", None), "id", None)
+            if guild_id != interaction.guild_id:
+                continue
+            if not staff and poll.get("author_id") != interaction.user.id:
+                continue
+            label = f"{poll.get('title', 'Sondage')} · {message_id}"
+            if _search_key(current) in _search_key(label):
+                choices.append(app_commands.Choice(name=one_line(label, 100), value=str(message_id)))
+            if len(choices) == 25:
+                break
+        return choices
 
 
 async def setup(bot: commands.Bot):

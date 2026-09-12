@@ -12,6 +12,8 @@ import unicodedata
 from typing import Dict, Optional
 
 import discord
+from utils.slash_catalog import activity_datetime
+from utils.calendar_data import shorten
 
 from discord.ext import commands, tasks
 from datetime import datetime, date, timezone
@@ -529,7 +531,13 @@ class ActiviteCog(commands.Cog):
         if not line or line.strip() == "":
             return await ctx.send("Syntaxe: !activite creer <titre> <JJ/MM/AAAA HH:MM> <desc>")
 
-        titre, dt, description = parse_date_time_via_regex(line)
+        supplied = getattr(ctx, "slash_values", {})
+        if supplied and "titre" in supplied and "date" in supplied:
+            titre = str(supplied["titre"])
+            dt = activity_datetime(supplied["date"])
+            description = str(supplied.get("description") or "")
+        else:
+            titre, dt, description = parse_date_time_via_regex(line)
         if not dt:
             return await ctx.send("Date/heure invalide.")
 
@@ -615,7 +623,7 @@ class ActiviteCog(commands.Cog):
         # Tri chronologique
         upcoming.sort(key=lambda x: _activity_datetime_utc(x.date_obj))
 
-        events_per_page = 10
+        events_per_page = 5
         pages = []
         for i in range(0, len(upcoming), events_per_page):
             chunk = upcoming[i:i+events_per_page]
@@ -651,7 +659,7 @@ class ActiviteCog(commands.Cog):
                     f"Rôle : {ro}\n"
                     f"---\n{ev.description or '*Aucune description*'}"
                 )
-                em.add_field(name=f"• {ev.titre}", value=txt, inline=False)
+                em.add_field(name=shorten(f"• {ev.titre}", 250), value=shorten(txt, 950), inline=False)
 
             return em
 
@@ -681,10 +689,10 @@ class ActiviteCog(commands.Cog):
         e_dict = self.activities_data["events"][args]
         e = ActiviteData.from_dict(e_dict)
 
-        em = discord.Embed(title=f"Infos : {e.titre} (ID={e.id})", color=0xFFC107)
+        em = discord.Embed(title=shorten(f"Infos : {e.titre} (ID={e.id})", 250), color=0xFFC107)
         em.add_field(name="Date/Heure", value=e.date_obj.strftime("%d/%m/%Y %H:%M"), inline=False)
         em.add_field(name="Annulée", value="Oui" if e.cancelled else "Non", inline=True)
-        em.add_field(name="Description", value=e.description or "Aucune", inline=False)
+        em.add_field(name="Description", value=shorten(e.description or "Aucune", 1000), inline=False)
 
         org = ctx.guild.get_member(e.creator_id)
         on = org.display_name if org else "Inconnu"
@@ -817,16 +825,20 @@ class ActiviteCog(commands.Cog):
         if e.cancelled:
             return await ctx.send("Déjà annulée.")
 
-        mat = DATE_TIME_REGEX.search(rest)
-        if not mat:
-            return await ctx.send("Date/heure non trouvée.")
-
-        ds = mat.group("date").strip()
-        ts = mat.group("time").strip()
-        nd = mat.group("desc").strip()
-        dt = parse_date_time(ds, ts)
-        if not dt:
-            return await ctx.send("Date invalide.")
+        supplied = getattr(ctx, "slash_values", {})
+        if supplied and "date" in supplied:
+            dt = activity_datetime(supplied["date"])
+            nd = e.description if supplied.get("description") is None else str(supplied["description"])
+        else:
+            mat = DATE_TIME_REGEX.search(rest)
+            if not mat:
+                return await ctx.send("Date/heure non trouvée.")
+            ds = mat.group("date").strip()
+            ts = mat.group("time").strip()
+            nd = mat.group("desc").strip()
+            dt = parse_date_time(ds, ts)
+            if not dt:
+                return await ctx.send("Date invalide.")
 
         date_changed = _activity_datetime_utc(e.date_obj) != _activity_datetime_utc(dt)
         if date_changed:

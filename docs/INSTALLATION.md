@@ -73,11 +73,13 @@ La liste complète se trouve dans [`.env.example`](../.env.example).
 | Variable | Quand la renseigner |
 | --- | --- |
 | `DISCORD_TOKEN` | **Obligatoire** pour démarrer le client Discord. |
-| `OPENAI_API_KEY` | Pour les parcours OpenAI, notamment organisation, annonces et IA Staff avec ce backend. |
+| `ENABLE_AI_COMMANDS` | `0` par défaut : aucune commande dépendant de l'IA n'est publiée. `1` exige aussi la clé du fournisseur concerné. |
+| `OPENAI_API_KEY` | Pour les parcours OpenAI explicitement réactivés ; `/organisation` fonctionne sans IA. |
 | `GOOGLE_API_KEY` | Pour Gemini, notamment `/event`, les conversations IA et IA Staff avec le backend de la configuration d'exemple. |
 | `FERNET_KEY` | Pour conserver l'historique local chiffré de Defender ; sans clé, cet historique est désactivé. |
 | `SYNC_SLASH_COMMANDS` | `1` pour synchroniser les commandes au démarrage. |
-| `SYNC_SLASH_GUILD_ID` | ID du serveur de développement ; vide pour la synchronisation globale. |
+| `SYNC_SLASH_GUILD_ID` | ID du serveur de développement ; vide pour la synchronisation globale. Un ID invalide bloque la publication au lieu de la rendre globale. |
+| `SLASH_CLEANUP_RETIRED` | `1` : après une synchronisation réussie, retirer les anciennes commandes désactivées dans les autres périmètres, sans vider les catalogues. |
 | `BOT_PREFIX` | `!` par défaut. |
 | `IASTAFF_ENABLE_TOOLS` | `1` pour activer le catalogue d'outils de l'assistant Staff. |
 | `DOFUS_WIKI_CACHE_TTL` | Durée du cache frais du wiki : `3600` secondes par défaut. |
@@ -201,7 +203,7 @@ démarrez le bot avec `python main.py` et `ALIVE_IN_PROCESS=0`.
 | Les données semblent manquer après redémarrage | Accès à `#console`, messages de sauvegarde et logs de chargement. |
 | L'encyclopédie signale une indisponibilité | Accès à l'API publique ; le bot utilise un cache de secours récent lorsqu'il en dispose. |
 | Render répond mais le bot est hors ligne | Start Command, jeton, intents, chargement des extensions et verrou d'instance. |
-| Une fonction IA échoue | Clé, backend et modèle du service utilisé ; `/event` dépend de Gemini. |
+| Une commande IA n'apparaît plus | Retrait volontaire par défaut : `ENABLE_AI_COMMANDS=0`. Réactiver exige un fournisseur disponible, sa clé, `ENABLE_AI_COMMANDS=1` et un redémarrage/synchronisation. `/event` dépend de Gemini. |
 
 N'effacez pas manuellement les snapshots de `#console` pour résoudre un problème de
 démarrage. Les [détails de persistance](ARCHITECTURE.md#persistance) expliquent leur rôle.

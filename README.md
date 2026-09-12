@@ -64,9 +64,14 @@ Les commandes de recherche suggèrent les noms pendant la saisie.
 | Afficher directement le calendrier du mois | `/calendrier` — aucun champ ; vues et filtres dans le message |
 | Contacter le Staff en privé | `/ticket` |
 
-**Pour le Staff :** `/event` ouvre le parcours guidé en message privé ;
-`/organisation`, `/annonce` et `/iastaff` accompagnent l'organisation et la gestion.
-`/event-rapide` propose une sortie simple ou un vote à réactions.
+**Sans API IA :** `/calendrier` s'ouvre sans champ et `/aide` présente le catalogue disponible.
+`/activite creer` publie une sortie avec inscriptions ; `/sondage` publie un vote.
+Pour le Staff, `/organisation` reste disponible avec ses modèles sans IA.
+
+Les commandes dépendant de l'IA, dont `/event`, `/annonce` et `/iastaff`, sont retirées
+par défaut (`ENABLE_AI_COMMANDS=0`), y compris leurs anciens accès `!`.
+L'ancien `/event-rapide`, non persistant, n'est plus chargé.
+Voir l'[audit des commandes et la procédure de mise à jour](docs/COMMANDES_SLASH.md).
 
 Tu préfères le préfixe ? Ces exemples restent disponibles :
 
