@@ -1,38 +1,82 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" fill="none" role="img" aria-labelledby="hero-title hero-description">
-  <title id="hero-title">Evolution BOT — votre guilde et Dofus Rétro dans Discord</title>
-  <desc id="hero-description">Métiers, événements, encyclopédie et IA Staff. Les commandes sont accessibles avec la barre oblique ou le préfixe point d'exclamation.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="440" viewBox="0 0 1280 440" fill="none" role="img" aria-labelledby="hero-title hero-description">
+  <title id="hero-title">Evolution BOT — Dofus Rétro, Boune</title>
+  <desc id="hero-description">Vos équipements, vos sorties et votre guilde, à portée de commande dans Discord. Encyclopédie, forgemagie et vie de guilde, avec les commandes /objet, /exo et /activite creer.</desc>
   <defs>
-    <linearGradient id="hero-background" x1="0" y1="0" x2="1200" y2="320" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#080F22"/>
-      <stop offset="1" stop-color="#10254A"/>
+    <linearGradient id="background" x1="0" y1="0" x2="1280" y2="440" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#071020"/>
+      <stop offset="0.55" stop-color="#0B1933"/>
+      <stop offset="1" stop-color="#142D59"/>
     </linearGradient>
-    <linearGradient id="hero-accent" x1="56" y1="0" x2="1144" y2="0" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#245CFF"/>
-      <stop offset="1" stop-color="#56E7FF"/>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(1050 198) rotate(90) scale(338 405)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2563EB" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#2563EB" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="accent" x1="60" y1="0" x2="1220" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3B82F6"/>
+      <stop offset="0.6" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#3B82F6" stop-opacity="0.12"/>
     </linearGradient>
-    <linearGradient id="hero-symbol" x1="885" y1="90" x2="1090" y2="190" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#7FA6FF"/>
-      <stop offset="1" stop-color="#56E7FF"/>
+    <linearGradient id="card" x1="876" y1="88" x2="1210" y2="338" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#173463"/>
+      <stop offset="1" stop-color="#0D1D38"/>
     </linearGradient>
-    <clipPath id="hero-clip">
-      <rect x="1" y="1" width="1198" height="318" rx="24"/>
+    <clipPath id="canvas">
+      <rect x="1" y="1" width="1278" height="438" rx="28"/>
     </clipPath>
   </defs>
-  <g clip-path="url(#hero-clip)">
-    <rect width="1200" height="320" fill="url(#hero-background)"/>
-    <circle cx="1150" cy="-30" r="240" stroke="#2E6CFF" stroke-opacity="0.17" stroke-width="64"/>
-    <circle cx="1150" cy="-30" r="344" stroke="#56E7FF" stroke-opacity="0.07" stroke-width="1"/>
-    <path d="M56 278H1144" stroke="url(#hero-accent)" stroke-opacity="0.35"/>
-    <rect x="56" y="44" width="32" height="4" rx="2" fill="#56E7FF"/>
+  <g clip-path="url(#canvas)">
+    <rect width="1280" height="440" fill="url(#background)"/>
+    <rect width="1280" height="440" fill="url(#glow)"/>
+    <path d="M800 0V440M920 0V440M1040 0V440M1160 0V440M760 80H1280M760 200H1280M760 320H1280" stroke="#79B6FF" stroke-opacity="0.05"/>
+    <circle cx="1080" cy="206" r="258" stroke="#5597FF" stroke-opacity="0.15"/>
+    <circle cx="1080" cy="206" r="205" stroke="#5597FF" stroke-opacity="0.09" stroke-width="36"/>
+    <circle cx="1080" cy="206" r="316" stroke="#67E8F9" stroke-opacity="0.07"/>
+    <path d="M779 64H793M786 57V71M1191 353H1205M1198 346V360" stroke="#67E8F9" stroke-opacity="0.6" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="1213" cy="65" r="3" fill="#8BBFFF"/>
+    <circle cx="823" cy="316" r="3" fill="#67E8F9"/>
+    <circle cx="1064" cy="367" r="2" fill="#8BBFFF" fill-opacity="0.5"/>
+    <rect x="60" y="56" width="5" height="22" rx="2.5" fill="#67E8F9"/>
     <g font-family="Segoe UI, Arial, sans-serif">
-      <text x="102" y="53" fill="#B5CEFA" font-size="18" font-weight="600" letter-spacing="2">DISCORD · GUILDE EVOLUTION</text>
-      <text x="54" y="142" fill="#F4F8FF" font-size="68" font-weight="700" letter-spacing="-2">Evolution BOT</text>
-      <text x="56" y="192" fill="#C5D5F0" font-size="27">Votre guilde et Dofus Rétro, dans Discord.</text>
-      <text x="56" y="243" fill="#8FB6FF" font-size="19" font-weight="600">MÉTIERS · ÉVÉNEMENTS · ENCYCLOPÉDIE · IA STAFF</text>
-      <rect x="832" y="50" width="312" height="196" rx="20" fill="#0B1830" stroke="#497ACD" stroke-opacity="0.65"/>
-      <text x="988" y="161" text-anchor="middle" fill="url(#hero-symbol)" font-size="92" font-weight="700">/ <tspan fill="#6983B0" font-size="32" font-weight="400">ou</tspan> !</text>
-      <text x="988" y="208" text-anchor="middle" fill="#D5E4FF" font-size="21">À vous de choisir.</text>
+      <text x="79" y="74" fill="#B9D3FF" font-size="19" font-weight="600" letter-spacing="3">DOFUS RÉTRO · BOUNE</text>
+      <text x="56" y="176" fill="#F4F8FF" font-size="82" font-weight="700" letter-spacing="-3">Evolution BOT</text>
+      <text x="60" y="238" fill="#E3ECFF" font-size="32" font-weight="600">Vos équipements. Vos sorties.</text>
+      <text x="60" y="281" fill="#A8C1E5" font-size="29">Votre guilde, à portée de commande.</text>
+
+      <path d="M867 128H842V213H814M842 213V298H867" stroke="#5EA7FF" stroke-opacity="0.5" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="842" cy="213" r="4" fill="#67E8F9"/>
+
+      <rect x="876" y="90" width="334" height="76" rx="16" fill="#040B18" fill-opacity="0.3" transform="translate(0 5)"/>
+      <rect x="876" y="90" width="334" height="76" rx="16" fill="url(#card)" stroke="#477CB7"/>
+      <rect x="894" y="108" width="40" height="40" rx="10" fill="#214A82"/>
+      <path d="M909 118L905 138M920 118L916 138M902 125H924M900 132H922" stroke="#9BC6FF" stroke-width="2" stroke-linecap="round"/>
+      <text x="951" y="124" fill="#EEF5FF" font-size="24" font-weight="600">/objet</text>
+      <text x="951" y="148" fill="#A8C1E5" font-size="17">Trouver son équipement</text>
+
+      <rect x="814" y="175" width="334" height="76" rx="16" fill="#040B18" fill-opacity="0.3" transform="translate(0 5)"/>
+      <rect x="814" y="175" width="334" height="76" rx="16" fill="url(#card)" stroke="#67E8F9" stroke-opacity="0.7"/>
+      <rect x="832" y="193" width="40" height="40" rx="10" fill="#174860"/>
+      <path d="M852 200L856 209L865 213L856 217L852 226L848 217L839 213L848 209Z" stroke="#8DE9F4" stroke-width="2" stroke-linejoin="round"/>
+      <text x="889" y="209" fill="#EEF5FF" font-size="24" font-weight="600">/exo</text>
+      <text x="889" y="233" fill="#A8C1E5" font-size="17">Préparer sa forgemagie</text>
+
+      <rect x="876" y="260" width="334" height="76" rx="16" fill="#040B18" fill-opacity="0.3" transform="translate(0 5)"/>
+      <rect x="876" y="260" width="334" height="76" rx="16" fill="url(#card)" stroke="#477CB7"/>
+      <rect x="894" y="278" width="40" height="40" rx="10" fill="#214A82"/>
+      <rect x="902" y="288" width="24" height="22" rx="4" stroke="#9BC6FF" stroke-width="2"/>
+      <path d="M908 285V291M920 285V291M902 295H926M909 302L913 306L920 299" stroke="#9BC6FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="951" y="294" fill="#EEF5FF" font-size="24" font-weight="600">/activite creer</text>
+      <text x="951" y="318" fill="#A8C1E5" font-size="17">Réunir sa guilde</text>
+
+      <path d="M60 345H726" stroke="url(#accent)" stroke-opacity="0.55"/>
+      <text x="60" y="389" fill="#A8C1E5" font-size="17" font-weight="600" letter-spacing="1.4">ENCYCLOPÉDIE</text>
+      <circle cx="242" cy="383" r="2.5" fill="#67E8F9"/>
+      <text x="266" y="389" fill="#A8C1E5" font-size="17" font-weight="600" letter-spacing="1.4">FORGEMAGIE</text>
+      <circle cx="433" cy="383" r="2.5" fill="#67E8F9"/>
+      <text x="457" y="389" fill="#A8C1E5" font-size="17" font-weight="600" letter-spacing="1.4">VIE DE GUILDE</text>
+      <rect x="1068" y="369" width="142" height="33" rx="16.5" fill="#0C1E39" stroke="#365F92"/>
+      <text x="1139" y="391" text-anchor="middle" fill="#B9D3FF" font-size="15" font-weight="600" letter-spacing="2">DISCORD</text>
     </g>
+    <path d="M60 1H1220" stroke="url(#accent)" stroke-width="3"/>
   </g>
-  <rect x="1" y="1" width="1198" height="318" rx="24" stroke="#315181" stroke-opacity="0.7"/>
+  <rect x="1" y="1" width="1278" height="438" rx="28" stroke="#375680"/>
 </svg>
