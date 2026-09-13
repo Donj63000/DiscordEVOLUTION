@@ -166,7 +166,6 @@ l'hébergement **Render** et le suivi HTTP avec **UptimeRobot**.
 | [Calendrier des activités](docs/CALENDRIER.md) | Agenda, filtres, inscriptions, installation du patch et recette. |
 | [Architecture et données](docs/ARCHITECTURE.md) | Modules, commandes, persistance, encyclopédie et assistants IA. |
 | [Configuration d'exemple](.env.example) | Variables disponibles, sans secrets réels. |
-| [Consignes de contribution](AGENTS.md) | Organisation du code, conventions et tests. |
 | [CI et résultats des tests](https://github.com/Donj63000/DiscordEVOLUTION/actions/workflows/ci.yml) | Compilation et suite de tests sur chaque push et pull request. |
 
 Les données de guilde sont sauvegardées dans **`#console`** pour être rechargées après
@@ -180,7 +179,7 @@ avec la commande utilisée, le résultat attendu et les étapes de reproduction.
 
 Pour proposer une modification :
 
-1. Lis les [conventions du projet](AGENTS.md).
+1. Lis la [documentation de l'architecture](docs/ARCHITECTURE.md).
 2. Ajoute des tests ciblés pour tout changement de comportement.
 3. Exécute `python -m pytest` avant de proposer la modification.
 4. Conserve les données persistantes dans `#console` et les secrets hors du dépôt.

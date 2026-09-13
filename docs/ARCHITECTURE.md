@@ -127,4 +127,4 @@ Les tests ne publient pas de vrais messages Discord. Les clients et réseaux son
 pour vérifier les erreurs, la persistance, les conversions et les parcours utilisateur.
 La manipulation sur un serveur de test complète ces vérifications avant un déploiement.
 
-Voir les [consignes de contribution](../AGENTS.md) avant d'ajouter un module ou une commande.
+Voir les [consignes de contribution](../README.md#contribuer) avant d'ajouter un module ou une commande.

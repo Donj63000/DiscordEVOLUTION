@@ -24,3 +24,6 @@ secret.key
 
 __pycache__/
 tests/__pycache__/
+
+/AGENTS.md
+/PLAN.md
