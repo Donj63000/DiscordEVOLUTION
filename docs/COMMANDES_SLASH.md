@@ -5,6 +5,31 @@
 > restent historiques ; les résultats du nouveau correctif figurent dans
 > [ACTIVITES-VALIDATION.md](ACTIVITES-VALIDATION.md).
 
+## Nettoyage ciblé du 13 septembre 2026
+
+Je retire uniquement deux accès slash supplémentaires :
+
+| Entrée | Motif | Accès conservés |
+| --- | --- | --- |
+| `/stats classement` | Doublon strict du classement des profils. | `/ladder`, `!ladder` et `!stats ladder`, avec les mêmes options. |
+| `/annonce-config` | Commande de l'ancien module, absent du démarrage actuel. | Le module historique et ses commandes préfixées restent soumis à leur politique IA existante. |
+
+Ces chemins sont exclus explicitement du catalogue slash et de son aide dynamique.
+Les anciennes copies de `/annonce-config` sont nettoyées même avec l'IA activée.
+Une ancienne interaction `/stats classement` reçoit une réponse privée indiquant `/ladder`.
+Le retrait de `/event-rapide` et la disponibilité conditionnelle des autres commandes IA
+restent inchangés. Je conserve notamment `/annonce-list`, `/annonce-cancel`, `/organisation`,
+`/stats presence`, `/musique` et les guides spécialisés.
+
+Je préserve intégralement `/exo`, `/objet`, `/recette`, `/equipement`, `/monstre`, leurs
+schémas et leurs autocomplétions. Les extensions, tâches programmées et données `#console`
+ne changent pas. Aucune synchronisation Discord n'est déclenchée pendant les tests.
+
+Les régressions dédiées sont dans `tests/test_slash_retirement.py` et
+`tests/test_slash_retirement_sync.py` : catalogue avant/après, préfixes, anciens menus,
+vrais schémas Discord, nettoyage global/guilde, idempotence et reprise après erreur HTTP.
+L'inventaire général inclut maintenant la commande native `/exo`.
+
 ## Périmètre et base exacte
 
 Ce correctif s'applique à **DiscordEVOLUTION-main (2).zip**, **après**
@@ -17,7 +42,7 @@ les actions destructrices, l'aide, l'autocomplétion et la synchronisation dista
 Les modifications métier ciblent les problèmes observés dans ces parcours, sans
 réécrire le stockage global du bot ou les intégrations externes.
 
-Le catalogue complet hors IA représente **34 entrées racines et 77 actions finales**
+Le catalogue de l'audit initial hors IA représentait **34 entrées racines et 77 actions finales**
 si tous les modules optionnels non IA sont chargés. Il couvre 60 commandes préfixées.
 En production, un module optionnel qui ne se charge pas n'est pas inventé dans l'aide.
 
@@ -155,10 +180,13 @@ invalide bloque la publication. `SYNC_SLASH_COMMANDS=0` désactive aussi tout ne
 
 Redémarrer l'instance existante. Vérifier les logs de chargement et de synchronisation,
 puis fermer et rouvrir le sélecteur Discord. La synchronisation remplace le catalogue
-du périmètre choisi. Le nettoyage complémentaire ne retire que les noms désactivés ;
-les autres noms, les commandes contextuelles et les données du serveur sont préservés.
-Un nettoyage de guilde échoué reste retentable à la reconnexion. Un nettoyage global
-complémentaire échoué est signalé dans les logs et retenté au prochain démarrage/sync.
+du périmètre choisi. Le nettoyage complémentaire retire les racines désactivées et
+`/annonce-config`. Il édite uniquement les options de `/stats` pour enlever la sous-commande
+directe `classement`, sans supprimer `/stats` ni republier un catalogue secondaire entier.
+Les autres sous-commandes, identifiants, permissions, commandes contextuelles et données
+du serveur sont préservés. `SLASH_CLEANUP_RETIRED=0` désactive ce nettoyage complémentaire.
+Un nettoyage de guilde ou un nettoyage global complémentaire échoué est signalé dans les
+logs et reste retentable à la reconnexion, après une synchronisation réussie seulement.
 
 Pas de nouvelle dépendance, migration SQL ou suppression de fichier de données.
 Le champ `guild_id` ajouté aux nouveaux sondages est rétrocompatible : pour les anciens,
@@ -331,7 +359,6 @@ modules optionnels effectivement démarrés sur votre hébergement.
 | `/sondage` | `titre`, `choix` | `duree` | Publier un sondage avec plusieurs choix. |
 | `/staff` | Aucun | Aucun | Afficher les membres du Staff. |
 | `/stats activer` | Aucun | Aucun | Staff : activer la collecte des statistiques. |
-| `/stats classement` | Aucun | `options` | Consulter le classement des profils de la guilde. |
 | `/stats desactiver` | Aucun | Aucun | Staff : désactiver la collecte des statistiques. |
 | `/stats membres` | Aucun | Aucun | Consulter les statistiques d’activité des membres. |
 | `/stats messages` | Aucun | Aucun | Consulter les statistiques des messages par salon. |

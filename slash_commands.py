@@ -17,7 +17,9 @@ from utils.slash_catalog import (
     Option, Route, custom_routes, format_arguments, quote_token, text_limit, validate_values,
 )
 from utils.slash_support import invoke_from_slash
-from utils.command_policy import remove_unavailable_commands, unavailable_reason
+from utils.command_policy import (
+    remove_unavailable_commands, retired_slash_reason, unavailable_reason,
+)
 from utils.slash_confirm import DESTRUCTIVE_ROUTES, request_confirmation
 from utils.slash_errors import SlashInputError
 from utils.calendar_data import one_line, snapshot_events
@@ -106,6 +108,15 @@ class SlashCommandsCog(commands.Cog):
 
     def register_commands(self):
         remove_unavailable_commands(self.bot)
+        for command in list(self.bot.tree.walk_commands()):
+            if isinstance(command, app_commands.Command) and retired_slash_reason(
+                tuple(command.qualified_name.split())
+            ):
+                if command.parent is None:
+                    self.bot.tree.remove_command(command.name, type=discord.AppCommandType.chat_input)
+                else:
+                    command.parent.remove_command(command.name)
+                log.debug("Slash: retired_native_command path=%s", command.qualified_name)
         native_names = {command.name for command in self.bot.tree.get_commands()}
         custom = custom_routes()
         custom_targets = {route.target for route in custom}
@@ -118,7 +129,8 @@ class SlashCommandsCog(commands.Cog):
         for command in sorted(self.bot.walk_commands(), key=lambda cmd: cmd.qualified_name):
             if command.qualified_name in custom_targets or command.qualified_name in self.excluded_commands:
                 continue
-            if command.parent is None and command.name in native_names:
+            if (command.parent is None and command.name in native_names
+                    and retired_slash_reason((command.name,)) is None):
                 self.covered_commands.add(command.qualified_name)
                 continue
             self._register_route(generic_route(command))
@@ -135,11 +147,17 @@ class SlashCommandsCog(commands.Cog):
             )
             self.bot.tree.add_command(self.activity_context_menu)
         log.debug(
-            "Slash: catalog_registered roots=%s routes=%s covered_prefix_commands=%s",
+            "Slash: catalog_registered roots=%s routes=%s covered_prefix_commands=%s excluded=%s",
             len(self.bot.tree.get_commands()), len(self.routes), len(self.covered_commands),
+            len(self.excluded_commands),
         )
 
     def _register_route(self, route: Route):
+        reason = retired_slash_reason(route.path)
+        if reason is not None:
+            self.excluded_commands[route.target] = reason
+            log.debug("Slash: retired_route path=%s target=%s", " ".join(route.path), route.target)
+            return
         if route.path in self.routes:
             raise ValueError(f"Route slash déjà enregistrée : {' '.join(route.path)}")
         command = self._make_command(route)

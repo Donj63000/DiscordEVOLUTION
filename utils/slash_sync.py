@@ -7,7 +7,7 @@ import os
 
 import discord
 
-from utils.command_policy import enabled_flag, unavailable_roots
+from utils.command_policy import RETIRED_SLASH_PATHS, enabled_flag, unavailable_slash_roots
 
 log = logging.getLogger(__name__)
 
@@ -27,15 +27,36 @@ def configured_guild() -> discord.Object | None:
 
 async def remove_retired_remote_commands(tree, *, guild=None) -> bool:
     """Supprime seulement les anciennes entrées identifiées, jamais toute une guilde."""
-    blocked = unavailable_roots()
+    blocked = unavailable_slash_roots()
     try:
         remote = await tree.fetch_commands(guild=guild)
         for command in remote:
-            if command.type is discord.AppCommandType.chat_input and command.name in blocked:
+            if command.type is not discord.AppCommandType.chat_input:
+                continue
+            if command.name in blocked:
                 await command.delete()
                 log.info(
                     "Slash : ancienne commande /%s retirée du périmètre %s.",
                     command.name, getattr(guild, "id", "global"),
+                )
+                continue
+            retired_children = {
+                path[1] for path in RETIRED_SLASH_PATHS
+                if len(path) == 2 and path[0] == command.name
+            }
+            if not retired_children:
+                continue
+            remaining = [
+                option for option in command.options
+                if not (option.type is discord.AppCommandOptionType.subcommand
+                        and option.name in retired_children)
+            ]
+            if len(remaining) != len(command.options):
+                await command.edit(options=remaining)
+                log.debug(
+                    "Slash: retired_remote_subcommands root=%s scope=%s removed=%s",
+                    command.name, getattr(guild, "id", "global"),
+                    len(command.options) - len(remaining),
                 )
     except discord.HTTPException:
         log.warning("Slash : nettoyage différé du périmètre %s.",
@@ -46,6 +67,7 @@ async def remove_retired_remote_commands(tree, *, guild=None) -> bool:
 
 async def sync_application_commands(bot) -> bool:
     bot._slash_sync_succeeded = False
+    bot._slash_global_cleanup_pending = False
     if not sync_enabled():
         log.info("Slash : synchronisation et nettoyage désactivés (SYNC_SLASH_COMMANDS=0).")
         return False
@@ -59,7 +81,7 @@ async def sync_application_commands(bot) -> bool:
     try:
         if guild is not None:
             bot.tree.copy_global_to(guild=guild)
-            for name in unavailable_roots():
+            for name in unavailable_slash_roots():
                 bot.tree.remove_command(name, guild=guild)
             synced = await bot.tree.sync(guild=guild)
         else:
@@ -74,7 +96,7 @@ async def sync_application_commands(bot) -> bool:
              getattr(guild, "id", "global"))
     if guild is not None and enabled_flag("SLASH_CLEANUP_RETIRED", True):
         # Une ancienne publication globale peut sinon laisser /ia dans le sélecteur.
-        await remove_retired_remote_commands(bot.tree)
+        bot._slash_global_cleanup_pending = not await remove_retired_remote_commands(bot.tree)
     return True
 
 
@@ -86,6 +108,8 @@ async def cleanup_retired_guild_commands(bot) -> None:
         and enabled_flag("SLASH_CLEANUP_RETIRED", True)
     ):
         return
+    if getattr(bot, "_slash_global_cleanup_pending", False):
+        bot._slash_global_cleanup_pending = not await remove_retired_remote_commands(bot.tree)
     done = getattr(bot, "_slash_cleanup_done", None)
     if done is None:
         done = bot._slash_cleanup_done = set()

@@ -12,7 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 from discord.ext.commands.view import StringView
 
-from utils.command_policy import unavailable_reason
+from utils.command_policy import retired_slash_reason, unavailable_reason
 from utils.slash_errors import (
     SlashInputError, error_message, log_command_error, send_interaction_error,
 )
@@ -46,12 +46,30 @@ async def notify_private_workflow(ctx):
             log.debug("Slash: private_workflow_ack_failed command=%s", ctx.command, exc_info=True)
 
 
+def interaction_command_path(interaction: discord.Interaction) -> tuple[str, ...]:
+    """Je retrouve le chemin du menu avant la résolution de sa commande locale."""
+    data = interaction.data or {}
+    if data.get("type", 1) != discord.AppCommandType.chat_input.value:
+        return ()
+    path = [data.get("name", "")]
+    options = data.get("options", [])
+    while options:
+        subcommand = next((option for option in options if option.get("type") in (1, 2)), None)
+        if subcommand is None:
+            break
+        path.append(subcommand["name"])
+        options = subcommand.get("options", [])
+    return tuple(path)
+
+
 class EvolutionCommandTree(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         # Cette barrière couvre aussi les commandes natives et les anciens menus Discord.
         name = (interaction.data or {}).get("name", "")
-        reason = unavailable_reason(name)
+        path = interaction_command_path(interaction)
+        reason = retired_slash_reason(path) or unavailable_reason(name)
         if reason is not None:
+            log.debug("Slash: unavailable_interaction path=%s", " ".join(path) or name)
             await send_interaction_error(interaction, reason)
             return False
         if interaction.guild is None:
@@ -61,7 +79,10 @@ class EvolutionCommandTree(app_commands.CommandTree):
 
     async def on_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         name = getattr(interaction.command, "qualified_name", (interaction.data or {}).get("name", "inconnue"))
-        message = unavailable_reason(name) or error_message(error)
+        message = (
+            retired_slash_reason(interaction_command_path(interaction))
+            or unavailable_reason(name) or error_message(error)
+        )
         log_command_error(log, error, command=name)
         await send_interaction_error(interaction, message)
 

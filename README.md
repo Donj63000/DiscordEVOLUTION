@@ -76,6 +76,8 @@ Pour le Staff, `/organisation` reste disponible avec ses modèles sans IA.
 Les commandes dépendant de l'IA, dont `/event`, `/annonce` et `/iastaff`, sont retirées
 par défaut (`ENABLE_AI_COMMANDS=0`), y compris leurs anciens accès `!`.
 L'ancien `/event-rapide`, non persistant, n'est plus chargé.
+Le doublon `/stats classement` est retiré du menu : utiliser `/ladder` ; `!stats ladder`
+reste disponible. Les anciennes copies de `/annonce-config` sont également nettoyées.
 Voir l'[audit des commandes et la procédure de mise à jour](docs/COMMANDES_SLASH.md).
 
 Tu préfères le préfixe ? Ces exemples restent disponibles :

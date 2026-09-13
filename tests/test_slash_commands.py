@@ -83,7 +83,7 @@ def make_interaction(bot, command, *, roles=(), permission_value=0):
 def load_command_inventory(bot):
     modules = (
         "job", "activite", "ticket", "players", "sondage", "stats", "help", "welcome",
-        "member_guard", "calcul", "dofus_wiki", "perco", "avis", "organisation", "event_conversation",
+        "member_guard", "calcul", "dofus_wiki", "exo", "perco", "avis", "organisation", "event_conversation",
         "ia", "music", "defender", "moderation", "up", "entree", "slash_events",
         "cogs.profil", "cogs.annonce_ai", "iastaff",
     )
@@ -111,7 +111,12 @@ async def test_slash_catalog_covers_every_installed_command_with_valid_discord_s
     cog = SlashCommandsCog(slash_bot)
     cog.register_commands()
 
-    assert cog.covered_commands == {command.qualified_name for command in slash_bot.walk_commands()}
+    assert cog.covered_commands | cog.excluded_commands.keys() == {
+        command.qualified_name for command in slash_bot.walk_commands()
+    }
+    assert set(cog.excluded_commands) == {"stats ladder"}
+    assert cog.covered_commands.isdisjoint(cog.excluded_commands)
+    assert slash_bot.tree.get_command("exo") is existing["exo"]
     assert len(cog.covered_commands) >= 50
     assert len(slash_bot.tree.get_commands()) <= 100
     assert slash_bot.tree.get_command("event") is None

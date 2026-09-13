@@ -17,6 +17,20 @@ OPENAI_COMMANDS = frozenset({
 })
 RETIRED_COMMANDS = frozenset({"event-rapide"})
 MANAGED_UNAVAILABLE_ROOTS = GEMINI_COMMANDS | OPENAI_COMMANDS | RETIRED_COMMANDS
+RETIRED_SLASH_PATHS: dict[tuple[str, ...], str] = {
+    ("stats", "classement"): (
+        "Ce raccourci a été retiré du menu. Utilise `/ladder` pour le classement des profils."
+    ),
+    ("annonce-config",): (
+        "Cette ancienne commande de configuration a été retirée du menu. "
+        "Le Staff peut consulter les réglages du module d'annonces dans la configuration du bot."
+    ),
+}
+
+
+def retired_slash_reason(path: tuple[str, ...]) -> str | None:
+    """Je limite le retrait au chemin slash exact, sans désactiver son préfixe."""
+    return RETIRED_SLASH_PATHS.get(path)
 
 
 def enabled_flag(name: str, default: bool = False) -> bool:
@@ -63,6 +77,13 @@ def unavailable_reason(qualified_name: str) -> str | None:
 
 def unavailable_roots() -> frozenset[str]:
     return frozenset(name for name in MANAGED_UNAVAILABLE_ROOTS if unavailable_reason(name))
+
+
+def unavailable_slash_roots() -> frozenset[str]:
+    """Je distingue les racines slash retirées des sous-commandes à préserver."""
+    return unavailable_roots() | frozenset(
+        path[0] for path in RETIRED_SLASH_PATHS if len(path) == 1
+    )
 
 
 def remove_unavailable_commands(bot) -> None:

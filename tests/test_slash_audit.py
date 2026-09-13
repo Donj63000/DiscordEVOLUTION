@@ -73,7 +73,9 @@ async def test_actual_complete_catalog_with_scanner_dependency_isolated(slash_bo
     cog.register_commands()
     remaining = {command.qualified_name for command in slash_bot.walk_commands()}
     assert before - remaining == before & unavailable_roots()
-    assert cog.covered_commands == remaining
+    assert cog.covered_commands | cog.excluded_commands.keys() == remaining
+    assert set(cog.excluded_commands) == {"stats ladder"}
+    assert cog.covered_commands.isdisjoint(cog.excluded_commands)
     assert slash_bot.tree.get_command("organisation") is not None
     assert slash_bot.tree.get_command("annonce-list") is not None
     assert slash_bot.tree.get_command("event-rapide") is None
