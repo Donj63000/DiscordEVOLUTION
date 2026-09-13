@@ -17,8 +17,9 @@ from utils.dofus_wiki import (
     DofusWikiClient, INDEX_PATHS, WikiEntry, WikiError,
     equipment_category, equipment_suggestions, find_entries, search_key,
 )
+from utils.drop_calculator import ProspectingSettings, parse_settings
 from utils.wiki_embeds import (
-    display_text, enriched_item_sections, item_embeds, monster_embeds, recipe_embeds,
+    display_text, drop_pages, enriched_item_sections, item_embeds, monster_embeds, recipe_embeds,
 )
 from utils.xixou_api import XixouClient
 from utils.xixou_maps import XixouMapRenderer
@@ -29,6 +30,7 @@ log = logging.getLogger(__name__)
 PAGE_SIZE = 10
 MAX_QUANTITY = 10000
 AUTO_CLIENT = object()
+UNCHANGED = object()
 ITEM_SECTIONS = {
     "summary": "Résumé", "details": "Caractéristiques", "drops": "Drops",
     "zones": "Zones et carte", "harvest": "Récolte", "uses": "Utilisations",
@@ -236,6 +238,7 @@ class DetailView(WikiView):
         self.results = results
         self.item_image = item_image
         self.enrichment = enrichment
+        self.prospecting: ProspectingSettings | None = None
         self.sections = {}
         if enrichment is not None and detail.entry.kind == "item":
             try:
@@ -281,6 +284,10 @@ class DetailView(WikiView):
             )
             self.section_select.callback = self.choose_section
             self.add_item(self.section_select)
+            self.prospecting_button = discord.ui.Button(
+                label="Prospection personnalisée", style=discord.ButtonStyle.primary, row=3,
+            )
+            self.prospecting_button.callback = self.open_prospecting
         self.refresh()
 
     def build_pages(self):
@@ -304,6 +311,9 @@ class DetailView(WikiView):
             self.quantity_button.disabled = self.action != "recipe"
             self.toggle.label = "Voir l'objet" if self.action == "recipe" else "Voir la recette"
         if self.sections:
+            self.remove_item(self.prospecting_button)
+            if self.action == "item" and self.section == "drops" and self.enrichment.drops:
+                self.add_item(self.prospecting_button)
             self.section_select.disabled = self.action != "item"
             for option in self.section_select.options:
                 option.default = option.value == self.section
@@ -411,11 +421,12 @@ class DetailView(WikiView):
 
     async def change_page(
         self, interaction, *, action=None, pages=None, quantity=None, section=None, page=0,
+        prospecting=UNCHANGED,
     ):
         """Je conserve l'état visible si la publication échoue ou si le menu expire."""
         previous = (
             self.action, self.pages, self.page, self.quantity, self.section,
-            self.section_positions.copy(),
+            self.section_positions.copy(), self.prospecting, self.sections,
         )
         try:
             if self.action == "item" and self.sections:
@@ -423,9 +434,18 @@ class DetailView(WikiView):
             self.action = self.action if action is None else action
             self.quantity = self.quantity if quantity is None else quantity
             self.section = self.section if section is None else section
+            if prospecting is not UNCHANGED:
+                if self.enrichment is None or not self.sections:
+                    raise WikiError("Les drops de cette fiche ne sont pas disponibles.")
+                self.sections = {
+                    **self.sections,
+                    "drops": drop_pages(self.detail, self.enrichment, prospecting),
+                }
+                self.prospecting = prospecting
             if pages is not None:
                 self.pages = pages
-            elif action is not None or quantity is not None or section is not None:
+            elif (action is not None or quantity is not None or section is not None
+                  or prospecting is not UNCHANGED):
                 self.pages = self.build_pages()
             self.page = max(0, min(len(self.pages) - 1, page))
             self.refresh()
@@ -439,10 +459,11 @@ class DetailView(WikiView):
             self.section_positions[self.section] = self.page
         log.debug("Wiki: detail_navigation action=%s section=%s page=%s changed=%s",
                   self.action, self.section, self.page, changed)
+        return changed
 
     def restore_page(self, previous):
         (self.action, self.pages, self.page, self.quantity,
-         self.section, self.section_positions) = previous
+         self.section, self.section_positions, self.prospecting, self.sections) = previous
         self.refresh()
 
     async def toggle_action(self, interaction):
@@ -489,6 +510,98 @@ class DetailView(WikiView):
         except BaseException:
             modal.stop()
             raise
+
+    async def open_prospecting(self, interaction: discord.Interaction) -> None:
+        """Un formulaire doit être la réponse initiale : je n'attends pas un rendu verrouillé."""
+        if self.is_finished() or self.cog._closed:
+            await interaction.response.send_message(
+                "Ce menu a expiré. Relance ta recherche.", ephemeral=True,
+            )
+            return
+        if self.lock.locked():
+            await interaction.response.send_message(
+                "Une mise à jour est en cours. Réessaie dans un instant.", ephemeral=True,
+            )
+            return
+        if (self.action != "item" or self.section != "drops" or self.enrichment is None
+                or not self.enrichment.drops):
+            await interaction.response.send_message(
+                "Ouvre la rubrique Drops d'un objet pour personnaliser sa prospection.",
+                ephemeral=True,
+            )
+            return
+        modal = ProspectingModal(self)
+        try:
+            await interaction.response.send_modal(modal)
+        except BaseException:
+            modal.stop()
+            raise
+        if self.is_finished() or self.cog._closed:
+            modal.stop()
+        log.debug("Wiki: prospecting_modal_opened")
+
+
+class ProspectingModal(discord.ui.Modal, title="Prospection personnalisée"):
+    """La configuration appartient à la fiche, jamais aux données Xixou partagées."""
+
+    def __init__(self, view: DetailView):
+        super().__init__(timeout=180)
+        self.view = view
+        current = view.prospecting
+        self.personal_pp = discord.ui.TextInput(
+            label="Ta PP (0 à 10 000) · vide = taux de base",
+            placeholder="Ex. 435 : PP totale affichée, pas un bonus",
+            default=str(current.personal_pp) if current is not None else None,
+            required=False, max_length=5,
+        )
+        self.group_pp = discord.ui.TextInput(
+            label="PP du groupe (toi compris, facultatif)",
+            placeholder="Vide = inconnue ; en solo, remets ta PP",
+            default=(str(current.group_pp) if current is not None
+                     and current.group_pp is not None else None),
+            required=False, max_length=6,
+        )
+        self.add_item(self.personal_pp)
+        self.add_item(self.group_pp)
+        view.modals.add(self)
+
+    def stop(self):
+        self.view.modals.discard(self)
+        super().stop()
+
+    async def on_timeout(self):
+        self.stop()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await self.view.interaction_check(interaction)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            await interaction.response.defer()
+            async with self.view.lock:
+                if not await self.view.ensure_active(interaction):
+                    return
+                try:
+                    settings = parse_settings(self.personal_pp.value, self.group_pp.value)
+                except ValueError as exc:
+                    log.debug("Wiki: invalid_prospecting_settings")
+                    await interaction.followup.send(str(exc), ephemeral=True)
+                    return
+                changed = await self.view.change_page(
+                    interaction, action="item", section="drops", page=0, prospecting=settings,
+                )
+                if changed:
+                    log.debug(
+                        "Wiki: prospecting_changed personal_pp=%s group_pp=%s",
+                        settings.personal_pp if settings is not None else None,
+                        settings.group_pp if settings is not None else None,
+                    )
+        finally:
+            self.stop()
+
+    async def on_error(self, interaction, error):
+        self.stop()
+        await self.view.on_error(interaction, error, self)
 
 
 class RecipeQuantityModal(discord.ui.Modal, title="Quantité à fabriquer"):

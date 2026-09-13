@@ -29,8 +29,13 @@ les filtres et la position dans la recherche.
 Les drops indiquent les taux de base, leur détail par niveau lorsqu'il existe,
 la prospection requise et la quantité maximale connue. Les niveaux signalés
 comme suspects par Xixou portent la mention « à vérifier » ; les rangs inactifs
-ne participent pas à la plage affichée. Il ne s'agit pas d'un calcul de chance
-personnelle incluant prospection, challenges ou autres bonus.
+ne participent pas à la plage affichée. Par défaut, ces taux restent les taux
+de base. Le bouton **Prospection personnalisée**, dans Drops, permet de saisir
+sa PP totale et, facultativement, celle du groupe pour contrôler le seuil.
+Les taux par niveau sont alors présentés sous la forme « base → jet individuel »,
+hors challenges, étoiles et bonus serveur. Les quotas partagés, taux fixes et
+données absentes sont signalés explicitement. Voir [PROSPECTION.md](PROSPECTION.md)
+pour les règles, limites et tests du calculateur.
 
 Une donnée absente reste « non renseignée ». Les identités ambiguës sont écartées,
 en conservant notamment les étoiles des viandes et les variantes de niveau.

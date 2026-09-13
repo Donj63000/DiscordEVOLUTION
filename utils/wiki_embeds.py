@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import discord
 
 from utils.dofus_wiki import WikiDetail, WikiError, clean_text
+from utils.drop_calculator import (
+    DropRule, ProspectingSettings, format_percent, item_drop_rule,
+    parse_rate, personal_rate, rate_bounds, source_count, threshold_met,
+)
 
 if TYPE_CHECKING:
     from utils.xixou_api import DropSource, ItemEnrichment
@@ -255,23 +259,14 @@ def _known_value(value: object) -> str:
     return display_text(str(value), 200)
 
 
-def _percent_value(value: str) -> Decimal | None:
-    try:
-        parsed = Decimal(str(value).replace("%", "").replace(",", ".").strip())
-    except (InvalidOperation, ValueError):
-        return None
-    return parsed if parsed.is_finite() else None
-
-
 def _drop_rate(drop: DropSource) -> str:
-    values = [(numeric, rate) for _, rate in drop.level_rates
-              if (numeric := _percent_value(rate)) is not None]
-    if values:
-        minimum, maximum = min(values), max(values)
-        if minimum[0] == maximum[0]:
-            return _known_value(minimum[1])
-        return f"{_known_value(minimum[1])} à {_known_value(maximum[1])}"
-    return _known_value(drop.rate)
+    bounds = rate_bounds(drop)
+    if bounds is None:
+        return _known_value(drop.rate)
+    minimum, maximum = bounds
+    if minimum == maximum:
+        return f"{minimum:f}%"
+    return f"{minimum:f}% à {maximum:f}%"
 
 
 def _summary_pages(detail: WikiDetail, enrichment: ItemEnrichment) -> list[ItemPage]:
@@ -343,27 +338,114 @@ def _detail_pages(detail: WikiDetail, enrichment: ItemEnrichment) -> list[ItemPa
     return _section_pages(detail, enrichment, "Caractéristiques", fields)
 
 
-def _drop_pages(detail: WikiDetail, enrichment: ItemEnrichment) -> list[ItemPage]:
+def _personal_drop_rate(
+    rate: Decimal, drop: DropSource, settings: ProspectingSettings, rule: DropRule,
+) -> Decimal:
+    if threshold_met(settings, drop.pp) is False or source_count(drop.maximum) == 0:
+        return Decimal(0)
+    return personal_rate(rate, settings, fixed=rule is DropRule.FIXED)
+
+
+def _prospecting_conditions(drop: DropSource, settings: ProspectingSettings) -> list[str]:
+    required = source_count(drop.pp)
+    met = threshold_met(settings, drop.pp)
+    if required is None:
+        threshold = "Non renseigné ; résultat conditionnel."
+    elif met is True:
+        threshold = f"{number(required)} PP · atteint."
+    elif met is False:
+        threshold = f"{number(required)} PP · non atteint : **0 %**."
+    else:
+        threshold = f"{number(required)} PP · groupe inconnu, taux valable si ce seuil est atteint."
+    lines = [f"**Seuil du groupe :** {threshold}"]
+    maximum = source_count(drop.maximum)
+    if maximum == 0:
+        lines.append("**Disponibilité :** quantité maximale nulle selon la source : **0 %**.")
+    elif maximum is not None:
+        lines.append(
+            "**Partage :** quota commun, les plus fortes PP sont servies d'abord. "
+            "Le taux du jet n'est pas ta probabilité finale de recevoir l'objet."
+        )
+    elif drop.maximum != "∞":
+        lines.append("**Disponibilité :** quota non renseigné, partage non vérifiable.")
+    return lines
+
+
+def drop_pages(
+    detail: WikiDetail, enrichment: ItemEnrichment,
+    prospecting: ProspectingSettings | None = None,
+) -> list[ItemPage]:
+    """Je juxtapose les taux source et les jets personnels sans altérer le cache Xixou."""
     fields = []
+    rule = item_drop_rule(detail.entry.category, detail.entry.name)
     for drop in enrichment.drops:
         lines = [f"**Taux de base :** {_drop_rate(drop)}",
                  f"**Prospection requise :** {_known_value(drop.pp)}",
                  f"**Quantité maximale :** {_known_value(drop.maximum)}"]
+        if prospecting is not None:
+            if rule is DropRule.QUEST:
+                lines.append(
+                    "**Calcul PP :** indisponible pour un objet de quête ; "
+                    "ses conditions spécifiques ne sont pas décrites par la source."
+                )
+            else:
+                bounds = rate_bounds(drop)
+                if bounds is None:
+                    calculated = "Non calculable : taux de base non renseigné ou invalide."
+                else:
+                    low, high = (
+                        _personal_drop_rate(rate, drop, prospecting, rule) for rate in bounds
+                    )
+                    calculated = format_percent(low)
+                    if low != high:
+                        calculated += " à " + format_percent(high)
+                    if threshold_met(prospecting, drop.pp) is None:
+                        calculated += " (sous réserve du seuil)"
+                label = "taux fixe" if rule is DropRule.FIXED else "jet individuel"
+                lines.append(f"**Avec {number(prospecting.personal_pp)} PP ({label}) :** {calculated}")
+                lines.extend(_prospecting_conditions(drop, prospecting))
         if drop.level_rates:
             lines.append("**Détail selon le niveau :**")
-            lines.extend(f"Niveau {_known_value(level)} : {_known_value(rate)}"
-                         for level, rate in drop.level_rates)
+            for level, rate in drop.level_rates:
+                line = f"Niveau {_known_value(level)} : {_known_value(rate)}"
+                if prospecting is not None and rule is not DropRule.QUEST:
+                    base = parse_rate(rate)
+                    line += " → " + (
+                        format_percent(_personal_drop_rate(base, drop, prospecting, rule))
+                        if base is not None else "Non calculable"
+                    )
+                lines.append(line)
         else:
             lines.append("**Niveaux :** non renseignés.")
         lines.append("**Zones :** " + (", ".join(_full_text(name) for name in drop.zones)
                                        or "Non renseignées"))
         fields += _fields(drop.name, lines)
     fields = fields or _fields("Drops", ["Drops non renseignés dans les données disponibles."])
-    return _section_pages(
-        detail, enrichment, "Drops", fields,
-        description="Taux de base fournis par Xixou, selon le niveau du monstre lorsqu’il "
-                    "est connu. Ils ne représentent pas ta probabilité personnelle de drop.",
+    description = (
+        "Taux de base fournis par Xixou, selon le niveau du monstre lorsqu’il "
+        "est connu. Ils ne représentent pas ta probabilité personnelle de drop."
     )
+    if enrichment.drops:
+        description += " Utilise « Prospection personnalisée » pour les adapter."
+    if prospecting is not None:
+        group = (f"{number(prospecting.group_pp)} PP (toi compris)"
+                 if prospecting.group_pp is not None else "non renseignée, ne suppose pas le solo")
+        description = (
+            f"**Ta prospection : {number(prospecting.personal_pp)} PP**\n"
+            f"**PP totale du groupe :** {group}\n"
+        )
+        if rule is DropRule.STANDARD:
+            description += "**Calcul :** min(100 %, taux de base × PP personnelle / 100).\n"
+        elif rule is DropRule.FIXED:
+            description += "**Taux fixe :** cet objet n'est pas influencé par la prospection.\n"
+        description += (
+            "Par monstre vaincu, hors challenges, étoiles et bonus serveur. "
+            "Le jet suppose le seuil débloqué et du butin encore disponible. "
+            "Les conditions spéciales d'obtention restent à respecter.\n"
+            "[Règles de prospection Rétro]"
+            "(https://dofusretro.jeuxonline.info/article/14796/prospection)"
+        )
+    return _section_pages(detail, enrichment, "Drops", fields, description=description)
 
 
 def _zone_pages(detail: WikiDetail, enrichment: ItemEnrichment) -> list[ItemPage]:
@@ -437,7 +519,7 @@ def enriched_item_sections(detail: WikiDetail, enrichment: ItemEnrichment
     sections = {
         "summary": _summary_pages(detail, enrichment),
         "details": _detail_pages(detail, enrichment),
-        "drops": _drop_pages(detail, enrichment),
+        "drops": drop_pages(detail, enrichment),
         "zones": _zone_pages(detail, enrichment),
         "harvest": _harvest_pages(detail, enrichment),
         "uses": _section_pages(
