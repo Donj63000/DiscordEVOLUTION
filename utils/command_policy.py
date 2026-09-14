@@ -15,8 +15,9 @@ GEMINI_COMMANDS = frozenset({"ia", "iahelp", "iaend", "bot", "analyse", "pl", "e
 OPENAI_COMMANDS = frozenset({
     "iastaff", "annonce", "annonce-model", "annonce-config", "organisation-model",
 })
+EVO_COMMANDS = frozenset({"evo", "evo-oublier", "evo-budget"})
 RETIRED_COMMANDS = frozenset({"event-rapide"})
-MANAGED_UNAVAILABLE_ROOTS = GEMINI_COMMANDS | OPENAI_COMMANDS | RETIRED_COMMANDS
+MANAGED_UNAVAILABLE_ROOTS = GEMINI_COMMANDS | OPENAI_COMMANDS | RETIRED_COMMANDS | EVO_COMMANDS
 RETIRED_SLASH_PATHS: dict[tuple[str, ...], str] = {
     ("stats", "classement"): (
         "Ce raccourci a été retiré du menu. Utilise `/ladder` pour le classement des profils."
@@ -42,6 +43,9 @@ def enabled_flag(name: str, default: bool = False) -> bool:
 
 
 def ai_service_enabled(provider: str) -> bool:
+    # Le compteur Evo ne couvre pas les anciennes IA. Pas de réactivation implicite.
+    if enabled_flag("EVO_ENABLED") and not enabled_flag("EVO_ALLOW_LEGACY_AI"):
+        return False
     if not enabled_flag("ENABLE_AI_COMMANDS"):
         return False
     if provider == "staff":
@@ -59,6 +63,8 @@ def ai_service_enabled(provider: str) -> bool:
 
 def unavailable_reason(qualified_name: str) -> str | None:
     root = qualified_name.split(" ", 1)[0]
+    if root in EVO_COMMANDS:
+        return None if enabled_flag("EVO_ENABLED") else "Evo est désactivé par le Staff."
     if root in RETIRED_COMMANDS:
         return (
             "Cette ancienne commande a été retirée. Utilise `/activite creer` "

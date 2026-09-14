@@ -30,3 +30,8 @@ tests/__pycache__/
 
 # Dossiers de modération : index temporaires et journal de publications
 /data/enquete/
+
+# Registre Evo de développement : ne jamais committer un compteur ou son journal.
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

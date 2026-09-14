@@ -15,7 +15,7 @@ import unicodedata
 
 import aiohttp
 
-from utils.dofus_wiki import WikiDetail, clean_text, retry_after_delay
+from utils.dofus_wiki import WikiDetail, clean_text, retry_after_delay, search_key
 from utils.xixou_image_paths import xixou_image_candidates
 
 
@@ -650,3 +650,56 @@ class XixouClient:
         self._enrichment_cache.clear()
         self._enrichment_snapshot = ()
         log.debug("Xixou: client_closed")
+
+
+def equipment_category(value: object) -> str:
+    """Identité de catégorie partagée par l'index /evo et le rapprochement Xixou."""
+    return _category(value)
+
+
+def equipment_records(catalog: dict):
+    """Lignes compactes pour /evo ; les effets non compris restent des données."""
+    for category, row in _records(catalog):
+        identifier = _integer(row.get("id"))
+        if _value(row, "id") is not None and identifier is None:
+            log.debug("Xixou: equipment_index invalid_identifier")
+            continue
+        level = _integer(row.get("level"))
+        effects = _strings(_value(row, "effets", "effects"))
+        if level is None or not effects:
+            continue
+        yield {
+            "id": identifier, "name": clean_text(row.get("name")),
+            "category": _category(category), "level": level, "effects": effects,
+            "conditions": _strings(row.get("conditions")),
+            "panoplie": _strings(row.get("panoplie")),
+        }
+
+
+def monster_record(catalog: dict | None, detail: WikiDetail) -> dict | None:
+    """Identité croisée ID + nom principal ; jamais une correspondance floue."""
+    if not catalog or detail.entry.kind != "monster":
+        return None
+    identifier = _integer(detail.data.get("id"))
+    name = search_key(detail.entry.name.split(" - ", 1)[0])
+    rows = catalog.get("data", [])
+    if identifier is None or not isinstance(rows, list):
+        return None
+    matches = [
+        row for row in rows if isinstance(row, dict)
+        and _integer(row.get("id")) == identifier
+        and search_key(str(row.get("name", "")).split(" - ", 1)[0]) == name
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def monster_drop_sources(monster: dict):
+    """Je conserve les taux actifs et les niveaux suspects de chaque ressource."""
+    rows = monster.get("drops", [])
+    if not isinstance(rows, list):
+        log.debug("Xixou: monster_inventory invalid_drops")
+        return
+    for row in rows:
+        if not isinstance(row, dict) or not clean_text(row.get("name")):
+            continue
+        yield clean_text(row["name"]), _source({}, monster, row)

@@ -15,7 +15,7 @@ from collections import deque
 from utils.channel_resolver import resolve_text_channel
 from utils.discord_history import fetch_channel_history, fetch_channel_message
 from utils.slash_support import EvolutionCommandTree
-from utils.command_policy import ai_service_enabled
+from utils.command_policy import ai_service_enabled, enabled_flag
 from utils.slash_sync import sync_application_commands, cleanup_retired_guild_commands
 from utils.bot_branding import sync_bot_branding
 
@@ -179,6 +179,10 @@ class EvoBot(commands.Bot):
 
         if ai_service_enabled("staff"):
             await self._load_iastaff_anywhere()
+
+        # Charger les commandes natives Evo avant l'adaptateur des anciennes commandes.
+        if enabled_flag("EVO_ENABLED"):
+            await self._safe_load("evo")
 
         if not await self._safe_load("slash_commands"):
             failed_required.append("slash_commands")
