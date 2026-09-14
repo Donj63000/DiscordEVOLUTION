@@ -70,12 +70,11 @@ class Bot:
         return self.cogs.get(name)
 
 
-def context(settings=None, *, private=False, cogs=None, member_id=2):
+def context(settings=None, *, cogs=None, member_id=2):
     settings = settings or config()
     guild = Guild()
     bot = Bot(guild, cogs)
-    return ToolContext(bot, guild, guild.get_channel(10), guild.get_member(member_id),
-                       settings, allow_private_fm=private)
+    return ToolContext(bot, guild, guild.get_channel(10), guild.get_member(member_id), settings)
 
 
 def response(outputs, *, usage=None, model="gpt-5.6-luna"):

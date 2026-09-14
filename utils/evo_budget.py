@@ -1,46 +1,21 @@
-"""Registre transactionnel : réservation AVANT génération, jamais remise à zéro au boot.
-
-PostgreSQL en production. SQLite uniquement pour le développement hors Render.
-Les montants entiers sont des nano-USD (1 USD = 10**9), jamais des floats.
-"""
+"""Registre en nano-USD, réservé dans #console avant chaque génération payante."""
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, closing
+import copy
 from datetime import datetime, timezone
 import hashlib
-from pathlib import Path
+import logging
 import re
-import sqlite3
 import uuid
 
 from utils.evo_config import EvoConfig, EvoError
 
-# Tarifs standard vérifiés le 15/09/2026. Toutes les entrées sont comptées au
-# tarif conservateur d'écriture du cache : 0,25 USD/M ; sortie : 1,20 USD/M.
-# +15 % de marge. Aucun outil OpenAI payant ni modèle alternatif n'est exposé.
+log = logging.getLogger(__name__)
 INPUT_NANO_PER_TOKEN = 250
 OUTPUT_NANO_PER_TOKEN = 1200
 SCOPE = "evolution-evo-v1"
-
-SCHEMA = (
-    """CREATE TABLE IF NOT EXISTS evo_budget_buckets (
-        scope TEXT NOT NULL, bucket TEXT NOT NULL,
-        used BIGINT NOT NULL DEFAULT 0 CHECK (used >= 0),
-        calls BIGINT NOT NULL DEFAULT 0 CHECK (calls >= 0),
-        blocked BOOLEAN NOT NULL DEFAULT FALSE,
-        PRIMARY KEY (scope, bucket)
-    )""",
-    """CREATE TABLE IF NOT EXISTS evo_budget_reservations (
-        id TEXT PRIMARY KEY, scope TEXT NOT NULL, request_key TEXT NOT NULL,
-        month_bucket TEXT NOT NULL, day_bucket TEXT NOT NULL, user_bucket TEXT NOT NULL,
-        maximum BIGINT NOT NULL, charged BIGINT, input_tokens BIGINT, output_tokens BIGINT,
-        created_at TEXT NOT NULL,
-        UNIQUE (scope, request_key)
-    )""",
-    """CREATE INDEX IF NOT EXISTS evo_budget_month_index
-       ON evo_budget_reservations(scope, month_bucket)""",
-)
+SCHEMA_VERSION = 1
 
 
 def quote(input_tokens: int, output_tokens: int) -> int:
@@ -50,136 +25,255 @@ def quote(input_tokens: int, output_tokens: int) -> int:
     return (base * 115 + 99) // 100
 
 
-class _SQLiteConnection:
-    def __init__(self, connection):
-        self.connection = connection
-
-    def _query(self, sql, args, fetch):
-        sql = sql.replace(" FOR UPDATE", "")
-        sql = re.sub(r"\$(\d+)", r":p\1", sql)
-        cursor = self.connection.execute(sql, {f"p{i}": arg for i, arg in enumerate(args, 1)})
-        row = cursor.fetchone() if fetch else None
-        return dict(row) if row is not None else None
-
-    async def execute(self, sql, *args):
-        return await asyncio.to_thread(self._query, sql, args, False)
-
-    async def fetchrow(self, sql, *args):
-        return await asyncio.to_thread(self._query, sql, args, True)
+def _timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError("timestamp")
+    stamp = datetime.fromisoformat(value)
+    if stamp.tzinfo is None:
+        raise ValueError("timezone")
+    return stamp.astimezone(timezone.utc)
 
 
-class SQLiteBackend:
-    """Fichier déjà initialisé ; mode=rw refuse de recréer un compteur perdu."""
-    def __init__(self, path: str):
-        self.path = Path(path).resolve()
-        self.lock = asyncio.Lock()
-
-    async def open(self):
-        if not self.path.is_file():
-            raise EvoError("Fichier budget absent : création automatique interdite.")
-        # Refuse aussi un fichier quelconque ou une base sans le registre.
-        async with self.transaction() as conn:
-            await conn.fetchrow("SELECT used FROM evo_budget_buckets LIMIT 1")
-
-    @asynccontextmanager
-    async def transaction(self):
-        async with self.lock:
-            connection = await asyncio.to_thread(
-                sqlite3.connect, self.path.as_uri() + "?mode=rw",
-                uri=True, timeout=5, check_same_thread=False, isolation_level=None,
-            )
-            connection.row_factory = sqlite3.Row
-            try:
-                await asyncio.to_thread(connection.execute, "BEGIN IMMEDIATE")
-                yield _SQLiteConnection(connection)
-                await asyncio.to_thread(connection.commit)
-            except BaseException:
-                await asyncio.to_thread(connection.rollback)
-                raise
-            finally:
-                await asyncio.to_thread(connection.close)
-
-    async def close(self):
-        pass
+def _nonnegative(value):
+    return type(value) is int and 0 <= value < 2**63
 
 
-class PostgresBackend:
-    def __init__(self, dsn: str):
-        self.dsn = dsn
-        self.pool = None
-
-    async def open(self):
-        import asyncpg  # Déjà déclaré dans requirements.txt ; aucune connexion globale.
-        self.pool = await asyncpg.create_pool(
-            dsn=self.dsn, min_size=1, max_size=2, timeout=8, command_timeout=5,
-        )
-        async with self.transaction() as conn:
-            await conn.fetchrow("SELECT used FROM evo_budget_buckets LIMIT 1")
-            await conn.fetchrow("SELECT maximum FROM evo_budget_reservations LIMIT 1")
-
-    @asynccontextmanager
-    async def transaction(self):
-        if self.pool is None:
-            raise EvoError("Compteur PostgreSQL non connecté.")
-        async with self.pool.acquire(timeout=5) as conn:
-            async with conn.transaction():
-                yield conn
-
-    async def close(self):
-        if self.pool is not None:
-            try:
-                await asyncio.wait_for(self.pool.close(), 5)
-            except TimeoutError:
-                self.pool.terminate()
+def _empty_bucket():
+    return {"used": 0, "calls": 0, "blocked": False}
 
 
-def initialize_sqlite(path: str) -> None:
-    """Utilitaire explicite pour tests/dev ; ne remplace jamais un fichier existant."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("xb"):
-        pass
+def validate_snapshot(payload, guild_id: int) -> dict:
+    """Je recalcule chaque compteur depuis les réservations conservées."""
     try:
-        with closing(sqlite3.connect(target)) as conn, conn:
-            for statement in SCHEMA:
-                conn.execute(statement)
-    except BaseException:
-        target.unlink(missing_ok=True)
-        raise
-
-
-async def initialize_postgres(dsn: str) -> None:
-    """Initialisation administrative explicite. Ne modifie jamais un registre existant."""
-    import asyncpg
-    connection = await asyncpg.connect(dsn=dsn, timeout=8, command_timeout=8)
-    try:
-        async with connection.transaction():
-            existing = await connection.fetchrow(
-                "SELECT to_regclass('evo_budget_buckets') AS buckets,"
-                " to_regclass('evo_budget_reservations') AS reservations"
-            )
-            if existing["buckets"] is not None or existing["reservations"] is not None:
-                raise EvoError("Le registre existe déjà : aucune réinitialisation autorisée.")
-            for statement in SCHEMA:
-                await connection.execute(statement)
-    finally:
-        await connection.close()
+        required = {"schema_version", "scope", "guild_id", "ledger_id", "revision",
+                    "created_at", "buckets", "reservations"}
+        if not isinstance(payload, dict) or set(payload) != required:
+            raise ValueError("schema")
+        if (type(payload["schema_version"]) is not int
+                or payload["schema_version"] != SCHEMA_VERSION
+                or payload["scope"] != SCOPE or payload["guild_id"] != str(guild_id)
+                or not isinstance(payload["ledger_id"], str)
+                or not re.fullmatch(r"[0-9a-f]{32}", payload["ledger_id"])
+                or not _nonnegative(payload["revision"]) or payload["revision"] < 1):
+            raise ValueError("identity")
+        _timestamp(payload["created_at"])
+        buckets, records = payload["buckets"], payload["reservations"]
+        if not isinstance(buckets, dict) or not isinstance(records, dict):
+            raise ValueError("collections")
+        expected, requests = {}, set()
+        record_fields = {"request_key", "month_bucket", "day_bucket", "user_bucket",
+                         "maximum", "charged", "input_tokens", "output_tokens", "created_at"}
+        for identifier, record in records.items():
+            if (not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{32}", identifier)
+                    or not isinstance(record, dict) or set(record) != record_fields):
+                raise ValueError("reservation")
+            request_key = record["request_key"]
+            if (not isinstance(request_key, str) or not 1 <= len(request_key) <= 200
+                    or request_key in requests):
+                raise ValueError("duplicate")
+            requests.add(request_key)
+            stamp = _timestamp(record["created_at"])
+            month, day = "month:" + stamp.strftime("%Y-%m"), "day:" + stamp.strftime("%Y-%m-%d")
+            user = record["user_bucket"]
+            if (record["month_bucket"] != month or record["day_bucket"] != day
+                    or not isinstance(user, str)
+                    or not re.fullmatch(re.escape(day) + r":user:[0-9a-f]{24}", user)
+                    or not _nonnegative(record["maximum"]) or record["maximum"] < 1):
+                raise ValueError("reservation values")
+            charged = record["charged"]
+            if charged is None:
+                if record["input_tokens"] is not None or record["output_tokens"] is not None:
+                    raise ValueError("pending usage")
+                amount = record["maximum"]
+            else:
+                if (not _nonnegative(charged)
+                        or charged != quote(record["input_tokens"], record["output_tokens"])):
+                    raise ValueError("charged usage")
+                amount = charged
+            for bucket in (month, day, user):
+                counter = expected.setdefault(bucket, _empty_bucket())
+                counter["used"] += amount
+                counter["calls"] += 1
+            if charged is not None and charged > record["maximum"]:
+                expected[month]["blocked"] = True
+        for name, bucket in buckets.items():
+            if (not isinstance(name, str) or not isinstance(bucket, dict)
+                    or set(bucket) != {"used", "calls", "blocked"}
+                    or not _nonnegative(bucket["used"]) or not _nonnegative(bucket["calls"])
+                    or type(bucket["blocked"]) is not bool):
+                raise ValueError("counter")
+            if name.startswith("month:"):
+                datetime.strptime(name, "month:%Y-%m")
+            elif name not in expected or bucket["blocked"]:
+                raise ValueError("unexpected counter")
+            calculated = expected.get(name, _empty_bucket())
+            if (bucket["used"] != calculated["used"] or bucket["calls"] != calculated["calls"]
+                    or calculated["blocked"] and not bucket["blocked"]):
+                raise ValueError("inconsistent counter")
+        if not expected.keys() <= buckets.keys():
+            raise ValueError("missing counter")
+        return copy.deepcopy(payload)
+    except (ValueError, TypeError, KeyError, OverflowError, EvoError):
+        log.debug("evo budget rejected invalid snapshot guild_id=%s", guild_id)
+        raise EvoError("Le registre budget de #console est incohérent. Aucun appel IA autorisé.") from None
 
 
 class Budget:
-    def __init__(self, config: EvoConfig, backend=None, *, clock=None):
-        self.config = config
-        self.backend = backend or (
-            PostgresBackend(config.database_url) if config.database_url
-            else SQLiteBackend(config.sqlite_path)
-        )
+    def __init__(self, config: EvoConfig, store, *, clock=None):
+        self.config, self.store = config, store
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self._lock = asyncio.Lock()
+        self._state = None
+        self._previous = None
+        self._uncertain = True
+        self._closed = False
+        self._epoch = 0
+        self._safety = store.safety
+
+    def invalidate(self):
+        """Je suspends le cache sans verrou, y compris pendant une vérification de leadership."""
+        if self._state is not None:
+            self._previous = self._state
+        self._state = None
+        self._uncertain = True
+        self._epoch += 1
+
+    def _check_continuity(self, restored):
+        previous = self._state or self._previous
+        if previous is None:
+            return
+        if (restored["ledger_id"] != previous["ledger_id"]
+                or restored["created_at"] != previous["created_at"]
+                or restored["revision"] < previous["revision"]
+                or restored["revision"] == previous["revision"] and restored != previous):
+            raise EvoError("Le registre budget a été remplacé ou reculé : vérification Staff requise.")
+        for identifier, record in previous["reservations"].items():
+            current = restored["reservations"].get(identifier)
+            if current is None:
+                raise EvoError("Des réservations ont disparu de #console : appels IA bloqués.")
+            immutable = set(record) - {"charged", "input_tokens", "output_tokens"}
+            if (any(record[key] != current[key] for key in immutable)
+                    or record["charged"] is not None and record != current):
+                raise EvoError("Une réservation confirmée a changé dans #console : appels IA bloqués.")
+        for name, counter in previous["buckets"].items():
+            if counter["blocked"] and not restored["buckets"].get(name, {}).get("blocked"):
+                raise EvoError("Le blocage budget a disparu de #console : contrôle Staff requis.")
+
+    async def _restore(self):
+        self._uncertain = True
+        epoch = self._epoch
+        payload = await self.store.load()
+        if self._closed or self._epoch != epoch:
+            raise EvoError("Le registre budget a été suspendu pendant sa restauration.")
+        if payload is None:
+            raise EvoError("Registre budget absent de #console. Initialisation Staff explicite requise.")
+        restored = validate_snapshot(payload, self.config.guild_id)
+        self._check_continuity(restored)
+        self._state = restored
+        self._uncertain = False
+        log.debug("evo budget restored guild_id=%s revision=%s", self.config.guild_id, restored["revision"])
+
+    async def _ensure_ready(self):
+        if self._closed:
+            raise EvoError("Le registre budget est fermé.")
+        epoch = self._epoch
+        try:
+            await self.store.check_ready()
+            if self._closed or self._epoch != epoch:
+                raise EvoError("Le registre budget a été suspendu.")
+            if self._uncertain or self._state is None:
+                await self._restore()
+            await self._flush_safety()
+        except BaseException:
+            self._uncertain = True
+            raise
+
+    async def check_ready(self):
+        async with self._lock:
+            await self._ensure_ready()
+
+    def _remember_safety(self, month, identifier=None, usage=None):
+        self._safety["ledger_id"] = self._state["ledger_id"]
+        self._safety["months"].add(month)
+        if identifier is not None:
+            self._safety["usage"][identifier] = usage
+
+    def _clear_safety(self):
+        self._safety["ledger_id"] = None
+        self._safety["months"].clear()
+        self._safety["usage"].clear()
+
+    async def _flush_safety(self):
+        """Je confirme les anomalies connues avant de permettre une reprise."""
+        if not self._safety["months"]:
+            return
+        state = self._state
+        if self._safety["ledger_id"] != state["ledger_id"]:
+            raise EvoError("Une anomalie fournisseur reste à sauvegarder : registre remplacé, IA bloquée.")
+        candidate = copy.deepcopy(state)
+        for identifier, usage in self._safety["usage"].items():
+            record = candidate["reservations"].get(identifier)
+            if record is None:
+                raise EvoError("La réservation d'une anomalie fournisseur a disparu : IA bloquée.")
+            actual = quote(*usage)
+            if record["charged"] is not None:
+                if (record["input_tokens"], record["output_tokens"]) != usage:
+                    raise EvoError("Une anomalie fournisseur contredit le registre : IA bloquée.")
+                continue
+            for name in (record["month_bucket"], record["day_bucket"], record["user_bucket"]):
+                candidate["buckets"][name]["used"] += actual - record["maximum"]
+            record.update(charged=actual, input_tokens=usage[0], output_tokens=usage[1])
+        for month in self._safety["months"]:
+            candidate["buckets"].setdefault(month, _empty_bucket())["blocked"] = True
+        if candidate != state:
+            await self._commit(candidate, expected_revision=state["revision"])
+        self._clear_safety()
 
     async def open(self):
+        async with self._lock:
+            if self._closed:
+                raise EvoError("Le registre budget est fermé.")
+            await self.store.check_ready()
+            await self._restore()
+            await self._flush_safety()
+
+    async def initialize(self):
+        """Je crée uniquement un premier registre demandé explicitement par le Staff."""
+        async with self._lock:
+            if self._closed:
+                raise EvoError("Le registre budget est fermé.")
+            if self._safety["months"]:
+                raise EvoError("Une anomalie budget attend sa sauvegarde : initialisation interdite.")
+            await self.store.check_ready()
+            if self._state is not None or self._previous is not None or await self.store.load() is not None:
+                raise EvoError("Le registre budget existe déjà : aucune remise à zéro autorisée.")
+            payload = {
+                "schema_version": SCHEMA_VERSION, "scope": SCOPE,
+                "guild_id": str(self.config.guild_id), "ledger_id": uuid.uuid4().hex,
+                "revision": 1, "created_at": self.clock().astimezone(timezone.utc).isoformat(),
+                "buckets": {}, "reservations": {},
+            }
+            await self._commit(payload, expected_revision=None)
+
+    async def _commit(self, candidate, *, expected_revision):
+        candidate["revision"] = 1 if expected_revision is None else expected_revision + 1
+        validate_snapshot(candidate, self.config.guild_id)
+        epoch = self._epoch
         try:
-            await self.backend.open()
-        except Exception:
-            raise EvoError("Compteur durable indisponible. Aucun appel IA ne sera lancé.") from None
+            confirmed = await self.store.save(candidate, expected_revision=expected_revision)
+            if self._closed or self._epoch != epoch:
+                raise EvoError("Le registre budget a été suspendu pendant la sauvegarde.")
+            if validate_snapshot(confirmed, self.config.guild_id) != candidate:
+                raise EvoError("La révision budget n'a pas été confirmée dans #console.")
+        except BaseException as exc:
+            self._uncertain = True
+            log.debug("evo budget write uncertain guild_id=%s revision=%s error=%s",
+                      self.config.guild_id, candidate["revision"], type(exc).__name__)
+            raise
+        self._state = candidate
+        self._uncertain = False
+        log.debug("evo budget committed guild_id=%s revision=%s",
+                  self.config.guild_id, candidate["revision"])
 
     def buckets(self, user_key: str):
         now = self.clock().astimezone(timezone.utc)
@@ -191,143 +285,93 @@ class Budget:
     async def reserve(self, request_key: str, user_key: str, maximum: int) -> str:
         if type(maximum) is not int or not 0 < maximum <= self.config.request_nano:
             raise EvoError("Cette demande dépasse le plafond de coût par requête.")
-        now, month, day, user = self.buckets(user_key)
-        identifier = uuid.uuid4().hex
-        try:
-            async with self.backend.transaction() as conn:
-                # Toutes les instances prennent d'abord le même verrou mensuel.
-                await conn.execute(
-                    "INSERT INTO evo_budget_buckets(scope,bucket) VALUES($1,$2) ON CONFLICT DO NOTHING",
-                    SCOPE, month,
-                )
-                monthly = await conn.fetchrow(
-                    "SELECT * FROM evo_budget_buckets WHERE scope=$1 AND bucket=$2 FOR UPDATE",
-                    SCOPE, month,
-                )
-                duplicate = await conn.fetchrow(
-                    "SELECT id FROM evo_budget_reservations WHERE scope=$1 AND request_key=$2",
-                    SCOPE, request_key,
-                )
-                if duplicate:
-                    raise EvoError("Cette demande a déjà été traitée : aucun double appel IA.")
-                if monthly["blocked"] or monthly["used"] + maximum > self.config.monthly_nano:
-                    raise EvoError("Le budget IA du mois est atteint ou mis en sécurité. Les commandes classiques restent disponibles.")
-                for bucket in (day, user):
-                    await conn.execute(
-                        "INSERT INTO evo_budget_buckets(scope,bucket) VALUES($1,$2) ON CONFLICT DO NOTHING",
-                        SCOPE, bucket,
-                    )
-                daily = await conn.fetchrow(
-                    "SELECT * FROM evo_budget_buckets WHERE scope=$1 AND bucket=$2", SCOPE, day,
-                )
-                personal = await conn.fetchrow(
-                    "SELECT * FROM evo_budget_buckets WHERE scope=$1 AND bucket=$2", SCOPE, user,
-                )
-                if daily["used"] + maximum > self.config.daily_nano:
-                    raise EvoError("Le petit budget IA de la journée est atteint. Les recherches classiques restent disponibles.")
-                if personal["calls"] >= self.config.user_daily_calls:
-                    raise EvoError("Tu as atteint ton quota IA du jour. Il se renouvelle à minuit UTC.")
-                for bucket in (month, day, user):
-                    await conn.execute(
-                        "UPDATE evo_budget_buckets SET used=used+$3, calls=calls+1 WHERE scope=$1 AND bucket=$2",
-                        SCOPE, bucket, maximum,
-                    )
-                await conn.execute(
-                    """INSERT INTO evo_budget_reservations
-                    (id,scope,request_key,month_bucket,day_bucket,user_bucket,maximum,created_at)
-                    VALUES($1,$2,$3,$4,$5,$6,$7,$8)""",
-                    identifier, SCOPE, request_key, month, day, user, maximum, now.isoformat(),
-                )
+        if not isinstance(request_key, str) or not 1 <= len(request_key) <= 200:
+            raise EvoError("Identifiant de demande invalide.")
+        async with self._lock:
+            await self._ensure_ready()
+            now, month, day, user = self.buckets(user_key)
+            state = self._state
+            if any(r["request_key"] == request_key for r in state["reservations"].values()):
+                raise EvoError("Cette demande a déjà été traitée : aucun double appel IA.")
+            monthly = state["buckets"].get(month, _empty_bucket())
+            daily = state["buckets"].get(day, _empty_bucket())
+            personal = state["buckets"].get(user, _empty_bucket())
+            if monthly["blocked"] or monthly["used"] + maximum > self.config.monthly_nano:
+                raise EvoError("Le budget IA du mois est atteint ou mis en sécurité.")
+            if daily["used"] + maximum > self.config.daily_nano:
+                raise EvoError("Le petit budget IA de la journée est atteint.")
+            if personal["calls"] >= self.config.user_daily_calls:
+                raise EvoError("Tu as atteint ton quota IA du jour. Il se renouvelle à minuit UTC.")
+            candidate = copy.deepcopy(state)
+            for name in (month, day, user):
+                bucket = candidate["buckets"].setdefault(name, _empty_bucket())
+                bucket["used"] += maximum
+                bucket["calls"] += 1
+            identifier = uuid.uuid4().hex
+            candidate["reservations"][identifier] = {
+                "request_key": request_key, "month_bucket": month, "day_bucket": day,
+                "user_bucket": user, "maximum": maximum, "charged": None,
+                "input_tokens": None, "output_tokens": None, "created_at": now.isoformat(),
+            }
+            await self._commit(candidate, expected_revision=state["revision"])
             return identifier
-        except EvoError:
-            raise
-        except Exception:
-            raise EvoError("Le compteur budget est indisponible : appel IA bloqué par sécurité.") from None
 
     async def settle(self, identifier: str, input_tokens: int, output_tokens: int) -> None:
         actual = quote(input_tokens, output_tokens)
-        try:
-            async with self.backend.transaction() as conn:
-                # Même ordre de verrous que reserve(). Le mois de la réservation
-                # est conservé même si la réponse arrive après minuit.
-                record = await conn.fetchrow(
-                    "SELECT * FROM evo_budget_reservations WHERE id=$1 AND scope=$2", identifier, SCOPE,
-                )
-                if record is None:
-                    raise EvoError("Réservation introuvable : génération suivante bloquée.")
-                await conn.fetchrow(
-                    "SELECT * FROM evo_budget_buckets WHERE scope=$1 AND bucket=$2 FOR UPDATE",
-                    SCOPE, record["month_bucket"],
-                )
-                record = await conn.fetchrow(
-                    "SELECT * FROM evo_budget_reservations WHERE id=$1 AND scope=$2 FOR UPDATE", identifier, SCOPE,
-                )
-                if record["charged"] is not None:
-                    return  # Idempotence, notamment après un retour de connexion incertain.
-                delta = actual - record["maximum"]
-                for bucket in (record["month_bucket"], record["day_bucket"], record["user_bucket"]):
-                    await conn.execute(
-                        "UPDATE evo_budget_buckets SET used=used+$3 WHERE scope=$1 AND bucket=$2",
-                        SCOPE, bucket, delta,
-                    )
-                await conn.execute(
-                    """UPDATE evo_budget_reservations SET charged=$2,input_tokens=$3,output_tokens=$4
-                    WHERE id=$1""", identifier, actual, input_tokens, output_tokens,
-                )
-                if actual > record["maximum"]:
-                    await conn.execute(
-                        "UPDATE evo_budget_buckets SET blocked=TRUE WHERE scope=$1 AND bucket=$2",
-                        SCOPE, record["month_bucket"],
-                    )
-            if actual > record["maximum"]:
+        async with self._lock:
+            await self._ensure_ready()
+            state = self._state
+            record = state["reservations"].get(identifier)
+            if record is None:
+                raise EvoError("Réservation introuvable : génération suivante bloquée.")
+            if record["charged"] is not None:
+                return
+            candidate = copy.deepcopy(state)
+            delta = actual - record["maximum"]
+            for name in (record["month_bucket"], record["day_bucket"], record["user_bucket"]):
+                candidate["buckets"][name]["used"] += delta
+            candidate["reservations"][identifier].update(
+                charged=actual, input_tokens=input_tokens, output_tokens=output_tokens,
+            )
+            anomaly = actual > record["maximum"]
+            if anomaly:
+                candidate["buckets"][record["month_bucket"]]["blocked"] = True
+                self._remember_safety(record["month_bucket"], identifier, (input_tokens, output_tokens))
+            await self._commit(candidate, expected_revision=state["revision"])
+            if anomaly:
+                self._clear_safety()
                 raise EvoError("Le comptage fournisseur a dépassé la réservation : IA mise en sécurité.")
-        except EvoError:
-            raise
-        except Exception:
-            # Pas de remboursement spéculatif : la réservation initiale reste consommée.
-            raise EvoError("La réponse a été reçue, mais le compteur est indisponible. IA suspendue pour cette demande.") from None
 
     async def block_current_month(self) -> None:
-        """Anomalie de fournisseur : verrou persistant, aucune remise à zéro Discord."""
-        _, month, _, _ = self.buckets("")
-        try:
-            async with self.backend.transaction() as conn:
-                await conn.execute(
-                    "INSERT INTO evo_budget_buckets(scope,bucket) VALUES($1,$2) ON CONFLICT DO NOTHING",
-                    SCOPE, month,
-                )
-                await conn.execute(
-                    "UPDATE evo_budget_buckets SET blocked=TRUE WHERE scope=$1 AND bucket=$2",
-                    SCOPE, month,
-                )
-        except Exception:
-            raise EvoError("Anomalie fournisseur et compteur indisponible : arrêt de cette demande.") from None
+        async with self._lock:
+            await self._ensure_ready()
+            _, month, _, _ = self.buckets("")
+            candidate = copy.deepcopy(self._state)
+            counter = candidate["buckets"].setdefault(month, _empty_bucket())
+            if counter["blocked"]:
+                return
+            counter["blocked"] = True
+            self._remember_safety(month)
+            await self._commit(candidate, expected_revision=self._state["revision"])
+            self._clear_safety()
 
     async def status(self) -> dict:
-        _, month, day, _ = self.buckets("")
-        try:
-            async with self.backend.transaction() as conn:
-                monthly = await conn.fetchrow(
-                    "SELECT * FROM evo_budget_buckets WHERE scope=$1 AND bucket=$2", SCOPE, month,
-                )
-                daily = await conn.fetchrow(
-                    "SELECT * FROM evo_budget_buckets WHERE scope=$1 AND bucket=$2", SCOPE, day,
-                )
-                totals = await conn.fetchrow(
-                    """SELECT COALESCE(SUM(CASE WHEN charged IS NULL THEN maximum ELSE 0 END),0) AS pending,
-                    COALESCE(SUM(input_tokens),0) AS inputs, COALESCE(SUM(output_tokens),0) AS outputs
-                    FROM evo_budget_reservations WHERE scope=$1 AND month_bucket=$2""", SCOPE, month,
-                )
-                return {
-                    "month": month[6:], "used_nano": monthly["used"] if monthly else 0,
-                    "day_nano": daily["used"] if daily else 0,
-                    "calls": monthly["calls"] if monthly else 0,
-                    "blocked": bool(monthly["blocked"]) if monthly else False,
-                    "pending_nano": totals["pending"], "input_tokens": totals["inputs"],
-                    "output_tokens": totals["outputs"], "limit_nano": self.config.monthly_nano,
-                }
-        except Exception:
-            raise EvoError("Impossible de consulter le compteur durable.") from None
+        async with self._lock:
+            await self._ensure_ready()
+            _, month, day, _ = self.buckets("")
+            monthly = self._state["buckets"].get(month, _empty_bucket())
+            daily = self._state["buckets"].get(day, _empty_bucket())
+            records = [r for r in self._state["reservations"].values() if r["month_bucket"] == month]
+            return {
+                "month": month[6:], "used_nano": monthly["used"], "day_nano": daily["used"],
+                "calls": monthly["calls"], "blocked": monthly["blocked"],
+                "pending_nano": sum(r["maximum"] for r in records if r["charged"] is None),
+                "input_tokens": sum(r["input_tokens"] or 0 for r in records),
+                "output_tokens": sum(r["output_tokens"] or 0 for r in records),
+                "limit_nano": self.config.monthly_nano,
+            }
 
     async def close(self):
-        await self.backend.close()
+        self._closed = True
+        self.invalidate()
+        await self.store.close()

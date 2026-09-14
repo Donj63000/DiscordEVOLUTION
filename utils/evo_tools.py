@@ -73,7 +73,6 @@ TOOLS = [
     tool("candidats_exo", "Candidats de remontage simple. Heuristique, PAS taux de réussite ni coût garanti.",
          {"bonus": choice(("pa", "pm", "po")), "type_objet": text(nullable=True),
           "niveau_min": number(1, 200), "niveau_max": number(1, 200)}),
-    tool("ma_session_fm", "Lit uniquement l'atelier /exo du demandeur, en réponse privée. Ne pose aucune rune.", {}),
     tool("guide_fm", "Poids nominaux du moteur existant et limites du simulateur. Pas de taux Ankama certifié.",
          {"sujet": text()}),
     tool("guilde", "Présentation Discord et salons publics. Ne révèle aucune donnée Staff.", {}, "guild"),
@@ -350,30 +349,6 @@ class EvoTools:
         return {**exo_candidates(
             rows, target=bonus, category=type_objet, min_level=niveau_min, max_level=niveau_max,
         ), "couverture": info}
-
-    async def do_ma_session_fm(self, ctx):
-        if not ctx.allow_private_fm:
-            return {"confidentialite": "Ta session /exo est privée. Utilise /evo avec prive:True pour en parler sans la publier."}
-        cog = ctx.bot.get_cog("ExoCog")
-        view = getattr(cog, "views", {}).get((ctx.guild.id, ctx.member.id))
-        if (view is None or view.owner_id != ctx.member.id or view.guild_id != ctx.guild.id
-                or view.retired):
-            raise EvoError("Tu n'as pas d'atelier /exo actif.")
-        async with view.lock:
-            if view.retired:
-                raise EvoError("Cet atelier /exo vient d'être fermé.")
-            session = view.session
-            state = session.state
-            return {
-                "objet": session.item.name, "mode": session.mode, "revision": session.revision,
-                "jets": {STATS[k].name: v for k, v in state.jets.items() if k in STATS},
-                "puits": None if state.sink is None else str(state.sink),
-                "derniere_rune": session.rune.name, "poids_rune": str(session.rune.weight),
-                "journal_recent": compact(state.journal[-3:], max_string=150),
-                "hypothese_probabilite_simulation": session.p,
-                "avertissement": DISCLAIMER,
-                "limites": "Puits inconnu reste inconnu. Le simulateur ne révèle pas les tirages du vrai jeu. Aucune rune jouée.",
-            }
 
     async def do_guide_fm(self, ctx, sujet):
         key = search_key(sujet)

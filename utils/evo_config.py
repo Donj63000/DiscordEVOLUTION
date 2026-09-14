@@ -4,14 +4,28 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 import os
-from pathlib import Path
+import logging
+
+from utils.channel_resolver import resolve_text_channel
 
 MODEL = "gpt-5.6-luna"
 NANO = 1_000_000_000
+log = logging.getLogger(__name__)
 
 
 class EvoError(Exception):
     """Message volontairement publiable, jamais une exception de fournisseur brute."""
+
+
+def resolve_console_channel(guild):
+    """Je retrouve la console du serveur avec les noms de configuration existants."""
+    for name_env in ("CHANNEL_CONSOLE", "CONSOLE_CHANNEL_NAME"):
+        channel = resolve_text_channel(
+            guild, id_env="CHANNEL_CONSOLE_ID", name_env=name_env,
+        )
+        if channel is not None:
+            return channel
+    return resolve_text_channel(guild, default_name="console")
 
 
 def flag(name: str, default: bool = False) -> bool:
@@ -60,8 +74,6 @@ class EvoConfig:
     guild_id: int
     channel_ids: frozenset[int]
     api_key: str = field(repr=False)
-    database_url: str = field(default="", repr=False)
-    sqlite_path: str = ""
     model: str = MODEL
     monthly_nano: int = 2 * NANO
     daily_nano: int = 120_000_000
@@ -79,28 +91,27 @@ class EvoConfig:
     knowledge_path: str = "config/evo_knowledge.json"
 
     @classmethod
-    def from_env(cls) -> "EvoConfig":
+    def from_env(cls, *, guilds=()) -> "EvoConfig":
         if os.getenv("EVO_MODEL", MODEL).strip() != MODEL:
             raise EvoError("EVO_MODEL doit rester gpt-5.6-luna : aucun remplacement payant automatique.")
         key = os.getenv("OPENAI_API_KEY", "").strip()
         if not key:
             raise EvoError("OPENAI_API_KEY manque dans la configuration Render.")
-        guilds = ids("EVO_GUILD_ID")
+        configured_guilds = ids("EVO_GUILD_ID")
+        available_guilds = {guild.id for guild in guilds}
+        if not configured_guilds:
+            if len(available_guilds) != 1:
+                raise EvoError("Configure EVO_GUILD_ID lorsque le bot rejoint plusieurs serveurs.")
+            configured_guilds = frozenset(available_guilds)
+            log.debug("evo configuration inferred guild_id=%s", next(iter(configured_guilds)))
+        if len(configured_guilds) != 1:
+            raise EvoError("EVO_GUILD_ID doit désigner un seul serveur.")
+        guild_id = next(iter(configured_guilds))
+        if available_guilds and guild_id not in available_guilds:
+            raise EvoError("Le serveur configuré pour Evo n'est pas accessible au bot.")
         channels = ids("EVO_CHANNEL_IDS")
-        if len(guilds) != 1 or not channels:
-            raise EvoError("Configure EVO_GUILD_ID et EVO_CHANNEL_IDS avant d'activer /evo.")
-        database = (os.getenv("EVO_DATABASE_URL") or os.getenv("DATABASE_URL") or "").strip()
-        sqlite = os.getenv("EVO_SQLITE_PATH", "").strip()
-        if database and not database.startswith(("postgresql://", "postgres://")):
-            raise EvoError("EVO_DATABASE_URL doit désigner une base PostgreSQL.")
-        if not database:
-            if os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID"):
-                raise EvoError("Sur Render, /evo exige EVO_DATABASE_URL (ou DATABASE_URL) pour protéger le budget.")
-            if not sqlite or not Path(sqlite).is_file():
-                raise EvoError("Compteur durable absent. Configure PostgreSQL ; voir docs/EVO.md.")
         settings = cls(
-            guild_id=next(iter(guilds)), channel_ids=channels, api_key=key,
-            database_url=database, sqlite_path=sqlite,
+            guild_id=guild_id, channel_ids=channels, api_key=key,
             monthly_nano=money("EVO_MONTHLY_USD", "2.00", "20"),
             daily_nano=money("EVO_DAILY_USD", "0.12", "2"),
             request_nano=money("EVO_REQUEST_USD", "0.015", "0.05"),
@@ -115,6 +126,6 @@ class EvoConfig:
         )
         if settings.request_nano > settings.daily_nano or settings.daily_nano > settings.monthly_nano:
             raise EvoError("Les plafonds doivent respecter requête ≤ jour ≤ mois.")
-        if not settings.history_channels <= settings.channel_ids:
+        if settings.channel_ids and not settings.history_channels <= settings.channel_ids:
             raise EvoError("EVO_HISTORY_CHANNEL_IDS doit être inclus dans EVO_CHANNEL_IDS.")
         return settings

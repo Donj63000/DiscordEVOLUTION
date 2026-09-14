@@ -12,12 +12,12 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from alive import keep_alive
 from collections import deque
-from utils.channel_resolver import resolve_text_channel
-from utils.discord_history import fetch_channel_history, fetch_channel_message
+from utils.discord_history import fetch_channel_history
 from utils.slash_support import EvolutionCommandTree
 from utils.command_policy import ai_service_enabled, enabled_flag
 from utils.slash_sync import sync_application_commands, cleanup_retired_guild_commands
 from utils.bot_branding import sync_bot_branding
+from utils.evo_config import EvoError, resolve_console_channel
 
 load_dotenv()
 
@@ -25,7 +25,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 log = logging.getLogger("main")
 
 LOCK_TAG = "===BOTLOCK==="
+EVO_HANDOVER_SECONDS = 125
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", os.getenv("STAFF_ROLE_NAME", "Staff"))
+
+
+class EvoLeadershipLost(EvoError):
+    """Une autre instance a publié un verrou après le mien."""
 
 
 def env_bool(name: str, default: bool) -> bool:
@@ -66,6 +71,12 @@ class EvoBot(commands.Bot):
         self._seen_max = 2048
         self._console_checked = False
         self._branding_attempted = False
+        self._evo_connected = False
+        self._evo_resume_at = 0.0
+        self._evo_leadership_known = False
+        self._evo_check_lock = asyncio.Lock()
+        self._evo_scan_lock = asyncio.Lock()
+        self._lock_scan_message_id = None
 
         orig = self.process_commands
 
@@ -200,23 +211,19 @@ class EvoBot(commands.Bot):
         await sync_application_commands(self)
 
     async def wait_console_channel(self, timeout=30):
-        default_name = os.getenv("CHANNEL_CONSOLE", "console")
         start = time.time()
         while time.time() - start < timeout:
             for g in self.guilds:
-                ch = resolve_text_channel(
-                    g,
-                    id_env="CHANNEL_CONSOLE_ID",
-                    name_env="CHANNEL_CONSOLE",
-                    default_name=default_name,
-                )
+                if enabled_flag("EVO_ENABLED") and self._evo_guild_id() != g.id:
+                    continue
+                ch = resolve_console_channel(g)
                 if ch:
                     return ch
             await asyncio.sleep(1)
         return None
 
     async def ensure_console_channel(self) -> None:
-        default_name = os.getenv("CHANNEL_CONSOLE", "console")
+        default_name = os.getenv("CHANNEL_CONSOLE") or os.getenv("CONSOLE_CHANNEL_NAME") or "console"
         console_id = os.getenv("CHANNEL_CONSOLE_ID")
         auto_create = (os.getenv("CONSOLE_AUTO_CREATE", "1") or "1").strip().lower() not in {
             "0",
@@ -225,12 +232,7 @@ class EvoBot(commands.Bot):
             "off",
         }
         for guild in list(getattr(self, "guilds", []) or []):
-            ch = resolve_text_channel(
-                guild,
-                id_env="CHANNEL_CONSOLE_ID",
-                name_env="CHANNEL_CONSOLE",
-                default_name=default_name,
-            )
+            ch = resolve_console_channel(guild)
             if ch:
                 continue
             if console_id:
@@ -304,15 +306,21 @@ class EvoBot(commands.Bot):
                     exc,
                 )
 
-    async def _fetch_history(self, channel, limit=50, oldest_first=False):
+    async def _fetch_history(self, channel, limit=50, oldest_first=False, raise_errors=False):
         return await fetch_channel_history(
             channel,
             limit=limit,
             oldest_first=oldest_first,
             reason="main.lock",
+            raise_errors=raise_errors,
         )
 
-    async def parse_latest_lock(self, ch: discord.TextChannel):
+    async def parse_latest_lock(self, ch: discord.TextChannel, *, strict=False):
+        if strict:
+            async for message in ch.history(limit=None):
+                if message.author == self.user and message.content.startswith(LOCK_TAG):
+                    return self._lock_fields(message)
+            return None, None, None
         messages = await self._fetch_history(ch, limit=50, oldest_first=False)
         for msg in messages:
             if msg.author == self.user and msg.content.startswith(LOCK_TAG):
@@ -326,20 +334,102 @@ class EvoBot(commands.Bot):
                     return msg, inst, ts
         return None, None, None
 
+    def _lock_fields(self, message):
+        parts = message.content.split()
+        if (len(parts) != 3 or parts[0] != LOCK_TAG
+                or not parts[2].isascii() or not parts[2].isdigit() or int(parts[2]) <= 0):
+            raise EvoError("Le verrou de l'instance est illisible. Evo reste suspendu.")
+        return message, parts[1], int(parts[2])
+
+    def _evo_guild_id(self):
+        cog = self.get_cog("EvoCog")
+        config = getattr(cog, "config", None)
+        if config is not None:
+            return config.guild_id
+        raw = os.getenv("EVO_GUILD_ID", "").strip()
+        if not raw:
+            guilds = list(getattr(self, "guilds", []) or [])
+            return guilds[0].id if len(guilds) == 1 else None
+        return int(raw) if raw.isascii() and raw.isdigit() else None
+
+    async def _suspend_evo(self, reason, *, cooldown=True):
+        self._evo_leadership_known = False
+        if cooldown:
+            self._evo_resume_at = max(self._evo_resume_at, time.monotonic() + EVO_HANDOVER_SECONDS)
+        logging.debug("Evo leadership suspended reason=%s", reason)
+        cog = self.get_cog("EvoCog")
+        if cog is not None:
+            await cog.suspend()
+
+    async def _verified_lock(self, channel):
+        async with self._evo_scan_lock:
+            try:
+                own = await channel.fetch_message(self._lock_message_id)
+            except discord.NotFound:
+                latest, _, _ = await self.parse_latest_lock(channel, strict=True)
+                if latest is not None and latest.id > self._lock_message_id:
+                    raise EvoLeadershipLost("Une autre instance a remplacé le verrou du bot.") from None
+                raise EvoError("Le verrou de cette instance a disparu. Evo reste suspendu.") from None
+            _, instance, _ = self._lock_fields(own)
+            if own.author != self.user or own.id != self._lock_message_id or instance != self.INSTANCE_ID:
+                raise EvoError("Cette instance n'a plus le verrou du bot. Evo reste suspendu.")
+            watermark = max(own.id, self._lock_scan_message_id or own.id)
+            latest_id = watermark
+            async for message in channel.history(
+                limit=None, after=discord.Object(id=watermark), oldest_first=True,
+            ):
+                latest_id = max(latest_id, message.id)
+                if message.author == self.user and message.content.startswith(LOCK_TAG):
+                    self._lock_fields(message)
+                    raise EvoLeadershipLost("Une autre instance a repris le verrou du bot.")
+            self._lock_scan_message_id = latest_id
+            return own
+
+    async def ensure_evo_leadership(self):
+        """Je vérifie le verrou Discord avant chaque accès au compteur partagé."""
+        async with self._evo_check_lock:
+            if not self._singleton_ready or not self._evo_connected or self.is_closed():
+                await self._suspend_evo("not_ready", cooldown=False)
+                raise EvoError("L'instance du bot n'est pas encore prête. Evo reste suspendu.")
+            try:
+                guild = self.get_guild(self._evo_guild_id())
+                channel = resolve_console_channel(guild) if guild is not None else None
+                if (channel is None or channel.id != self._lock_channel_id
+                        or self._lock_message_id is None):
+                    raise EvoError("Le verrou du salon console est indisponible. Evo reste suspendu.")
+                await self._verified_lock(channel)
+            except Exception as exc:
+                await self._suspend_evo("verification_failed")
+                logging.debug("Evo leadership verification failed type=%s", type(exc).__name__)
+                raise EvoError("Le verrou de l'instance n'est pas vérifiable. Evo reste suspendu.") from None
+            if not self._evo_connected:
+                await self._suspend_evo("disconnected_during_verification", cooldown=False)
+                raise EvoError("La connexion Discord a été interrompue. Evo reste suspendu.")
+            if time.monotonic() < self._evo_resume_at:
+                logging.debug("Evo leadership waiting for previous requests")
+                raise EvoError("Evo attend la fin des demandes de l'instance précédente. Réessaie dans deux minutes.")
+            self._evo_leadership_known = True
+
     async def acquire_leadership(self):
         ch = await self.wait_console_channel(timeout=30)
         if not ch:
             logging.warning("Salon #%s introuvable: pas de lock distribué, on continue.", os.getenv("CHANNEL_CONSOLE", "console"))
             return True
+        previous, _, _ = await self.parse_latest_lock(ch, strict=True)
         my = await ch.send(f"{LOCK_TAG} {self.INSTANCE_ID} {int(time.time())}")
         self._lock_channel_id = ch.id
         self._lock_message_id = my.id
-        last, inst, ts = await self.parse_latest_lock(ch)
+        self._lock_scan_message_id = my.id
+        last, inst, ts = await self.parse_latest_lock(ch, strict=True)
         if last and last.id == my.id:
+            if previous is not None:
+                self._evo_resume_at = time.monotonic() + EVO_HANDOVER_SECONDS
+                logging.debug("Evo leadership handover delay=%s", EVO_HANDOVER_SECONDS)
             logging.info("Lock acquis par %s", self.INSTANCE_ID)
-            messages = await self._fetch_history(ch, limit=100, oldest_first=False)
+            messages = await self._fetch_history(ch, limit=100, oldest_first=False, raise_errors=True)
             for msg in messages:
                 if msg.id != self._lock_message_id and msg.author == self.user and msg.content.startswith(LOCK_TAG):
+                    self._evo_resume_at = time.monotonic() + EVO_HANDOVER_SECONDS
                     try:
                         await msg.delete()
                     except Exception:
@@ -354,27 +444,31 @@ class EvoBot(commands.Bot):
                 if self._lock_channel_id and self._lock_message_id:
                     ch = self.get_channel(self._lock_channel_id)
                     if ch:
-                        own_lock = await fetch_channel_message(ch, self._lock_message_id, reason="main.lock.self")
-                        last, inst, ts = await self.parse_latest_lock(ch)
-                        if last is not None and last.id != self._lock_message_id:
-                            logging.warning("Perte du lock au profit de %s, fermeture.", inst or "inconnu")
-                            await self.close()
-                            os._exit(0)
-                        if own_lock is None:
-                            logging.warning(
-                                "Impossible de relire le message de lock %s; conservation prudente de l'instance.",
-                                self._lock_message_id,
-                            )
-                        else:
-                            try:
-                                await own_lock.edit(content=f"{LOCK_TAG} {self.INSTANCE_ID} {int(time.time())}")
-                            except Exception:
-                                pass
-            except Exception:
-                pass
+                        own_lock = await self._verified_lock(ch)
+                        await own_lock.edit(content=f"{LOCK_TAG} {self.INSTANCE_ID} {int(time.time())}")
+                    else:
+                        await self._suspend_evo("channel_unavailable")
+            except EvoLeadershipLost:
+                await self._suspend_evo("rival_lock")
+                logging.warning("Perte du lock au profit d'une autre instance, fermeture.")
+                await self.close()
+                os._exit(0)
+                return
+            except Exception as exc:
+                await self._suspend_evo("heartbeat_uncertain")
+                logging.debug("Evo heartbeat verification failed type=%s", type(exc).__name__)
             await asyncio.sleep(15)
 
+    async def on_disconnect(self):
+        self._evo_connected = False
+        await self._suspend_evo("disconnect")
+
+    async def on_resumed(self):
+        self._evo_connected = True
+        logging.debug("Evo Discord connection resumed; leadership recheck required")
+
     async def on_ready(self):
+        self._evo_connected = True
         if not self._console_checked:
             await self.ensure_console_channel()
             self._console_checked = True

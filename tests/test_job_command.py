@@ -474,15 +474,17 @@ async def test_clear_console_preserves_persistent_snapshots(job_cog):
     ctx = FakeContext(author)
     persistent = FakeConsoleMessage("===BOTSTATS===\n```json\n{}\n```")
     branding = FakeConsoleMessage("===BOTBRANDING===\n```json\n{}\n```")
+    evo_budget = FakeConsoleMessage("===BOTEVOBUDGET===\n```json\n{}\n```")
     pinned = FakeConsoleMessage("message épinglé", pinned=True)
     transient = FakeConsoleMessage("debug temporaire")
-    channel = FakeConsoleChannel([persistent, branding, pinned, transient])
+    channel = FakeConsoleChannel([persistent, branding, evo_budget, pinned, transient])
     job_cog.get_console_channel = AsyncMock(return_value=channel)
 
     await invoke_clear(job_cog, ctx, "console", "CONFIRMER")
 
     assert persistent.deleted is False
     assert branding.deleted is False
+    assert evo_budget.deleted is False
     assert pinned.deleted is False
     assert transient.deleted is True
     embed = ctx.sent_messages[-1].embed

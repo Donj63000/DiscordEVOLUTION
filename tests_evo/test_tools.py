@@ -8,7 +8,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, patch
 
 from tests_evo.helpers import config, context, entry, Guild, Channel, Member
 from utils.dofus_wiki import WikiDetail
@@ -16,7 +16,6 @@ from utils.evo_config import EvoError
 from utils.evo_equipment import build_index, category_name, equipment_search, exo_candidates
 from utils.evo_safety import bounded_json, clean, output_text, parse_arguments
 from utils.evo_tools import BY_NAME, EvoTools, drop_payload, schemas_for
-from utils.exo_engine import Rune
 from utils.xixou_api import DropSource, ItemEnrichment, monster_record
 
 
@@ -99,6 +98,28 @@ class SafetyTests(unittest.TestCase):
         self.assertFalse(ctx.readable_here(ctx.guild.get_channel(20)))
         self.assertTrue(ctx.readable_here(ctx.guild.get_channel(30)))
         self.assertFalse(ctx.readable_here(Channel(Guild(999), 10)))
+
+    def test_public_channels_allowed_without_an_allowlist(self):
+        ctx = context(config(channel_ids=frozenset()))
+        ctx.check()
+        ctx.channel = ctx.guild.get_channel(30)
+        ctx.check()
+        ctx.channel = ctx.guild.get_channel(20)
+        with self.assertRaisesRegex(EvoError, "salons publics"):
+            ctx.check()
+
+    def test_allowlist_cannot_enable_a_private_channel(self):
+        ctx = context(config(channel_ids=frozenset({20})))
+        ctx.channel = ctx.guild.get_channel(20)
+        with self.assertRaisesRegex(EvoError, "salons publics"):
+            ctx.check()
+
+    def test_console_excluded_even_when_public_and_allowlisted(self):
+        ctx = context()
+        ctx.channel.name = "archives-bot"
+        with patch.dict("os.environ", {"CONSOLE_CHANNEL_NAME": "archives-bot"}, clear=True):
+            with self.assertRaisesRegex(EvoError, "console"):
+                ctx.check()
 
 
 class EquipmentTests(unittest.TestCase):
@@ -200,22 +221,13 @@ class DomainTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_private_exo_denied_publicly(self):
         ctx = context()
+        ctx.bot.get_cog = Mock(side_effect=AssertionError("Atelier privé consulté"))
         result = await self.tools.execute("ma_session_fm", "{}", ctx, {"ma_session_fm"})
-        self.assertIn("confidentialite", result)
+        self.assertIn("erreur", result)
         self.assertNotIn("jets", result)
-
-    async def test_private_exo_owned_only_and_unknown_sink_preserved(self):
-        ctx = context(private=True)
-        state = NS(jets={"fo": 40}, sink=None, journal=[])
-        session = NS(item=NS(name="Objet privé"), state=state, mode="simulation", revision=1, rune=Rune("fo"), p=.01)
-        view = NS(owner_id=2, guild_id=1, retired=False, lock=asyncio.Lock(), session=session)
-        ctx.bot.cogs["ExoCog"] = NS(views={(1, 2): view})
-        result = await self.tools.do_ma_session_fm(ctx)
-        self.assertIsNone(result["puits"])
-        self.assertIn("estimative", result["avertissement"])
-        view.owner_id = 3
-        with self.assertRaises(EvoError):
-            await self.tools.do_ma_session_fm(ctx)
+        self.assertNotIn("ma_session_fm", BY_NAME)
+        self.assertNotIn("ma_session_fm", {tool["name"] for tool in schemas_for("ma session exo")})
+        ctx.bot.get_cog.assert_not_called()
 
     async def test_other_member_data_requires_consent(self):
         ctx = context(cogs={"PlayersCog": NS(initialized=True, persos_data={"3": {"main": "SECRET_CHARACTER"}})})

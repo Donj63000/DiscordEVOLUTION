@@ -7,7 +7,7 @@ import math
 import re
 from urllib.parse import urlsplit
 
-from utils.evo_config import EvoError
+from utils.evo_config import EvoError, resolve_console_channel
 
 _SECRET = re.compile(
     r"sk-[A-Za-z0-9_-]{12,}|mfa\.[A-Za-z0-9_-]{16,}|"
@@ -128,18 +128,22 @@ class ToolContext:
     channel: object
     member: object
     config: object
-    # Une session /exo est privée. Sa divulgation demande un consentement explicite
-    # dans la question et non une décision du LLM.
-    allow_private_fm: bool = False
     sources: set[str] = field(default_factory=set)
 
     def check(self) -> None:
         if self.guild is None or self.guild.id != self.config.guild_id:
             raise EvoError("Evo n'est pas activé sur ce serveur.")
-        if self.channel is None or self.channel.id not in self.config.channel_ids:
+        if self.channel is None or (
+            self.config.channel_ids and self.channel.id not in self.config.channel_ids
+        ):
             raise EvoError("Utilise /evo dans un salon autorisé par le Staff.")
         if getattr(getattr(self.channel, "guild", None), "id", None) != self.guild.id:
             raise EvoError("Salon hors du serveur configuré.")
+        console = resolve_console_channel(self.guild)
+        if console is not None and self.channel.id == console.id:
+            raise EvoError("Evo ne répond pas dans #console. Utilise un salon public.")
+        if not self.channel.permissions_for(self.guild.default_role).view_channel:
+            raise EvoError("Evo répond uniquement dans les salons publics du serveur.")
         member = self.guild.get_member(self.member.id)
         if member is None or getattr(member, "bot", False):
             raise EvoError("Ce membre n'est plus accessible sur le serveur.")

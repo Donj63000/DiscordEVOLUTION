@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import AsyncMock
 import sys
 import os
 
@@ -39,15 +40,19 @@ class FakeChannel:
         self.messages = list(messages or [])
         self.id = channel_id
         self.sender = sender
+        self.name = "console"
         self._counter = max([m.id for m in self.messages], default=0) + 1
 
-    async def history(self, limit=50, oldest_first=False):
-        subset = self.messages[-limit:]
+    async def history(self, limit=50, oldest_first=False, after=None):
+        subset = [message for message in self.messages if after is None or message.id > after.id]
+        if limit is not None:
+            subset = subset[-limit:]
         iterable = subset if oldest_first else list(reversed(subset))
         for message in iterable:
             yield message
 
     async def send(self, content):
+        self._counter = max(self._counter, max([message.id for message in self.messages], default=0) + 1)
         message = FakeMessage(self._counter, self.sender, content)
         self._counter += 1
         self.messages.append(message)
@@ -81,8 +86,13 @@ class RateLimitChannel(FakeChannel):
 
 
 class FakeGuild:
-    def __init__(self, channel):
+    def __init__(self, channel, guild_id=1):
+        self.id = guild_id
         self.text_channels = [channel]
+        channel.guild = self
+
+    def get_channel(self, channel_id):
+        return next((channel for channel in self.text_channels if channel.id == channel_id), None)
 
 
 @pytest.fixture
@@ -239,3 +249,275 @@ async def test_setup_hook_loads_evo_before_slash_adapter_when_enabled(bot, monke
     if evo_enabled:
         assert bot._load_calls.index("evo") < bot._load_calls.index("slash_commands")
     assert synced == [True]
+
+
+def prepare_evo_leadership(bot, monkeypatch):
+    channel = FakeChannel(channel_id=42, sender=bot.user)
+    own = FakeMessage(10, bot.user, f"{main.LOCK_TAG} {bot.INSTANCE_ID} 1700000000")
+    channel.messages.append(own)
+    guild = FakeGuild(channel)
+    cog = SimpleNamespace(config=SimpleNamespace(guild_id=guild.id), suspend=AsyncMock())
+    monkeypatch.setattr(bot, "get_cog", lambda name: cog if name == "EvoCog" else None)
+    monkeypatch.setattr(bot, "get_guild", lambda guild_id: guild if guild_id == guild.id else None)
+    monkeypatch.setattr(bot, "get_channel", lambda channel_id: guild.get_channel(channel_id))
+    monkeypatch.delenv("CHANNEL_CONSOLE_ID", raising=False)
+    monkeypatch.delenv("CHANNEL_CONSOLE", raising=False)
+    monkeypatch.delenv("CONSOLE_CHANNEL_NAME", raising=False)
+    bot._singleton_ready = True
+    bot._evo_connected = True
+    bot._lock_channel_id = channel.id
+    bot._lock_message_id = own.id
+    return channel, own, cog
+
+
+@pytest.mark.asyncio
+async def test_evo_cannot_start_before_singleton_is_ready(bot, monkeypatch):
+    channel, _, cog = prepare_evo_leadership(bot, monkeypatch)
+    channel.fetch_message = AsyncMock()
+    bot._singleton_ready = False
+
+    with pytest.raises(main.EvoError, match="pas encore prête"):
+        await bot.ensure_evo_leadership()
+
+    channel.fetch_message.assert_not_awaited()
+    cog.suspend.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_evo_verifies_latest_lock_again_before_each_operation(bot, monkeypatch):
+    channel, own, cog = prepare_evo_leadership(bot, monkeypatch)
+    await bot.ensure_evo_leadership()
+    assert bot._evo_leadership_known
+    channel.messages.append(FakeMessage(own.id + 1, bot.user, f"{main.LOCK_TAG} rival 1700000001"))
+
+    with pytest.raises(main.EvoError, match="pas vérifiable"):
+        await bot.ensure_evo_leadership()
+
+    assert not bot._evo_leadership_known
+    cog.suspend.assert_awaited_once()
+    assert not asyncio.current_task().cancelling()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["history", "message", "deleted", "malformed"])
+async def test_evo_suspends_on_uncertain_lock_reads(bot, monkeypatch, failure):
+    channel, own, cog = prepare_evo_leadership(bot, monkeypatch)
+    await bot.ensure_evo_leadership()
+    if failure == "history":
+        async def unavailable_history(**kwargs):
+            raise PermissionError("history unavailable")
+            yield
+        monkeypatch.setattr(channel, "history", unavailable_history)
+    elif failure == "message":
+        monkeypatch.setattr(channel, "fetch_message", AsyncMock(side_effect=PermissionError()))
+    elif failure == "deleted":
+        channel.messages.clear()
+    elif failure == "malformed":
+        own.content = f"{main.LOCK_TAG} {bot.INSTANCE_ID} invalid"
+
+    with pytest.raises(main.EvoError):
+        await bot.ensure_evo_leadership()
+
+    assert not bot._evo_leadership_known
+    cog.suspend.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_evo_handover_waits_without_sleep_then_rechecks_lock(bot, monkeypatch):
+    channel, old, _ = prepare_evo_leadership(bot, monkeypatch)
+    old.content = f"{main.LOCK_TAG} previous 1700000000"
+    clock = [100.0]
+    monkeypatch.setattr(main, "time", SimpleNamespace(time=lambda: 1700000001, monotonic=lambda: clock[0]))
+    monkeypatch.setattr(bot, "wait_console_channel", AsyncMock(return_value=channel))
+
+    assert await bot.acquire_leadership()
+    assert bot._evo_resume_at == 225.0
+    with pytest.raises(main.EvoError, match="instance précédente"):
+        await bot.ensure_evo_leadership()
+    clock[0] = 225.0
+    await bot.ensure_evo_leadership()
+    assert bot._evo_leadership_known
+
+    channel.messages.append(FakeMessage(99, bot.user, f"{main.LOCK_TAG} rival 1700000002"))
+    with pytest.raises(main.EvoError, match="pas vérifiable"):
+        await bot.ensure_evo_leadership()
+
+
+@pytest.mark.asyncio
+async def test_evo_disconnect_suspends_and_resume_requires_recovery_delay(bot, monkeypatch):
+    _, _, cog = prepare_evo_leadership(bot, monkeypatch)
+    await bot.ensure_evo_leadership()
+    await bot.on_disconnect()
+    assert not bot._evo_connected
+    assert not bot._evo_leadership_known
+    cog.suspend.assert_awaited_once()
+    with pytest.raises(main.EvoError):
+        await bot.ensure_evo_leadership()
+    await bot.on_resumed()
+    with pytest.raises(main.EvoError, match="instance précédente"):
+        await bot.ensure_evo_leadership()
+
+
+@pytest.mark.asyncio
+async def test_missing_console_allows_classic_bot_but_keeps_evo_suspended(bot, monkeypatch):
+    _, _, cog = prepare_evo_leadership(bot, monkeypatch)
+    bot._lock_channel_id = None
+    bot._lock_message_id = None
+    monkeypatch.setattr(bot, "wait_console_channel", AsyncMock(return_value=None))
+    assert await bot.acquire_leadership()
+    with pytest.raises(main.EvoError):
+        await bot.ensure_evo_leadership()
+    cog.suspend.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lock_acquisition_does_not_treat_unreadable_history_as_empty(bot, monkeypatch):
+    channel = FakeChannel(sender=bot.user)
+    channel.send = AsyncMock()
+    monkeypatch.setattr(bot, "wait_console_channel", AsyncMock(return_value=channel))
+    async def unavailable_history(**kwargs):
+        raise PermissionError("history unavailable")
+        yield
+    monkeypatch.setattr(channel, "history", unavailable_history)
+    with pytest.raises(PermissionError):
+        await bot.acquire_leadership()
+    channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_evo_lock_requires_same_console_as_its_guild_budget(bot, monkeypatch):
+    channel, _, cog = prepare_evo_leadership(bot, monkeypatch)
+    bot._lock_channel_id = 999
+    with pytest.raises(main.EvoError):
+        await bot.ensure_evo_leadership()
+    cog.suspend.assert_awaited_once()
+    bot._lock_channel_id = channel.id
+    bot._evo_resume_at = 0
+    monkeypatch.setenv("CONSOLE_CHANNEL_NAME", "budget-console")
+    channel.name = "budget-console"
+    await bot.ensure_evo_leadership()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_suspends_evo_when_lock_cannot_be_read(bot, monkeypatch):
+    channel, own, cog = prepare_evo_leadership(bot, monkeypatch)
+    monkeypatch.setattr(channel, "fetch_message", AsyncMock(side_effect=PermissionError()))
+
+    async def stop_after_iteration(delay):
+        bot._closed_flag = True
+
+    monkeypatch.setattr(main.asyncio, "sleep", stop_after_iteration)
+    await bot.heartbeat_loop()
+
+    cog.suspend.assert_awaited_once()
+    assert own.edits == []
+    assert bot._close_calls == []
+    assert not bot._evo_leadership_known
+
+
+@pytest.mark.asyncio
+async def test_main_console_resolution_uses_alias_and_evo_target_guild(bot, monkeypatch):
+    channel, _, _ = prepare_evo_leadership(bot, monkeypatch)
+    channel.name = "budget-console"
+    other_channel = FakeChannel(channel_id=43)
+    other_channel.name = "budget-console"
+    other_guild = FakeGuild(other_channel, guild_id=2)
+    bot._connection.guilds = [other_guild, channel.guild]
+    monkeypatch.setenv("EVO_ENABLED", "1")
+    monkeypatch.setenv("CONSOLE_CHANNEL_NAME", "budget-console")
+
+    assert await bot.wait_console_channel(timeout=1) is channel
+    await bot.ensure_console_channel()
+
+
+@pytest.mark.asyncio
+async def test_evo_keeps_its_lock_after_many_regular_console_messages(bot, monkeypatch):
+    channel, own, cog = prepare_evo_leadership(bot, monkeypatch)
+    channel.messages.extend(FakeMessage(own.id + index, bot.user, "snapshot") for index in range(1, 151))
+
+    await bot.ensure_evo_leadership()
+
+    assert bot._lock_scan_message_id == own.id + 150
+    assert bot._evo_leadership_known
+    cog.suspend.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_evo_detects_rival_before_more_than_fifty_regular_messages(bot, monkeypatch):
+    channel, own, cog = prepare_evo_leadership(bot, monkeypatch)
+    channel.messages.append(FakeMessage(own.id + 1, bot.user, f"{main.LOCK_TAG} rival 1700000001"))
+    channel.messages.extend(FakeMessage(own.id + index, bot.user, "snapshot") for index in range(2, 151))
+
+    with pytest.raises(main.EvoError):
+        await bot.ensure_evo_leadership()
+
+    assert bot._lock_scan_message_id is None
+    cog.suspend.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_evo_history_watermark_advances_only_after_complete_success(bot, monkeypatch):
+    channel, own, cog = prepare_evo_leadership(bot, monkeypatch)
+    await bot.ensure_evo_leadership()
+    assert bot._lock_scan_message_id == own.id
+    channel.messages.append(FakeMessage(own.id + 1, bot.user, "snapshot"))
+
+    async def interrupted_history(**kwargs):
+        yield channel.messages[-1]
+        raise PermissionError("second page unavailable")
+
+    original_history = channel.history
+    monkeypatch.setattr(channel, "history", interrupted_history)
+    with pytest.raises(main.EvoError):
+        await bot.ensure_evo_leadership()
+    assert bot._lock_scan_message_id == own.id
+    channel.messages.append(FakeMessage(own.id + 2, bot.user, f"{main.LOCK_TAG} rival 1700000001"))
+    monkeypatch.setattr(channel, "history", original_history)
+    with pytest.raises(main.EvoError):
+        await bot.ensure_evo_leadership()
+    assert bot._lock_scan_message_id == own.id
+    assert cog.suspend.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_acquisition_finds_old_lock_below_hundred_snapshots(bot, monkeypatch):
+    channel, own, _ = prepare_evo_leadership(bot, monkeypatch)
+    own.content = f"{main.LOCK_TAG} previous 1700000000"
+    channel.messages.extend(FakeMessage(own.id + index, bot.user, "snapshot") for index in range(1, 151))
+    monkeypatch.setattr(bot, "wait_console_channel", AsyncMock(return_value=channel))
+
+    assert await bot.acquire_leadership()
+    assert bot._evo_resume_at > main.time.monotonic()
+    with pytest.raises(main.EvoError, match="instance précédente"):
+        await bot.ensure_evo_leadership()
+
+
+@pytest.mark.asyncio
+async def test_startup_resolves_the_only_guild_before_evo_configuration(bot, monkeypatch):
+    channel, _, cog = prepare_evo_leadership(bot, monkeypatch)
+    cog.config = None
+    bot._connection.guilds = [channel.guild]
+    monkeypatch.delenv("EVO_GUILD_ID", raising=False)
+    monkeypatch.setenv("EVO_ENABLED", "1")
+
+    assert bot._evo_guild_id() == channel.guild.id
+    assert await bot.wait_console_channel(timeout=1) is channel
+    await bot.ensure_evo_leadership()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_closes_old_instance_after_its_lock_was_replaced(bot, monkeypatch):
+    channel, own, cog = prepare_evo_leadership(bot, monkeypatch)
+    channel.messages = [FakeMessage(own.id + 1, bot.user, f"{main.LOCK_TAG} rival 1700000001")]
+    missing = main.discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "Unknown message")
+    monkeypatch.setattr(channel, "fetch_message", AsyncMock(side_effect=missing))
+
+    async def stop_after_iteration(delay):
+        bot._closed_flag = True
+
+    monkeypatch.setattr(main.asyncio, "sleep", stop_after_iteration)
+    await bot.heartbeat_loop()
+
+    cog.suspend.assert_awaited_once()
+    assert bot._close_calls == [True]
+    assert bot._exit_calls == [0]

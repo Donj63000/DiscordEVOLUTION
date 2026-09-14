@@ -21,10 +21,13 @@ class DiscordRegistrationTests(unittest.IsolatedAsyncioTestCase):
             names = {cmd.name for cmd in bot.tree.get_commands()}
             self.assertTrue({"evo", "evo-budget", "evo-oublier"} <= names)
             evo = bot.tree.get_command("evo")
-            self.assertEqual([p.name for p in evo.parameters], ["question", "prive"])
+            self.assertEqual([p.name for p in evo.parameters], ["question"])
             self.assertTrue(evo.guild_only)
             self.assertFalse(bot.tree.get_command("evo-budget").default_permissions.administrator)
             self.assertTrue(bot.tree.get_command("evo-budget").default_permissions.manage_guild)
+            budget = bot.tree.get_command("evo-budget")
+            self.assertEqual([p.name for p in budget.parameters], ["initialiser"])
+            self.assertFalse(budget.parameters[0].required)
         finally:
             await bot.close()
 

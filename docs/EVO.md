@@ -1,6 +1,6 @@
 # Evo — assistant conversationnel Evolution
 
-Patch préparé pour l'archive `discordEVO.zip` fournie. Python 3.11 ou plus récent.
+Python 3.11 ou plus récent. Persistance du compteur dans le salon `#console` existant.
 Le code ajoute une IA en lecture seule ; il ne remplace pas les commandes classiques.
 
 ## 1. Ce qui est installé
@@ -17,11 +17,14 @@ Aucun panneau, bouton ou formulaire n'est nécessaire. Exemple :
 Pour continuer sans `/evo`, utiliser **Répondre** sur la dernière réponse publique
 adressée à soi, dans le même salon et dans les 15 minutes. Les messages ordinaires
 du salon et les réponses aux conversations d'un autre membre ne sont pas analysés.
-La simple mention `@Evolution` n'est pas un déclencheur dans ce patch.
+Une mention directe fonctionne également : `@Evolution Où drop cette ressource ?`.
+Elle peut démarrer la première conversation, sans `/evo` préalable. Une mention seule
+reçoit une invitation locale à poser une question, sans génération.
 
-`/evo question:Il me reste combien de puits ? prive:true` consulte son propre atelier
-`/exo` en réponse éphémère. Continuer une discussion privée en répétant `/evo` avec
-`prive:true`, dans le même salon. Les mémoires publique et privée sont séparées.
+Toutes les réponses de conversation sont publiques dans le salon, y compris les
+messages d'erreur. L'option `prive` est retirée. Les ateliers personnels `/exo`
+restent privés et ne sont pas accessibles aux outils d'Evo. La mémoire est séparée
+par serveur, salon et membre. Les mentions de rôle ou `@everyone` ne déclenchent rien.
 
 `/evo-oublier` efface son contexte du bot et annule sa demande en cours, sans
 génération IA. Les messages déjà publiés et les données déjà envoyées au fournisseur
@@ -29,9 +32,12 @@ ne sont pas supprimés par cette commande.
 
 `/evo-budget` est réservé aux membres disposant de « Gérer le serveur ». Il affiche
 le compteur, les réservations en attente, les tokens confirmés et l'activation
-de Xixou, sans appeler le modèle. Aucune remise à zéro du compteur via Discord.
+de Xixou, sans appeler le modèle. `/evo-budget initialiser:true` crée uniquement
+le premier registre, après vérification de son absence. Un registre existant ou
+illisible ne peut pas être remplacé. Les confirmations administratives restent
+éphémères, tout comme celle de `/evo-oublier`.
 
-## 2. Les 17 outils
+## 2. Les 16 outils
 
 | Outil interne | Données utilisées / limites |
 |---|---|
@@ -42,7 +48,6 @@ de Xixou, sans appeler le modèle. Aucune remise à zéro du compteur via Discor
 | `chercher_equipements` | Index d'effets Xixou rapproché du wiki ; 5 résultats maximum. |
 | `comparer_objets` | Fiches de 2 ou 3 équipements, pas de prix inventés. |
 | `candidats_exo` | Heuristique de remontage : nombre de lignes, puis lignes lourdes. |
-| `ma_session_fm` | Uniquement l'atelier `/exo` actif du demandeur, et uniquement en privé. |
 | `guide_fm` | Poids nominaux et limites du moteur existant, sans taux Ankama prétendument certifié. |
 | `guilde` | Nom, description, nombre de membres Discord et salons publics accessibles. |
 | `connaissances_guilde` | Faits publics validés dans `config/evo_knowledge.json`. |
@@ -63,77 +68,70 @@ par Evo est donc volontairement coupée si le bot est connecté à plusieurs gui
 cela évite de présenter les données d'un autre serveur comme celles d'Evolution.
 Les profils du module `ProfilCog` restent cloisonnés par guilde et propriétaire.
 
-## 3. Installation du patch
+## 3. Installation et tests
 
-Depuis la racine du projet correspondant exactement au ZIP :
+Depuis la racine du dépôt à jour :
 
 ```bash
-git switch -c feature/evo-luna
-git apply --check evolution_luna.patch
-git apply evolution_luna.patch
-python -m unittest discover -s tests_evo -v
+pip install -r requirements.txt
+python -m pytest
 ```
 
-Le patch ne modifie pas `requirements.txt` : `aiohttp`, `asyncpg`, `rapidfuzz` et
-`discord.py` sont déjà déclarés. Il emploie les endpoints HTTP officiels Responses
+Evo réutilise `aiohttp`, `rapidfuzz` et `discord.py`, déjà déclarés. Les dépendances
+SQL utilisées par d'autres modules restent installées. Evo emploie les endpoints HTTP officiels Responses
 avec `aiohttp` pour maîtriser les relances, sans dépendre d'une version particulière
 du SDK OpenAI.
 
 Aucune génération OpenAI n'est lancée par ces tests. Les tests d'enregistrement
 Discord n'établissent pas de connexion Discord, mais nécessitent `discord.py`.
-Ils sont explicitement ignorés lorsque ce paquet est absent.
+La suite `tests_evo` est incluse dans la découverte pytest et dans la CI GitHub.
 
 Le modèle est strictement `gpt-5.6-luna`, avec `reasoning.effort=none`. L'alias est
 vérifié et aucun modèle de remplacement n'est choisi si son accès échoue.
 
-## 4. Prérequis indispensable : le registre de budget
+## 4. Registre de budget dans #console
 
-Sur Render, une base **PostgreSQL durable** est obligatoire. Le disque d'un service
-gratuit Render est éphémère : un compteur JSON/SQLite local ne constitue pas une
-protection fiable entre redéploiements.
+Le compteur est sauvegardé dans un message épinglé marqué `===BOTEVOBUDGET===`.
+Le JSON passe en pièce jointe `evo_budget.json` lorsqu'il dépasse la taille d'un
+message. Aucun fichier local et aucune base SQL ne font autorité pour Evo.
 
-Le module utilise `EVO_DATABASE_URL`, ou `DATABASE_URL` si la première variable est
-vide. Il ne change pas les tables des autres fonctions du bot. Deux tables sont
-ajoutées : `evo_budget_buckets` et `evo_budget_reservations`.
+Le salon est résolu dans le serveur choisi, avec la priorité suivante :
+`CHANNEL_CONSOLE_ID`, `CHANNEL_CONSOLE`, `CONSOLE_CHANNEL_NAME`, puis `console`.
+Le nom `CONSOLE_CHANNEL_NAME` des installations existantes est donc réutilisé.
 
-Les éventuels frais de la base ne sont pas inclus dans le budget OpenAI. Vérifier
-les limites et la durée de conservation du plan choisi : le PostgreSQL gratuit
-Render documente notamment une expiration après 30 jours. Une base expirée fait
-arrêter Evo ; elle ne doit pas être recréée vide pour contourner le compteur.
+### Première activation
 
-### Initialisation unique
+1. Mettre `EVO_ENABLED=1` dans Render et déployer le code à jour.
+2. Exécuter `/evo-budget initialiser:true` avec la permission « Gérer le serveur ».
+3. Vérifier `/evo-budget`, puis adresser une question publique au bot.
 
-Renseigner le DSN dans l'environnement, puis exécuter **une seule fois** :
+Le registre doit être accessible et épinglé. Le bot a besoin de lire l'historique,
+d'envoyer des messages et pièces jointes, et de gérer les messages pour l'épinglage.
+L'initialisation ne fait aucun appel OpenAI et refuse un registre existant ou
+illisible. Le démarrage normal ne crée jamais un compteur vide.
 
-```bash
-python -m scripts.evo_init_budget --postgres
-```
+Chaque réservation est sauvegardée et confirmée avant une génération payante.
+Les écritures sont sérialisées dans l'instance ; la mémoire n'est mise à jour
+qu'après confirmation. Le coût maximal reste compté après une erreur du fournisseur.
+Un échec, timeout ou une annulation pendant la sauvegarde impose une relecture
+avant toute nouvelle génération. Un message supprimé ou corrompu suspend Evo ;
+restaurer le registre au lieu de recréer un budget vide.
 
-Cette commande n'appelle pas OpenAI. Elle refuse un registre déjà existant, plutôt
-que de l'écraser. Elle exige les droits SQL de création des deux tables. En
-fonctionnement courant, Evo utilise seulement SELECT, INSERT et UPDATE sur ces
-tables et ne recrée pas un registre disparu.
+Le nettoyage de console conserve le marqueur. Les mois précédents et leurs
+réservations sont conservés ; une réponse tardive est réglée dans son mois d'origine.
+Les écritures trop volumineuses sont refusées sans supprimer la sauvegarde existante.
 
-Sur un service Render gratuit sans shell, on peut utiliser temporairement le build
-suivant, avec `EVO_ENABLED=0` pendant cette initialisation :
+### Une instance payante et reprise
 
-```bash
-pip install -r requirements.txt && python -m scripts.evo_init_budget --postgres
-```
+Evo ne génère rien avant acquisition et vérification du verrou du bot dans
+`#console`. Les contrôles sont refaits avant les écritures et avant la génération.
+La déconnexion, une perte de verrou ou une lecture incertaine suspendent les demandes.
 
-Dès que cette initialisation a réussi, remettre le build habituel
-`pip install -r requirements.txt`, puis activer Evo et redéployer. **Ne pas conserver
-l'initialiseur dans le build ni dans la commande de démarrage** : son refus d'un
-registre existant ferait échouer les builds suivants. Autre possibilité : exécuter
-l'initialiseur depuis un poste pouvant accéder à la base avec son DSN externe.
-
-Ne jamais mettre un DSN ou une clé dans le dépôt, dans une question Discord ou dans
-une capture. Utiliser l'environnement du processus. L'initialiseur n'affiche pas le
-DSN ni le détail brut d'une erreur de connexion.
-
-Conserver les sauvegardes du registre. Restaurer une sauvegarde trop ancienne,
-supprimer les tables ou changer de base ferait perdre des dépenses enregistrées :
-aucun compteur local ne peut garantir la facture après cette intervention.
+Si une ancienne instance est détectée au déploiement, Evo attend 125 secondes
+(fenêtre maximale de traitement et heartbeat), revérifie le verrou puis restaure
+le compteur. Les commandes classiques restent disponibles pendant cette attente.
+Un snapshot Discord ne fournit pas de transaction distribuée entre plusieurs
+instances actives : l'exploitation prévue utilise une seule instance payante.
 
 ## 5. Variables Render
 
@@ -142,11 +140,10 @@ La clé `OPENAI_API_KEY` existante est réutilisée. Ne pas la recopier dans le 
 ```dotenv
 EVO_ENABLED=1
 EVO_MODEL=gpt-5.6-luna
-EVO_GUILD_ID=REMPLACER_PAR_ID_DU_SERVEUR
-EVO_CHANNEL_IDS=REMPLACER_PAR_ID_DU_SALON
-
-# Renseigner le DSN dans Render, ou utiliser DATABASE_URL déjà configurée.
-EVO_DATABASE_URL=REMPLACER_PAR_DSN_POSTGRESQL
+# Facultatif si le bot appartient à un seul serveur.
+EVO_GUILD_ID=
+# Vide : tous les salons textuels publics, sauf #console.
+EVO_CHANNEL_IDS=
 
 EVO_MONTHLY_USD=2.00
 EVO_DAILY_USD=0.12
@@ -168,9 +165,10 @@ ENABLE_AI_COMMANDS=0
 EVO_ALLOW_LEGACY_AI=0
 ```
 
-Remplacer les valeurs `REMPLACER_...` : elles ne sont pas des identifiants valides.
-Plusieurs salons : IDs séparés par des virgules. Seuls les salons textuels de la
-guilde configurée sont acceptés ; MP, threads et forums sont exclus de cette V1.
+Si le bot appartient à plusieurs serveurs, renseigner `EVO_GUILD_ID`. Pour limiter
+Evo à certains salons publics, renseigner leurs IDs séparés par des virgules dans
+`EVO_CHANNEL_IDS`. Cette liste n'autorise jamais un salon privé ou `#console`.
+Les MP, threads et forums sont exclus de cette V1.
 
 La politique des anciennes IA est modifiée de façon explicite : tant que
 `EVO_ENABLED=1`, les fournisseurs gérés par `ai_service_enabled` restent désactivés
@@ -212,8 +210,9 @@ Avant chaque génération :
 2. `/responses/input_tokens` compte l'entrée complète, y compris instructions et
    schémas des outils ; pas d'approximation « caractères / 4 ».
 3. Le coût maximal de l'entrée comptée (+64 tokens de marge technique) et de toute
-   la sortie autorisée est réservé atomiquement.
-4. Seulement après le commit, le bot envoie `/responses`.
+   la sortie autorisée est réservé sous verrou local puis sauvegardé dans `#console`.
+4. Seulement après confirmation de la sauvegarde et nouvelle vérification du
+   leadership, le bot envoie `/responses`.
 5. L'usage retourné ajuste la réservation ; une anomalie supérieure au maximum
    prévu bloque le mois pour contrôle.
 
@@ -231,7 +230,7 @@ agent de fond, aucun outil OpenAI hébergé payant. Si le comptage préalable es
 indisponible, la génération est refusée.
 
 Une anomalie de comptage, des appels déjà en vol à une frontière de mois, une
-modification tarifaire ou une intervention sur la base empêchent de promettre un
+modification tarifaire ou une intervention sur le registre empêchent de promettre un
 plafond de facture au centime près. Ajouter une limite de dépense sur un **projet
 OpenAI dédié**, désactiver la recharge automatique si elle n'est pas souhaitée, et
 surveiller le tableau de facturation. Une simple alerte de budget ne suffit pas ;
@@ -273,7 +272,8 @@ messages supprimés, logs de modération, historique de présence ou statistique
 globales pouvant agréger des salons privés.
 
 Pour le résumé du salon, ajouter uniquement les salons convenus dans
-`EVO_HISTORY_CHANNEL_IDS`, qui doit être un sous-ensemble de `EVO_CHANNEL_IDS`.
+`EVO_HISTORY_CHANNEL_IDS`, qui doit être un sous-ensemble de `EVO_CHANNEL_IDS`
+lorsque cette restriction supplémentaire est renseignée.
 L'outil ne lit que le salon courant et revérifie les permissions de lecture de
 l'historique pour le demandeur et le bot. Les sources d'un autre salon privé ne
 sont pas recopiées dans une réponse publique.
@@ -282,15 +282,15 @@ sont pas recopiées dans une réponse publique.
 
 > Evo est un assistant IA. Tes questions, le contexte court de ta discussion avec
 > lui et les résultats nécessaires des outils sont transmis à OpenAI. Ne lui envoie
-> pas de secrets ni d'informations sensibles. Les réponses sont publiques sauf
-> `prive:true`. `/evo-oublier` efface son contexte dans le bot. La lecture de
+> pas de secrets ni d'informations sensibles. Toutes les réponses sont publiques.
+> `/evo-oublier` efface son contexte dans le bot. La lecture de
 > l'historique n'est possible que dans les salons expressément annoncés par le Staff.
 
 `store=false` est utilisé pour les Responses. Ce réglage **ne constitue pas une
 garantie de zéro conservation chez OpenAI** ; les politiques de données et les
 éventuels journaux de sécurité du fournisseur restent distincts. Les logs ajoutés
-par ce patch ne contiennent ni texte de conversation, ni clé, ni DSN. Le registre
-SQL conserve des coûts et des identifiants techniques ; les membres y sont
+par Evo ne contiennent ni texte de conversation ni clé. Le registre dans `#console`
+conserve des coûts et des identifiants techniques ; les membres y sont
 pseudonymisés par hachage, ce qui ne doit pas être présenté comme une anonymisation
 irréversible. Les anciens modules du bot conservent leurs propres politiques.
 
@@ -320,25 +320,32 @@ Commencer dans un seul salon avec peu de membres et conserver les plafonds par d
 
 | Essai | Résultat attendu |
 |---|---|
+| `/evo-budget initialiser:true` en Staff, registre absent | Premier message épinglé créé, aucun appel OpenAI. |
+| Répéter l'initialisation | Refus de remplacer le registre. |
 | `/evo-budget` en Staff | Compteur lisible, pas de génération ni remise à zéro. |
 | La même commande sans permission | Accès refusé. |
 | `/evo question:salut` | Réponse locale, aucune consommation de génération. |
+| Mentionner le bot avec une question dès la première conversation | Réponse publique dans le salon. |
+| Mentionner uniquement le bot | Invitation publique à poser une question, sans génération. |
+| Répondre à Evo en le mentionnant aussi | Une seule réponse. |
+| Mentionner Evo dans un salon privé ou `#console` | Aucun traitement conversationnel. |
 | Demander le drop d'une ressource connue | Source exacte ; comparer avec `/objet`. |
 | Répondre « et avec 600 PP ? » | Même ressource, nouveau calcul PP. |
 | Demander une coiffe terre niveau 120 | Critères et limites explicites, uniquement objets présents. |
 | Demander le plus simple à exo PA | Heuristique de remontage ; pas de probabilité inventée. |
-| Demander sa session FM en public | Invitation à passer `prive:true`, aucun détail privé affiché. |
+| Demander sa session FM | Invitation à utiliser `/exo`, aucun détail privé consulté. |
 | Demander qui exerce un métier | Membres actuels déclarés uniquement, si opt-in activé. |
 | Demander un résumé dans un salon non autorisé | Refus de lire son historique. |
 | Un autre membre répond au message d'Evo | Aucune reprise de la mémoire du premier membre. |
 | Demander un rôle ou une sanction | Aucune action ; explication/commande manuelle éventuelle. |
 | `/evo-oublier`, puis question de suivi | Ancien contexte absent. |
 | Redémarrer Render, consulter `/evo-budget` | Dépenses inchangées ; contexte conversationnel volatil perdu. |
+| Relancer avec un verrou d'ancienne instance | Suspension pendant 125 secondes, puis contrôle et restauration. |
 
 Ne pas tester le plafond en le remplissant réellement de requêtes payantes : les
 tests locaux de concurrence, doublon, erreur et limite simulent ces situations.
-Pour vérifier PostgreSQL, utiliser une base de test distincte, jamais supprimer
-le registre de production.
+Les tests du registre utilisent un faux salon Discord pour les pertes et corruptions.
+Ne jamais supprimer le registre de production pour ces essais.
 
 Désactivation : `EVO_ENABLED=0`, conserver `ENABLE_AI_COMMANDS=0`, redéployer et
 resynchroniser les commandes. Garder le registre pour toute réactivation du même
@@ -348,7 +355,8 @@ mois. Une demande déjà envoyée à OpenAI ne peut pas être « dé-facturée �
 
 `evo.py` : commandes, suivi par réponse Discord, permissions, concurrence et mémoire.
 `utils/evo_agent.py` : boucle Responses/function calling, comptage et transport bornés.
-`utils/evo_budget.py` : registre PostgreSQL, transactions, réservations et SQLite local.
+`utils/evo_budget.py` : compteurs, réservations et état confirmé sous verrou local.
+`utils/evo_budget_store.py` : sauvegarde stricte et restauration depuis `#console`.
 `utils/evo_tools.py` : adaptateurs métier en lecture seule.
 `utils/evo_equipment.py` : index et classements déterministes.
 `utils/evo_safety.py` : schémas, bornes, sources, redaction et permissions.
@@ -357,15 +365,9 @@ mois. Une demande déjà envoyée à OpenAI ne peut pas être « dé-facturée �
 `main.py` et `utils/command_policy.py` : chargement natif et séparation des anciennes IA.
 `tests_evo/` : tests hors ligne dédiés ; `docs/EVO_VALIDATION.md` décrit ce qui a été vérifié.
 
-Pour développer localement, hors Render uniquement :
-
-```bash
-python -m scripts.evo_init_budget /chemin/absolu/evo.sqlite3
-```
-
-Configurer ensuite `EVO_SQLITE_PATH` avec ce fichier existant, et laisser les DSN
-PostgreSQL vides. Le fichier ne doit pas être supprimé pour regagner du budget.
-Ce mode sert aux essais ; la production Render utilise PostgreSQL.
+Les tests locaux utilisent un faux salon Discord et des transports OpenAI simulés.
+Ils n'ont besoin ni d'une base SQL ni d'une clé réseau réelle. Une exécution connectée
+du bot doit utiliser son propre serveur de test pour ne pas concurrencer Render.
 
 ## Références techniques consultées
 
