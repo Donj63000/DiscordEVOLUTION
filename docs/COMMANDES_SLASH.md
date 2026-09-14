@@ -5,6 +5,17 @@
 > restent historiques ; les résultats du nouveau correctif figurent dans
 > [ACTIVITES-VALIDATION.md](ACTIVITES-VALIDATION.md).
 
+## Ajout : dossiers de modération `/enquete`
+
+Le correctif pour **DiscordEVOLUTION-main (10).zip** ajoute quatre commandes natives :
+`/enquete`, `/enquete-statut`, `/enquete-annuler` et `/enquete-purger`.
+Elles sont chargées avant le catalogue slash et classées dans l'aide Staff.
+Aucune commande existante n'est renommée ni retirée.
+
+Installation, permissions, confidentialité, options, limites et tests :
+[guide des enquêtes de modération](ENQUETE.md).
+Les chiffres d'inventaire historiques ci-dessous ne constituent pas le nouveau total.
+
 ## Nettoyage ciblé du 13 septembre 2026
 
 Je retire uniquement deux accès slash supplémentaires :

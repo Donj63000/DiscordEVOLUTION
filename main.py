@@ -146,6 +146,7 @@ class EvoBot(commands.Bot):
             "help",
             "welcome",
             "member_guard",
+            "enquete",
             "calcul",
             "dofus_wiki",
             "exo",
