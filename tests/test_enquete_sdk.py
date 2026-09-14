@@ -37,7 +37,10 @@ class RealSDKTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(options["contexte"]["min_value"], 0)
                     self.assertEqual(options["contexte"]["max_value"], 10)
                     self.assertEqual({c["value"] for c in options["destination"]["choices"]},
-                                     {"staff", "console", "les-deux"})
+                                     {"ici", "staff", "console", "les-deux"})
+                    destination = next(p for p in cog.enquete.parameters if p.name == "destination")
+                    self.assertEqual(destination.default, "ici")
+                    self.assertFalse(options["destination"].get("required", False))
                     self.assertEqual(int(schema["default_member_permissions"]), discord.Permissions(manage_guild=True).value)
                     self.assertEqual(len(options), 9)
                     from slash_commands import SlashCommandsCog

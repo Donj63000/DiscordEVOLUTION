@@ -5,6 +5,7 @@ Le vrai schéma SDK est vérifié séparément dans test_enquete_sdk.py.
 """
 import asyncio
 import importlib.util
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -13,6 +14,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from utils.enquete_core import Config, EnqueteError, Receipts, ReportMeta, Window
+from test_enquete_service import Guild, DEST, TARGET
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -195,6 +197,71 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             path.write_text("rapport synthétique")
             return [path]
         return scope, collector, export, channel
+
+    def launch_interaction(self):
+        guild = Guild()
+        requester = MOD.discord.Member()
+        requester.__dict__.update(vars(guild.members[1]))
+        guild.members[1] = requester
+        interaction = NS(
+            guild=guild, guild_id=guild.id, channel_id=DEST, user=requester,
+            is_expired=lambda: False,
+            response=NS(defer=AsyncMock(), is_done=lambda: True, send_message=AsyncMock()),
+            edit_original_response=AsyncMock(),
+        )
+        self.cog.jobs.clear()
+        self.cog.busy = False
+        self.bot.intents = NS(members=True, message_content=True)
+        channel = guild.channels[0]
+        channel.send = AsyncMock(return_value=NS(id=10, edit=AsyncMock(), delete=AsyncMock()))
+        return interaction, channel
+
+    async def test_default_launch_sends_progress_and_report_to_current_channel_without_env(self):
+        interaction, channel = self.launch_interaction()
+        collector = NS(collect=AsyncMock(), sources={}, visited_messages=7)
+
+        async def export(work, meta, cfg, *, file_limit):
+            path = work.path.parent / "rapport.txt"
+            path.write_text("Rapport de test", encoding="utf-8")
+            return [path]
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(MOD, "Collector", return_value=collector), \
+             patch.object(MOD, "build_report", side_effect=export):
+            await self.cog.enquete(interaction, str(TARGET))
+            self.assertEqual(len(self.cog.jobs), 1)
+            job = next(iter(self.cog.jobs.values()))
+            await job.task
+        self.assertEqual(channel.send.await_count, 2)
+        self.assertIsNone(channel.send.await_args_list[0].kwargs["file"])
+        self.assertIsNotNone(channel.send.await_args_list[1].kwargs["file"])
+        confirmation = interaction.edit_original_response.await_args.kwargs["content"]
+        self.assertIn(f"<#{DEST}>", confirmation)
+        self.assertIn("publié", self.cog.receipts.get(job.id, interaction.guild_id)["status"])
+        self.assertEqual({r["cid"] for r in self.cog.receipts.deliveries(job.id)}, {DEST})
+
+    async def test_current_public_channel_returns_private_error_without_starting(self):
+        interaction, channel = self.launch_interaction()
+        channel.visible.add(interaction.guild.id)
+        with patch.dict(os.environ, {}, clear=True), patch.object(self.cog, "_run") as run:
+            await self.cog.enquete(interaction, str(TARGET))
+        run.assert_not_called()
+        channel.send.assert_not_awaited()
+        self.assertFalse(self.cog.busy)
+        self.assertEqual(self.cog.jobs, {})
+        self.assertIn("@everyone", interaction.edit_original_response.await_args.kwargs["content"])
+        self.assertTrue(interaction.response.defer.await_args.kwargs["ephemeral"])
+
+    async def test_direct_message_launch_is_rejected(self):
+        interaction, channel = self.launch_interaction()
+        interaction.guild = None
+        with patch.dict(os.environ, {}, clear=True), patch.object(self.cog, "_run") as run:
+            await self.cog.enquete(interaction, str(TARGET))
+        run.assert_not_called()
+        channel.send.assert_not_awaited()
+        interaction.response.defer.assert_not_awaited()
+        self.assertIn("uniquement dans le serveur",
+                      interaction.edit_original_response.await_args.kwargs["content"])
 
     async def test_success_cleans_temporary_data_and_revalidates(self):
         scope, collector, export, channel = self.execution_fakes()

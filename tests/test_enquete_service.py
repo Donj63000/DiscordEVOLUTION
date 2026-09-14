@@ -181,7 +181,8 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.guild = Guild()
         self.cfg = Config(staff_channel=DEST)
-        self.scope = AccessScope(self.guild, self.guild.me, REQUESTER, self.cfg, "staff")
+        self.scope = AccessScope(self.guild, self.guild.me, REQUESTER, self.cfg, "ici",
+                                 current_channel_id=DEST)
         await self.scope.refresh()
         self.scope.bind_target(TARGET)
         self.dest, self.source = self.guild.channels[:2]
@@ -191,8 +192,43 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({m.id for m in self.scope.readers}, {REQUESTER, READER})
 
     async def test_missing_destination_never_guesses_name(self):
-        with self.assertRaises(EnqueteError):
+        with self.assertRaisesRegex(EnqueteError, "destination:ici"):
             AccessScope(self.guild, self.guild.me, REQUESTER, Config(), "staff")
+
+    async def test_current_channel_without_config_and_with_configured_destinations(self):
+        for cfg in (Config(), Config(staff_channel=SOURCE, console_channel=SOURCE2)):
+            scope = AccessScope(self.guild, self.guild.me, REQUESTER, cfg, "ici",
+                                current_channel_id=DEST)
+            await scope.refresh()
+            scope.bind_target(TARGET)
+            self.assertEqual(scope.destination_ids, [DEST])
+            self.assertEqual(scope.destinations, [self.dest])
+
+    async def test_current_channel_missing_or_not_text_never_falls_back(self):
+        with self.assertRaisesRegex(EnqueteError, "salon textuel"):
+            AccessScope(self.guild, self.guild.me, REQUESTER, self.cfg, "ici")
+        for kind in (5, 10, 11, 12, 2, 15):
+            with self.subTest(kind=kind):
+                self.source.type = NS(value=kind)
+                scope = AccessScope(self.guild, self.guild.me, REQUESTER, self.cfg, "ici",
+                                    current_channel_id=SOURCE)
+                with self.assertRaisesRegex(EnqueteError, "textuel ordinaire"):
+                    await scope.refresh()
+        scope = AccessScope(self.guild, self.guild.me, REQUESTER, self.cfg, "ici",
+                            current_channel_id=999)
+        with self.assertRaisesRegex(EnqueteError, "textuel ordinaire"):
+            await scope.refresh()
+
+    async def test_explicit_destinations_ignore_current_channel(self):
+        console = Channel(self.guild, 88, "console", visible=[BOT, REQUESTER, READER])
+        self.guild.channels.append(console)
+        cfg = replace(self.cfg, console_channel=88)
+        for destination, expected in (("staff", [DEST]), ("console", [88]),
+                                      ("les-deux", [DEST, 88])):
+            scope = AccessScope(self.guild, self.guild.me, REQUESTER, cfg, destination,
+                                current_channel_id=SOURCE)
+            await scope.refresh()
+            self.assertEqual(scope.destination_ids, expected)
 
     async def test_public_destination_rejected(self):
         self.dest.visible.add(GID)

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import time
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -19,6 +20,8 @@ from utils.enquete_core import (
     Alias, Config, EnqueteError, MARKER, Matcher, Record, ReportMeta, Window, Workspace,
     line, normalise, parse_target_id, snowflake_at, stamp,
 )
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -96,16 +99,22 @@ async def as_list(iterator):
 
 class AccessScope:
     """La diffusion n'élargit pas l'accès : chaque lecteur doit pouvoir lire la source."""
-    def __init__(self, guild, bot_member, requester_id: int, cfg: Config, destination: str):
+    def __init__(self, guild, bot_member, requester_id: int, cfg: Config, destination: str,
+                 *, current_channel_id: int | None = None):
         self.guild, self.bot_member, self.requester_id, self.cfg = guild, bot_member, requester_id, cfg
-        if destination not in {"staff", "console", "les-deux"}:
+        if destination not in {"ici", "staff", "console", "les-deux"}:
             raise EnqueteError("Destination invalide.")
-        ids = ([cfg.staff_channel] if destination == "staff" else
+        ids = ([current_channel_id] if destination == "ici" else
+               [cfg.staff_channel] if destination == "staff" else
                [cfg.console_channel] if destination == "console" else
                [cfg.staff_channel, cfg.console_channel])
+        log.debug("Destination enquête mode=%s salons=%s", destination, ids)
         if not all(ids):
+            if destination == "ici":
+                raise EnqueteError("Lance /enquete dans un salon textuel privé du serveur.")
             raise EnqueteError(
-                "Configure ENQUETE_STAFF_CHANNEL_ID et/ou ENQUETE_CONSOLE_CHANNEL_ID "
+                "Utilise destination:ici depuis un salon staff privé, ou configure "
+                "ENQUETE_STAFF_CHANNEL_ID et/ou ENQUETE_CONSOLE_CHANNEL_ID "
                 "(CHANNEL_CONSOLE_ID est accepté pour la console). Aucun salon n'est deviné par son nom."
             )
         self.destination_ids = list(dict.fromkeys(ids))

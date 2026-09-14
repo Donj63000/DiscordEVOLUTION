@@ -224,7 +224,7 @@ class EnqueteCog(commands.Cog):
         aliases="Variantes connues séparées par des virgules : illun, ancien-pseudo.",
         depuis="Début inclus : JJ/MM/AAAA ou AAAA-MM-JJ. Vide : historique disponible configuré.",
         jusqua="Dernier jour inclus, heure de Paris. Vide : début de la collecte.",
-        destination="Rapport dans Général-Staff, console, ou les deux (salons configurés par ID).",
+        destination="ici : salon courant (par défaut) ; staff, console ou les-deux : salons configurés.",
         contexte="Nombre de messages voisins avant/après chaque résultat (0 à 10).",
         approximatif="Inclure les abréviations/typos possibles, clairement signalées comme des pistes.",
         reactions="Rechercher aussi ses réactions encore présentes : beaucoup plus lent.",
@@ -236,7 +236,7 @@ class EnqueteCog(commands.Cog):
         aliases: app_commands.Range[str, 0, 2000] = "",
         depuis: app_commands.Range[str, 0, 10] = "",
         jusqua: app_commands.Range[str, 0, 10] = "",
-        destination: Literal["staff", "console", "les-deux"] = "staff",
+        destination: Literal["ici", "staff", "console", "les-deux"] = "ici",
         contexte: app_commands.Range[int, 0, 10] = 3,
         approximatif: bool = True,
         reactions: bool = False,
@@ -264,7 +264,10 @@ class EnqueteCog(commands.Cog):
             window = Window.parse(depuis, jusqua, default_days=cfg.default_days)
             if not 0 <= contexte <= 10:
                 raise EnqueteError("Le contexte doit être compris entre 0 et 10.")
-            scope = AccessScope(interaction.guild, interaction.guild.me, interaction.user.id, cfg, destination)
+            scope = AccessScope(
+                interaction.guild, interaction.guild.me, interaction.user.id, cfg, destination,
+                current_channel_id=interaction.channel_id,
+            )
             async with asyncio.timeout(180):
                 await scope.refresh()
             target_id, member = resolve_target(pseudo, scope.members)
@@ -289,8 +292,9 @@ class EnqueteCog(commands.Cog):
             self.last_started[job.guild_id] = time.monotonic()
             job.task = asyncio.create_task(self._run(job, scope, meta, cfg), name=f"enquete-{job.id}")
             started = True
+            destination_mentions = ", ".join(f"<#{cid}>" for cid in scope.destination_ids)
             await self._private(
-                interaction, f"Dossier `{job.id}` lancé. Le résultat sera envoyé dans le(s) salon(s) staff configuré(s).\n"
+                interaction, f"Dossier `{job.id}` lancé. Le résultat sera envoyé dans {destination_mentions}.\n"
                 f"`/enquete-statut identifiant:{job.id}` — `/enquete-annuler identifiant:{job.id}`.\n"
                 "Aucun MP ni ping n'est envoyé à la personne. Les limites de collecte seront indiquées dans la synthèse.",
             )

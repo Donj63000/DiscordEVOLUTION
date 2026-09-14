@@ -65,7 +65,19 @@ Le fuseau IANA `Europe/Paris` doit être disponible. Sur un système sans base d
 fuseaux, installer le paquet `tzdata` dans cet environnement avant le démarrage.
 Aucune clé d'IA ni service externe supplémentaire n'est utilisé.
 
-### Configuration minimale dans votre vrai `.env`
+### Salon courant et configuration dans votre vrai `.env`
+
+Par défaut, `/enquete pseudo:...` publie le suivi et le rapport dans le salon
+où la commande est lancée (`destination:ici`). Aucun identifiant de destination
+n'est nécessaire sur Render ni dans le `.env`. Lancer la commande dans Général-staff
+permet donc d'y recevoir le dossier, si ses permissions passent les contrôles.
+Le salon doit être textuel ordinaire, privé et accessible uniquement aux comptes
+autorisés ; la cible ne doit pas pouvoir lire le rapport. Les fils, salons
+d'annonces et messages privés ne sont pas acceptés. Aucun autre salon n'est
+choisi automatiquement en cas de refus.
+
+Les identifiants de destination ci-dessous servent uniquement aux choix explicites
+`staff`, `console` et `les-deux`. Les intents et autorisations restent nécessaires.
 
 Les chaînes `REMPLACER_...` ci-dessous sont des repères, **pas des valeurs valides**.
 Dans Discord, activer le mode développeur et copier les identifiants des salons
@@ -99,6 +111,8 @@ Les indicateurs du `.env` seuls ne donnent pas l'autorisation côté Discord [1]
 La présence n'est pas requise et n'est pas collectée.
 
 Redémarrer ensuite le bot et laisser sa synchronisation slash habituelle agir.
+Après déploiement de cette mise à jour, synchroniser les commandes slash pour
+afficher `ici` dans les choix de destination.
 Le réglage existant `SYNC_SLASH_GUILD_ID` peut limiter la synchronisation au serveur
 de test. Le patch n'exécute aucune synchronisation distante pendant l'installation
 ou les tests.
@@ -125,6 +139,7 @@ d'une vraie commande slash, pas d'une commande préfixée `!enquete`.
 
 ```text
 /enquete pseudo:coca-cola
+/enquete pseudo:coca-cola destination:ici
 /enquete pseudo:Illunerah aliases:illun,illuner destination:staff
 /enquete pseudo:Illunerah aliases:illun contexte:5 approximatif:True
 /enquete pseudo:Illunerah depuis:01/08/2026 jusqua:31/08/2026
@@ -146,7 +161,7 @@ global avec `fetch_user` et ne cherche pas de compte sur d'autres serveurs.
 | `aliases` | aucun | Au plus 32 variantes manuelles, séparées par virgules, points-virgules ou retours à la ligne. |
 | `depuis` | historique disponible | Premier jour inclus, format JJ/MM/AAAA ou AAAA-MM-JJ. |
 | `jusqua` | démarrage de la collecte | Dernier jour inclus, en heure de Paris, plafonné à l'instant de départ. |
-| `destination` | `staff` | `staff`, `console`, ou `les-deux`. Les deux reçoivent le dossier entier. |
+| `destination` | `ici` | `ici` : salon courant, sans configuration d'ID. `staff`, `console` ou `les-deux` : salons configurés ; les deux reçoivent le dossier entier. |
 | `contexte` | `3` | De 0 à 10 messages voisins de chaque côté ; les originaux des réponses restent joints s'ils sont disponibles. |
 | `approximatif` | `True` | Ajouter les abréviations et petites fautes possibles, marquées comme pistes. |
 | `reactions` | `False` | Vérifier également les réactions de la cible encore présentes ; plus lent. |
