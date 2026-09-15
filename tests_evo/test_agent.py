@@ -37,7 +37,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(result_items[0]["output"])["nom"], "Evolution Test")
         self.assertEqual(payload["reasoning"]["effort"], "none")
         self.assertFalse(payload["store"])
-        self.assertIn("Réponse publique", payload["instructions"])
+        self.assertIn("Réponse dans le salon courant", payload["instructions"])
         self.assertTrue(all(t["type"] == "function" for t in payload["tools"]))
 
     async def test_question_clarification_needs_only_one_generation(self):
@@ -123,13 +123,37 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(marker, self.transport.calls[0]["instructions"])
         self.assertIn(marker, json.dumps(self.transport.calls[0]["input"]))
 
-    async def test_private_channel_rejected_before_network(self):
-        agent = self.agent([])
+    async def test_accessible_staff_channel_can_generate_in_its_own_context(self):
+        agent = self.agent([
+            response([function("guilde", {})]), answer("Discussion dans le salon Staff.")])
         ctx = context(replace(self.config, channel_ids=frozenset()))
         ctx.channel = ctx.guild.get_channel(20)
-        with self.assertRaises(EvoError):
-            await agent.answer(ctx, "Question guilde", 113)
-        self.assertEqual(self.transport.calls, [])
+        result = await agent.answer(ctx, "Question guilde", 113)
+        self.assertIn("Staff", result)
+        self.assertEqual(len(self.transport.calls), 2)
+        self.assertIn((ctx.guild.id, ctx.channel.id, ctx.member.id), agent.sessions.items)
+
+    async def test_inaccessible_staff_channel_rejected_before_network(self):
+        for member_id in (2, 99):
+            with self.subTest(member_id=member_id):
+                agent = self.agent([])
+                ctx = context(replace(self.config, channel_ids=frozenset()))
+                ctx.channel = ctx.guild.get_channel(20)
+                ctx.channel.denied.add(member_id)
+                with self.assertRaisesRegex(EvoError, "Permission"):
+                    await agent.answer(ctx, "Question guilde", 113)
+                self.assertEqual(self.transport.calls, [])
+
+    async def test_staff_memory_never_enters_a_different_public_channel(self):
+        agent = self.agent([
+            response([function("guilde", {}, "staff")]), answer("CONTEXTE_STAFF_UNIQUEMENT"),
+            response([function("guilde", {}, "public")]), answer("Discussion publique.")])
+        ctx = context(replace(self.config, channel_ids=frozenset()))
+        ctx.channel = ctx.guild.get_channel(20)
+        await agent.answer(ctx, "Question guilde Staff", 116)
+        ctx.channel = ctx.guild.get_channel(30)
+        await agent.answer(ctx, "Question guilde publique", 117)
+        self.assertNotIn("CONTEXTE_STAFF_UNIQUEMENT", json.dumps(self.transport.calls[2]))
 
     async def test_leadership_loss_after_reservation_prevents_generation(self):
         agent = self.agent([])

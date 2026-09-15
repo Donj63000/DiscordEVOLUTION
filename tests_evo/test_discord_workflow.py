@@ -143,6 +143,62 @@ class DiscordWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.agent.answer.await_args.args[1], "Quelles activités sont prévues ?")
         message.reply.assert_awaited_once()
 
+    async def test_staff_slash_response_is_visible_in_the_current_channel(self):
+        self.permissions.public = False
+        self.channel.name = "staff"
+        self.ctx.member.guild_permissions.manage_guild = True
+        interaction = self.interaction(411, 1411)
+
+        await self.cog.evo.callback(self.cog, interaction, "Quelles activités sont prévues ?")
+
+        self.agent.answer.assert_awaited_once()
+        self.assertIs(self.agent.answer.await_args.args[0].channel, self.channel)
+        interaction.response.defer.assert_awaited_once_with(thinking=True)
+        interaction.response.send_message.assert_not_awaited()
+        interaction.edit_original_response.assert_awaited_once()
+        self.assertEqual(
+            interaction.edit_original_response.await_args.kwargs["content"],
+            "Voici les activités disponibles.",
+        )
+        self.assertNotIn("ephemeral", interaction.edit_original_response.await_args.kwargs)
+
+    async def test_staff_first_mention_initializes_agent_and_accepts_own_followup(self):
+        self.permissions.public = False
+        self.channel.name = "staff"
+        self.ctx.member.guild_permissions.manage_guild = True
+        self.cog.agent = None
+        self.cog.budget = None
+        message = self.message(412, content="<@99> Quelles activités sont prévues ?")
+        with (
+            patch("evo.ConsoleBudgetStore"),
+            patch("evo.Budget", return_value=self.budget),
+            patch("evo.MeteredModel"),
+            patch("evo.EvoAgent", return_value=self.agent),
+        ):
+            await self.cog.on_message(message)
+
+        self.budget.open.assert_awaited_once()
+        self.agent.answer.assert_awaited_once()
+        message.reply.assert_awaited_once_with(
+            "Voici les activités disponibles.", mention_author=False,
+            allowed_mentions=NO_MENTIONS, suppress_embeds=True,
+        )
+
+        other_member = self.message(413, 1412, member=self.ctx.guild.get_member(3))
+        await self.cog.on_message(other_member)
+        other_member.reply.assert_not_awaited()
+
+        followup = self.message(414, 1412, content="Et demain ?")
+        await self.cog.on_message(followup)
+        self.assertEqual(self.agent.answer.await_count, 2)
+        self.assertEqual(self.agent.answer.await_args.args[1], "Et demain ?")
+        followup.reply.assert_awaited_once_with(
+            "Voici les activités disponibles.", mention_author=False,
+            allowed_mentions=NO_MENTIONS, suppress_embeds=True,
+        )
+        key = (self.ctx.guild.id, self.channel.id, self.ctx.member.id)
+        self.assertEqual(self.sessions.items[key].last_message_id, 1414)
+
     async def test_bare_mention_invites_without_budget_or_model_and_allows_reply(self):
         self.cog.agent = None
         self.cog.budget = None
@@ -171,7 +227,7 @@ class DiscordWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.agent.answer.await_args.args[1], "Et la suivante ?")
         followup.reply.assert_awaited_once()
 
-    async def test_ambient_role_bot_webhook_and_private_messages_do_not_trigger(self):
+    async def test_ambient_role_bot_webhook_and_direct_messages_do_not_trigger(self):
         messages = [
             self.message(440, content="Evo, quelles activités ?"),
             self.message(441, content="<@&99> quelles activités ?"),
@@ -188,15 +244,16 @@ class DiscordWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.agent.answer.assert_not_awaited()
         self.ctx.bot.ensure_evo_leadership.assert_not_awaited()
 
-    async def test_mentions_are_ignored_in_private_channels_and_console(self):
+    async def test_mentions_are_ignored_in_inaccessible_channels_and_console(self):
         self.permissions.public = False
-        private = self.message(450, content="<@99> activités ?")
-        await self.cog.on_message(private)
-        self.permissions.public = True
+        self.permissions.denied.add(self.ctx.member.id)
+        inaccessible = self.message(450, content="<@99> activités ?")
+        await self.cog.on_message(inaccessible)
+        self.permissions.denied.clear()
         self.channel.name = "console"
         console = self.message(451, content="<@99> activités ?")
         await self.cog.on_message(console)
-        private.reply.assert_not_awaited()
+        inaccessible.reply.assert_not_awaited()
         console.reply.assert_not_awaited()
         self.agent.answer.assert_not_awaited()
 

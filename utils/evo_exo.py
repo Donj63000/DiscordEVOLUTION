@@ -1,4 +1,4 @@
-"""Partage temporaire et actions personnelles entre Evo et l'atelier prive /exo."""
+"""Partage temporaire de l'atelier prive /exo dans le seul salon choisi, public ou prive."""
 from __future__ import annotations
 
 import asyncio
@@ -70,7 +70,7 @@ def _shared(ctx, cog, view):
 
 
 async def share_session(ctx) -> dict:
-    """Autorise explicitement l'etat actuel dans ce salon public jusqu'a expiration."""
+    """Autorise l'etat actuel dans ce salon accessible au membre et au bot jusqu'a expiration."""
     ctx.check()
     cog = _cog(ctx.bot)
     view = _view(ctx, cog)

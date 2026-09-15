@@ -63,8 +63,10 @@ class EvoCog(commands.Cog):
 
     def _context(self, guild, channel, member):
         config = self._configuration()
-        if not isinstance(channel, discord.TextChannel) or guild is None:
-            raise EvoError("Utilise Evo dans un salon textuel public du serveur.")
+        if not isinstance(channel, (
+            discord.TextChannel, discord.Thread, discord.VoiceChannel, discord.StageChannel,
+        )) or guild is None:
+            raise EvoError("Utilise Evo dans un salon de discussion du serveur.")
         ctx = ToolContext(self.bot, guild, channel, member, config)
         ctx.check()
         return ctx
@@ -153,6 +155,7 @@ class EvoCog(commands.Cog):
         self._cooldowns[user_key] = now
         try:
             async with asyncio.timeout(110):
+                await ctx.ensure_access()
                 answer = self._local_answer(question, prompt_if_empty)
                 if answer is not None:
                     log.debug("evo local reply trigger_id=%s", trigger_id)
@@ -161,7 +164,7 @@ class EvoCog(commands.Cog):
                     options = {"deepen": True} if deepen else {}
                     answer = await agent.answer(ctx, question, trigger_id, **options)
                 await self.bot.ensure_evo_leadership()
-                ctx.check()
+                await ctx.ensure_access()
                 if ctx.before_publish:
                     ctx.before_publish()
                 message = await send(output_text(answer, ctx.sources))
@@ -189,7 +192,7 @@ class EvoCog(commands.Cog):
                 self._active.pop(user_key, None)
 
     @app_commands.command(name="evo", description="Discute avec Evo : Dofus Rétro, drops, équipements et guilde.")
-    @app_commands.describe(question="Ta question publique, en langage naturel.",
+    @app_commands.describe(question="Ta question dans ce salon, en langage naturel.",
                            approfondir="Autorise un spécialiste supplémentaire dans le même budget.")
     @app_commands.guild_only()
     async def evo(self, interaction: discord.Interaction, question: str, approfondir: bool = False):
@@ -240,13 +243,14 @@ class EvoCog(commands.Cog):
             await self._run(ctx, question, message.id, send, prompt_if_empty=mentioned)
 
     @app_commands.command(name="evo-exo", description="Partage ou révoque l'état courant de ton atelier dans ce salon.")
-    @app_commands.describe(partager="Autorise Evo à utiliser publiquement l'état courant de ton atelier.")
+    @app_commands.describe(partager="Autorise Evo à utiliser l'état courant de ton atelier dans ce salon.")
     @app_commands.guild_only()
     async def exo_share(self, interaction: discord.Interaction, partager: bool):
         await interaction.response.defer(ephemeral=True)
         try:
             ctx = self._context(interaction.guild, interaction.channel, interaction.user)
             await self.bot.ensure_evo_leadership()
+            await ctx.ensure_access()
             if partager:
                 await share_session(ctx)
                 content = (

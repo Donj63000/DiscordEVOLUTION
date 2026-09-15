@@ -15,15 +15,20 @@ Aucun panneau, bouton ou formulaire n'est nécessaire. Exemple :
 [Répondre au dernier message d'Evo] Et avec 600 PP ?
 ```
 
-Pour continuer sans `/evo`, utiliser **Répondre** sur la dernière réponse publique
+Pour continuer sans `/evo`, utiliser **Répondre** sur la dernière réponse d'Evo
 adressée à soi, dans le même salon et dans les 15 minutes. Les messages ordinaires
 du salon et les réponses aux conversations d'un autre membre ne sont pas analysés.
 Une mention directe fonctionne également : `@Evolution Où drop cette ressource ?`.
 Elle peut démarrer la première conversation, sans `/evo` préalable. Une mention seule
 reçoit une invitation locale à poser une question, sans génération.
 
-Toutes les réponses de conversation sont publiques dans le salon, y compris les
-messages d'erreur. L'option `prive` est retirée. Les ateliers personnels `/exo`
+Toutes les réponses de conversation sont visibles par les personnes ayant accès au
+salon, y compris les messages d'erreur. Les salons Staff sont acceptés, ainsi que les
+fils, les publications de forum et les chats des salons vocaux. Le membre et le bot
+doivent pouvoir lire et écrire ; un fil privé exige aussi leur appartenance au fil
+ou la permission de gérer les fils. Les fils archivés doivent être rouverts.
+`#console` et ses fils restent réservés au stockage. L'option `prive` est retirée.
+Les ateliers personnels `/exo`
 restent privés jusqu'au partage explicite de leur état courant. La mémoire est séparée
 par serveur, salon et membre. Les mentions de rôle ou `@everyone` ne déclenchent rien.
 
@@ -178,7 +183,7 @@ EVO_ENABLED=1
 EVO_MODEL=gpt-5.6-luna
 # Facultatif si le bot appartient à un seul serveur.
 EVO_GUILD_ID=
-# Vide : tous les salons textuels publics, sauf #console.
+# Vide : toutes les discussions accessibles du serveur, sauf #console et ses fils.
 EVO_CHANNEL_IDS=
 
 EVO_MONTHLY_USD=2.00
@@ -203,8 +208,9 @@ EVO_ALLOW_LEGACY_AI=0
 ```
 
 Si le bot appartient à plusieurs serveurs, renseigner `EVO_GUILD_ID`. Pour limiter
-Evo à certains salons publics, renseigner leurs IDs séparés par des virgules dans
-`EVO_CHANNEL_IDS`. Cette liste n'autorise jamais un salon privé ou `#console`.
+Evo à certains salons, renseigner leurs IDs séparés par des virgules dans
+`EVO_CHANNEL_IDS`. L'ID d'un parent inclut ses fils accessibles. Cette liste ne
+contourne jamais les permissions Discord et n'autorise pas `#console` ou ses fils.
 Les MP, threads et forums sont exclus de cette V1.
 
 La politique des anciennes IA est modifiée de façon explicite : tant que
@@ -375,7 +381,9 @@ Commencer dans un seul salon avec peu de membres et conserver les plafonds par d
 | Mentionner le bot avec une question dès la première conversation | Réponse publique dans le salon. |
 | Mentionner uniquement le bot | Invitation publique à poser une question, sans génération. |
 | Répondre à Evo en le mentionnant aussi | Une seule réponse. |
-| Mentionner Evo dans un salon privé ou `#console` | Aucun traitement conversationnel. |
+| Mentionner Evo dans un salon Staff accessible | Réponse visible dans ce salon, contexte séparé des autres salons. |
+| Mentionner Evo dans un fil privé accessible ou un chat vocal | Même conversation, selon les permissions du membre et du bot. |
+| Mentionner Evo dans `#console` ou un de ses fils | Aucun traitement conversationnel. |
 | Demander le drop d'une ressource connue | Source exacte ; comparer avec `/objet`. |
 | Répondre « et avec 600 PP ? » | Même ressource, calcul Python puis une rédaction IA. |
 | Demander une coiffe terre niveau 120 | Critères et limites explicites, uniquement objets présents. |

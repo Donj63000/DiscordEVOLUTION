@@ -99,20 +99,30 @@ class SafetyTests(unittest.TestCase):
         self.assertTrue(ctx.readable_here(ctx.guild.get_channel(30)))
         self.assertFalse(ctx.readable_here(Channel(Guild(999), 10)))
 
-    def test_public_channels_allowed_without_an_allowlist(self):
+    def test_accessible_channels_allowed_without_an_allowlist(self):
         ctx = context(config(channel_ids=frozenset()))
         ctx.check()
         ctx.channel = ctx.guild.get_channel(30)
         ctx.check()
         ctx.channel = ctx.guild.get_channel(20)
-        with self.assertRaisesRegex(EvoError, "salons publics"):
-            ctx.check()
+        ctx.check()
+        self.assertFalse(ctx.channel.permissions_for(ctx.guild.default_role).view_channel)
 
-    def test_allowlist_cannot_enable_a_private_channel(self):
+    def test_allowlist_allows_accessible_staff_channel_but_cannot_override_permissions(self):
         ctx = context(config(channel_ids=frozenset({20})))
         ctx.channel = ctx.guild.get_channel(20)
-        with self.assertRaisesRegex(EvoError, "salons publics"):
+        ctx.check()
+        ctx.channel.denied.add(ctx.member.id)
+        with self.assertRaisesRegex(EvoError, "Permission"):
             ctx.check()
+
+    def test_current_staff_channel_is_readable_without_exposing_other_private_channels(self):
+        ctx = context(config(channel_ids=frozenset()))
+        ctx.channel = ctx.guild.get_channel(20)
+        ctx.check()
+        self.assertTrue(ctx.readable_here(ctx.channel))
+        another_staff_channel = Channel(ctx.guild, 40, "staff-gestion", public=False)
+        self.assertFalse(ctx.readable_here(another_staff_channel))
 
     def test_console_excluded_even_when_public_and_allowlisted(self):
         ctx = context()

@@ -1,5 +1,22 @@
 # Rapport de validation — Evo / Luna
 
+## Discussions dans tous les salons accessibles — 15 septembre 2026
+
+La suite complète passe : **2 259 tests réussis, 1 test historique ignoré**, en
+39,97 secondes sous Python 3.13. Aucun appel payant ni connexion Discord n'est
+nécessaire aux tests. `git diff --check` passe.
+
+- `/evo`, première mention et suivi acceptés dans les salons Staff accessibles,
+  avec réponse visible dans le salon et mémoire séparée par serveur, salon et membre.
+- Fils publics et privés, publications de forum et chats vocaux acceptés selon
+  les permissions Discord ; un ID de parent autorisé inclut ses fils accessibles.
+- Appartenance aux fils privés vérifiée avant les appels, mutations et publication ;
+  retrait d'accès pendant une réservation ou une génération couvert par les tests.
+- `#console`, ses fils, les messages directs et les fils archivés restent exclus.
+  Les données d'un autre salon ou fil privé ne sont pas reprises dans la conversation.
+- Partage Exo explicite dans Staff, isolation du propriétaire et du salon, rune
+  unique et blocage après retrait des permissions vérifiés.
+
 ## Réponses naturelles et actions personnelles — 15 septembre 2026
 
 La suite complète passe : **2 233 tests réussis, 1 test historique ignoré**, en

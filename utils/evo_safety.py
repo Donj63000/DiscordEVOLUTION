@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import asyncio
 import json
+import logging
 import math
 import re
 from urllib.parse import urlsplit
+
+import discord
 
 from utils.evo_config import EvoError, resolve_console_channel
 
@@ -17,6 +21,7 @@ _SECRET = re.compile(
 )
 _URL = re.compile(r"https?://[^\s<>()\[\]\"']+")
 _ALLOWED_SOURCES = {"wiki.moon-bot.io", "xixou.io", "discord.com", "discord.gg"}
+log = logging.getLogger(__name__)
 
 
 def clean(value: object, maximum: int = 400) -> str:
@@ -140,15 +145,16 @@ class ToolContext:
             raise EvoError("Evo n'est pas activé sur ce serveur.")
         if self.channel is None or (
             self.config.channel_ids and self.channel.id not in self.config.channel_ids
+            and getattr(self.channel, "parent_id", None) not in self.config.channel_ids
         ):
             raise EvoError("Utilise /evo dans un salon autorisé par le Staff.")
         if getattr(getattr(self.channel, "guild", None), "id", None) != self.guild.id:
             raise EvoError("Salon hors du serveur configuré.")
         console = resolve_console_channel(self.guild)
-        if console is not None and self.channel.id == console.id:
-            raise EvoError("Evo ne répond pas dans #console. Utilise un salon public.")
-        if not self.channel.permissions_for(self.guild.default_role).view_channel:
-            raise EvoError("Evo répond uniquement dans les salons publics du serveur.")
+        if console is not None and console.id in {
+            self.channel.id, getattr(self.channel, "parent_id", None),
+        }:
+            raise EvoError("#console est réservé au stockage du bot. Utilise un autre salon.")
         member = self.guild.get_member(self.member.id)
         if member is None or getattr(member, "bot", False):
             raise EvoError("Ce membre n'est plus accessible sur le serveur.")
@@ -158,15 +164,50 @@ class ToolContext:
             raise EvoError("Les permissions du bot ne sont pas encore disponibles.")
         for subject in (member, me):
             perms = self.channel.permissions_for(subject)
-            if not perms.view_channel or not perms.send_messages:
+            can_send = (perms.send_messages_in_threads if isinstance(self.channel, discord.Thread)
+                        else perms.send_messages)
+            if not perms.view_channel or not can_send:
                 raise EvoError("Permission de lecture ou d'écriture manquante dans ce salon.")
+        if isinstance(self.channel, discord.Thread) and self.channel.archived:
+            raise EvoError("Rouvre ce fil de discussion avant de parler à Evo.")
+
+    async def ensure_access(self) -> None:
+        """Je vérifie aussi l'appartenance aux fils privés, absente des permissions héritées."""
+        self.check()
+        if not isinstance(self.channel, discord.Thread) or not self.channel.is_private():
+            return
+
+        async def verify(subject):
+            if self.channel.permissions_for(subject).manage_threads:
+                return
+            try:
+                async with asyncio.timeout(5):
+                    member = await self.channel.fetch_member(subject.id)
+                if member.id != subject.id:
+                    raise EvoError("L'accès à ce fil privé n'est plus confirmé.")
+            except (discord.HTTPException, TimeoutError):
+                log.debug("evo private thread access denied channel_id=%s subject_id=%s",
+                          self.channel.id, subject.id)
+                raise EvoError("Le membre et le bot doivent avoir accès à ce fil privé.") from None
+
+        results = await asyncio.gather(verify(self.member), verify(self.guild.me),
+                                       return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        self.check()
+        log.debug("evo private thread access confirmed channel_id=%s member_id=%s",
+                  self.channel.id, self.member.id)
 
     def readable_here(self, channel) -> bool:
-        """Une réponse publique ne doit pas recopier une autre audience privée."""
+        """Je ne recopie pas les données d'un autre salon privé dans cette conversation."""
         if channel is None or getattr(getattr(channel, "guild", None), "id", None) != self.guild.id:
             return False
-        if channel.id != self.channel.id and not channel.permissions_for(self.guild.default_role).view_channel:
-            return False
+        if channel.id != self.channel.id:
+            if isinstance(channel, discord.Thread) and channel.is_private():
+                return False
+            if not channel.permissions_for(self.guild.default_role).view_channel:
+                return False
         return all(channel.permissions_for(subject).view_channel for subject in (self.member, self.guild.me))
 
     def source(self, url: str) -> str:

@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 
 from exo import ExoCog, ExoView
-from tests_evo.helpers import config, context
+from tests_evo.helpers import Channel, config, context
 from utils.evo_config import EvoError
 from utils.evo_exo import (
     SHARE_TTL, apply_shared_rune, clear_member_shares, clear_shares,
@@ -57,7 +57,7 @@ async def test_read_requires_explicit_share_and_returns_only_minimal_state(share
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["owner", "guild", "channel", "view", "revision", "expired", "private"])
+@pytest.mark.parametrize("change", ["owner", "guild", "channel", "view", "revision", "expired", "permission"])
 async def test_share_is_bound_to_owner_guild_channel_view_revision_and_expiry(shared, monkeypatch, change):
     ctx, cog, view = shared
     await share_session(ctx)
@@ -78,7 +78,7 @@ async def test_share_is_bound_to_owner_guild_channel_view_revision_and_expiry(sh
         grant = next(iter(cog.evo_shares.values()))
         monkeypatch.setattr("utils.evo_exo.time.monotonic", lambda: grant.expires)
     else:
-        ctx.channel.public = False
+        ctx.channel.denied.add(ctx.member.id)
     with pytest.raises(EvoError):
         await read_shared_session(ctx)
     view.message.edit.assert_not_awaited()
@@ -333,7 +333,7 @@ async def test_publication_callback_rechecks_original_consent(shared, monkeypatc
     elif change == "reshare":
         await share_session(ctx)
     elif change == "permission":
-        ctx.channel.public = False
+        ctx.channel.denied.add(ctx.member.id)
     else:
         grant = next(iter(cog.evo_shares.values()))
         monkeypatch.setattr("utils.evo_exo.time.monotonic", lambda: grant.expires)
@@ -357,3 +357,69 @@ async def test_action_refreshes_guard_but_later_revocation_redacts_receipt(share
     assert "revision" not in ctx.action_receipt
     assert "resultat" not in ctx.action_receipt
     assert ctx.action_receipt["action_effectuee"] is True
+
+
+@pytest.mark.asyncio
+async def test_private_channel_share_is_explicit_and_isolated_from_other_members_and_channels(shared):
+    ctx, cog, view = shared
+    ctx.channel = ctx.guild.get_channel(20)
+    assert not ctx.channel.permissions_for(ctx.guild.default_role).view_channel
+    with pytest.raises(EvoError, match="partagé"):
+        await read_shared_session(ctx)
+    confirmation = await share_session(ctx)
+    assert confirmation["salon_id"] == str(ctx.channel.id)
+    assert "objet" not in confirmation
+    state = await read_shared_session(ctx)
+    assert state["jets"] == {"PA": 1}
+    ctx.before_publish()
+
+    other_member = copy.copy(ctx)
+    other_member.member = ctx.guild.get_member(3)
+    other_view = ExoView(cog, other_member.member.id, ctx.guild.id, Session.create(demo_item()))
+    other_view.message = SimpleNamespace(flags=SimpleNamespace(ephemeral=True))
+    cog.views[other_view.key] = other_view
+    with pytest.raises(EvoError, match="partagé") as caught:
+        await read_shared_session(other_member)
+    assert view.session.item.name not in str(caught.value)
+
+    other_private = Channel(ctx.guild, 40, "autre-staff", False)
+    for channel in (ctx.guild.get_channel(10), other_private):
+        elsewhere = copy.copy(ctx)
+        elsewhere.channel = channel
+        with pytest.raises(EvoError, match="partagé"):
+            await read_shared_session(elsewhere)
+    assert (await read_shared_session(ctx))["jets"] == state["jets"]
+    view.message.edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_single_rune_action_works_in_accessible_private_channel(shared):
+    ctx, _, view = shared
+    ctx.channel = ctx.guild.get_channel(20)
+    await share_session(ctx)
+    result = await apply_shared_rune(ctx, "Ga Pme")
+    assert result["action_effectuee"] is True
+    assert view.session.sim.attempts == 1
+    assert view.message.flags.ephemeral
+    view.message.edit.assert_awaited_once()
+    ctx.before_publish()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subject", ["member", "bot"])
+async def test_private_share_refuses_read_action_and_publication_after_access_revocation(shared, subject):
+    ctx, _, view = shared
+    ctx.channel = ctx.guild.get_channel(20)
+    await share_session(ctx)
+    await read_shared_session(ctx)
+    check = ctx.before_publish
+    identifier = ctx.member.id if subject == "member" else ctx.guild.me.id
+    ctx.channel.denied.add(identifier)
+    with pytest.raises(EvoError):
+        await read_shared_session(ctx)
+    with pytest.raises(EvoError):
+        await apply_shared_rune(ctx, "Ga Pme")
+    with pytest.raises(EvoError):
+        check()
+    assert view.session.sim.attempts == 0
+    view.message.edit.assert_not_awaited()
