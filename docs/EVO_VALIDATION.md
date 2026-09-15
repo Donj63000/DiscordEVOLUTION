@@ -3,7 +3,7 @@
 ## Retours Discord et raisonnement medium — 15 septembre 2026
 
 La suite complète de l'état final passe : **2 411 tests réussis, 1 test historique
-ignoré**, en 39,42 secondes sous Python 3.13. `git diff --check` passe.
+ignoré**, en 40,73 secondes sous Python 3.13. `git diff --check` passe.
 
 Les scénarios reproduisent les questions remontées par les essais Discord :
 
@@ -20,6 +20,8 @@ Les scénarios reproduisent les questions remontées par les essais Discord :
   inventer les PV/PA/PM manquants ni confondre niveau et nombre de grades.
 - File d'attente bornée par membre, dédoublonnage, annulation, réponses dans le
   salon d'origine et recontrôle des permissions et du leadership avant traitement.
+  Le délai initial et l'horodatage zéro sont vérifiés avec une horloge contrôlée,
+  indépendamment du temps écoulé depuis le démarrage de la machine de test.
 - Luna en raisonnement `medium`, plafonds API comprenant réflexion et texte ;
   réservation durable de la rédaction finale et spécialiste facultatif dans la
   même enveloppe. Les sorties incomplètes ne déclenchent pas d'action partielle.

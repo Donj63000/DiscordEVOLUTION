@@ -134,6 +134,11 @@ class EvoCog(commands.Cog):
             return "Je suis là 🙂 Pose-moi ta question sur Dofus Rétro ou la guilde."
         return None
 
+    def _cooldown_remaining(self, user_key, cooldown):
+        """Une première demande n'a aucun délai ; l'horodatage zéro reste valide."""
+        previous = self._cooldowns.get(user_key)
+        return 0.0 if previous is None else max(0.0, cooldown + previous - time.monotonic())
+
     async def _admit_request(self, ctx, question, send, deepen):
         """Je garde une seule question en attente par membre, pendant deux minutes au plus."""
         user_key = (ctx.guild.id, ctx.member.id)
@@ -154,7 +159,7 @@ class EvoCog(commands.Cog):
             if len(self._active) >= MAX_ACTIVE_REQUESTS:
                 await send("Je réponds déjà à deux camarades. Réessaie après leurs réponses 🙂")
                 return False
-            if time.monotonic() - self._cooldowns.get(user_key, -1000) < ctx.config.cooldown:
+            if self._cooldown_remaining(user_key, ctx.config.cooldown) > 0:
                 await send("Laisse quelques secondes entre deux questions pour partager le budget.")
                 return False
         else:
@@ -176,9 +181,7 @@ class EvoCog(commands.Cog):
                         self._slot_changed.clear()
                         if version != self._state_version:
                             raise EvoError("Evo s'est réinitialisé : ta question en attente est annulée.")
-                        remaining_cooldown = (
-                            ctx.config.cooldown + self._cooldowns.get(user_key, -1000) - time.monotonic()
-                        )
+                        remaining_cooldown = self._cooldown_remaining(user_key, ctx.config.cooldown)
                         available = user_key not in self._active and len(self._active) < MAX_ACTIVE_REQUESTS
                         if available and remaining_cooldown <= 0:
                             break

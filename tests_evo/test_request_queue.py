@@ -131,7 +131,8 @@ async def test_two_members_share_two_active_slots_and_two_waiting_slots(queue):
 
 
 @pytest.mark.asyncio
-async def test_waiting_during_cooldown_cannot_grow_the_global_queue(queue):
+async def test_waiting_during_cooldown_cannot_grow_the_global_queue(queue, monkeypatch):
+    monkeypatch.setattr("evo.time", SimpleNamespace(monotonic=lambda: 0.0))
     queue.cog.config = config(cooldown=3600)
     first, second = queue.start(15), queue.start(16, member_id=3)
     await observed(first.entered)
@@ -152,16 +153,23 @@ async def test_waiting_during_cooldown_cannot_grow_the_global_queue(queue):
 
 
 @pytest.mark.asyncio
-async def test_waiting_request_observes_the_shared_cooldown(queue):
-    queue.cog.config = config(cooldown=0.08)
+async def test_waiting_request_observes_the_shared_cooldown(queue, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr("evo.time", SimpleNamespace(monotonic=lambda: now[0]))
+    queue.cog.config = config(cooldown=60)
     active = queue.start(20)
     await observed(active.entered)
     waiting = queue.start(21)
     await observed(waiting.acknowledged)
     active.release.set()
     await finished(active)
-    await asyncio.sleep(0.01)
+    assert queue.cog._cooldowns[(queue.ctx.guild.id, queue.ctx.member.id)] == 0.0
+    now[0] = 59.0
+    queue.cog._slot_changed.set()
+    await asyncio.sleep(0)
     assert not waiting.entered.is_set()
+    now[0] = 60.0
+    queue.cog._slot_changed.set()
     await observed(waiting.entered)
     waiting.release.set()
     await finished(waiting)
