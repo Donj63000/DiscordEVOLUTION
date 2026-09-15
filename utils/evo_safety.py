@@ -20,7 +20,10 @@ _SECRET = re.compile(
     r"(?i:(?:api[_ -]?key|password|mot de passe|token|secret)\s*[:=]\s*)[^\s,;]{8,}"
 )
 _URL = re.compile(r"https?://[^\s<>()\[\]\"']+")
-_ALLOWED_SOURCES = {"wiki.moon-bot.io", "xixou.io", "discord.com", "discord.gg"}
+_ALLOWED_SOURCES = {
+    "wiki.moon-bot.io", "xixou.io", "discord.com", "discord.gg",
+    "www.dofus-retro.com", "dofus-retro.com", "support.ankama.com",
+}
 log = logging.getLogger(__name__)
 
 
@@ -140,6 +143,8 @@ class ToolContext:
     action_receipt: dict | None = None
     before_publish: object | None = None
     conversation_brief: dict = field(default_factory=dict)
+    web_pages: set[str] = field(default_factory=set)
+    web_links: set[str] = field(default_factory=set)
 
     def check(self) -> None:
         if self.guild is None or self.guild.id != self.config.guild_id:

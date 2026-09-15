@@ -1,5 +1,27 @@
 # Rapport de validation — Evo / Luna
 
+## Raisonnement high, vérification et sources Web — 15 septembre 2026
+
+Suite complète : **2 492 tests réussis, 1 test historique ignoré**, en 41,24 secondes
+sous Python 3.13. `git diff --check` passe.
+
+- Seconde série de lectures autorisée avant réponse, dans trois générations et
+  cinq outils maximum. Les doublons d'arguments sont réutilisés entre les tours.
+- Réservation durable du dernier rédacteur avant la vérification facultative ;
+  libération du montant et du quota seulement pour une réservation locale jamais
+  soumise, sans modifier le format du registre ni effacer les appels incertains.
+- Raisonnement `high` par défaut, coût réellement confirmé repris dans le solde
+  de la demande, plafonds mensuel/journalier/par demande inchangés.
+- Permissions et partage Exo contrôlés à nouveau avant les lectures et la
+  réutilisation d'un résultat. Aucune mutation pendant la seconde série d'outils.
+- Deux pages publiques au maximum, exclusivement Moon-Bot et sources officielles
+  Dofus Rétro ; extraits bornés, cache de dix minutes, aucune recherche Web payante.
+  Les comptes, paramètres d'URL, redirections non autorisées et réseaux privés sont exclus.
+
+Les transports sont simulés : aucun crédit OpenAI dépensé pour ces tests.
+Les pages officielles qui refusent la lecture automatique restent indisponibles ;
+le bot ne contourne pas ce refus et n'invente pas leur contenu.
+
 ## Retours Discord et raisonnement medium — 15 septembre 2026
 
 La suite complète de l'état final passe : **2 411 tests réussis, 1 test historique

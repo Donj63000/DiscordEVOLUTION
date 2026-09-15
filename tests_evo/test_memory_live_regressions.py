@@ -244,7 +244,9 @@ async def test_exact_live_followup_has_current_constraints_and_only_one_ia_write
         assert "Turquoise" in result
         assert received == [("sources_drop", {"objet": "item:739", "pp": 515, "pp_groupe": 3000})]
         assert len(transport.calls) == 1
-        assert transport.calls[0]["tools"] == []
+        assert transport.calls[0]["tool_choice"] == "auto"
+        assert (await budget.status())["calls"] == 1
+        assert (await budget.status())["pending_nano"] == 0
         assert agent.sessions.get(key).brief["drop_context"]["monstres_demandes"] == ["Chêne Mou"]
     finally:
         await budget.close()

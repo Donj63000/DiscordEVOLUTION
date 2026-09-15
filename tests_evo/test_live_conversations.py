@@ -12,7 +12,7 @@ from utils.evo_agent import EvoAgent, MeteredModel
 from utils.evo_config import EvoConfig, EvoError
 from utils.evo_equipment import Equipment
 from utils.evo_memory import update_brief
-from utils.evo_tools import EvoTools, equipment_constraints, prepared_tools, schemas_for
+from utils.evo_tools import MUTATING_TOOLS, EvoTools, equipment_constraints, prepared_tools, schemas_for
 from utils.xixou_api import DropSource, ItemEnrichment
 
 
@@ -36,7 +36,10 @@ async def test_discord_member_count_uses_real_data_and_one_writer(question):
         assert "456" in rendered
         assert len(transport.calls) == 1
         assert '"nombre_membres_discord":456' in json.dumps(transport.calls[0], ensure_ascii=False).replace('\\"', '"')
-        assert transport.calls[0]["tools"] == []
+        assert transport.calls[0]["tool_choice"] == "auto"
+        assert all(tool["name"] not in MUTATING_TOOLS for tool in transport.calls[0]["tools"])
+        assert (await budget.status())["calls"] == 1
+        assert (await budget.status())["pending_nano"] == 0
         assert "guilde" in {row["name"] for row in schemas_for(question)}
     finally:
         await budget.close()

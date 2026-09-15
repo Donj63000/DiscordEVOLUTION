@@ -51,15 +51,15 @@ class ReasoningConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "unit-test-placeholder", **env}, clear=True):
             return EvoConfig.from_env(guilds=[Guild()])
 
-    def test_default_medium_preserves_money_and_call_limits(self):
+    def test_default_high_preserves_money_and_bounds_call_limits(self):
         settings = self.settings()
-        self.assertEqual(settings.reasoning_effort, "medium")
+        self.assertEqual(settings.reasoning_effort, "high")
         self.assertEqual([settings.output_limit(role) for role in ("analysis", "writer", "specialist")],
                          [3000, 3000, 1800])
         self.assertEqual((settings.max_output, settings.specialist_output), (400, 250))
         self.assertEqual((settings.monthly_nano, settings.daily_nano, settings.request_nano),
                          (2_000_000_000, 120_000_000, 15_000_000))
-        self.assertEqual((settings.max_calls, settings.deep_max_calls), (2, 3))
+        self.assertEqual((settings.max_calls, settings.deep_max_calls), (3, 3))
 
     def test_none_keeps_the_previous_small_output_envelopes(self):
         settings = self.settings(EVO_REASONING_EFFORT="none")
@@ -73,7 +73,7 @@ class ReasoningConfigTests(unittest.TestCase):
 
     def test_invalid_effort_and_out_of_range_caps_are_rejected(self):
         for name, value in (
-            ("EVO_REASONING_EFFORT", "high"), ("EVO_REASONING_EFFORT", ""),
+            ("EVO_REASONING_EFFORT", "xhigh"), ("EVO_REASONING_EFFORT", ""),
             ("EVO_ANALYSIS_MAX_OUTPUT_TOKENS", "4001"),
             ("EVO_WRITER_MAX_OUTPUT_TOKENS", "400"),
             ("EVO_SPECIALIST_MAX_OUTPUT_TOKENS", "3001"),
@@ -152,7 +152,7 @@ class ReasoningBudgetTests(unittest.IsolatedAsyncioTestCase):
         for specialist, tools, cap in ((False, catalogue, 3200), (False, [], 2800), (True, [], 1600)):
             payload = self.payload(agent, specialist=specialist, tools=tools)
             self.assertEqual(payload["max_output_tokens"], cap)
-            self.assertEqual(payload["reasoning"], {"effort": "medium"})
+            self.assertEqual(payload["reasoning"], {"effort": "high"})
             for key, value in (("max_output_tokens", 400), ("reasoning", {"effort": "none"})):
                 with self.subTest(specialist=specialist, cap=cap, key=key):
                     altered = {**payload, key: value}
@@ -255,7 +255,7 @@ class ReasoningBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["used_nano"], 2 * quote(800, 60) + quote(800, 1800))
         self.assertEqual(status["pending_nano"], 0)
 
-    async def test_three_medium_generations_fit_real_input_with_writer_reserved_first(self):
+    async def test_three_high_generations_fit_real_input_with_writer_reserved_first(self):
         agent = self.agent([
             response([function("guilde", {})]), answer("Note courte."), answer("Réponse finale."),
         ])
@@ -274,7 +274,7 @@ class ReasoningBudgetTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertLessEqual(sum(amount for _, amount in reservations), self.config.request_nano)
         self.assertEqual([row["max_output_tokens"] for row in self.transport.calls], [3000, 1800, 3000])
-        self.assertTrue(all(row["reasoning"] == {"effort": "medium"} for row in self.transport.calls))
+        self.assertTrue(all(row["reasoning"] == {"effort": "high"} for row in self.transport.calls))
 
     async def test_large_specialist_input_is_skipped_before_generation_preserving_writer(self):
         self.config = config(request_nano=11_000_000)

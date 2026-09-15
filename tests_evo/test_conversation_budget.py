@@ -100,7 +100,7 @@ class ConversationBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.transport.calls), 3)
         self.assertEqual(json.loads(self.tools.execute.await_args.args[1]),
                          {"objet": "item:1", "pp": 600, "pp_groupe": None})
-        self.assertEqual(self.transport.calls[-1]["tools"], [])
+        self.assertEqual(self.transport.calls[-1]["tool_choice"], "auto")
 
     async def test_quantity_followup_multiplies_in_tool_then_ia_writes(self):
         async def execute(name, raw, ctx, offered):

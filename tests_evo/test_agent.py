@@ -35,7 +35,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         payload = self.transport.calls[1]
         result_items = [x for x in payload["input"] if x.get("type") == "function_call_output"]
         self.assertEqual(json.loads(result_items[0]["output"])["nom"], "Evolution Test")
-        self.assertEqual(payload["reasoning"]["effort"], "medium")
+        self.assertEqual(payload["reasoning"]["effort"], "high")
         self.assertFalse(payload["store"])
         self.assertIn("Réponse dans le salon courant", payload["instructions"])
         self.assertTrue(all(t["type"] == "function" for t in payload["tools"]))

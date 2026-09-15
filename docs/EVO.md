@@ -64,6 +64,14 @@ rend une note de conseil au rédacteur, sans outils, écriture ou sous-délégat
 Ce mode est facultatif et partage exactement le même budget par demande. Une
 demande simplement longue ou difficile ne l'active pas automatiquement.
 
+Avant de répondre, Evo peut demander une seconde série de lectures pour vérifier
+une correspondance ou compléter une source. Les questions habituelles restent à
+deux générations ; une vérification utile permet une troisième, sans dépasser
+cinq outils au total. Une lecture identique est réutilisée dans la demande.
+Après une modification personnelle, le rédacteur ne relance aucun outil.
+Le mode approfondi utilise sa troisième génération pour le spécialiste et ne
+cumule pas celui-ci avec une nouvelle boucle de recherche.
+
 ### Actions personnelles et partage Exo
 
 Evo peut inscrire ou désinscrire le demandeur d'une activité publiée, et ajouter,
@@ -107,6 +115,7 @@ d'édition du panneau Exo bloque le partage jusqu'à resynchronisation ou réouv
 | `definir_mon_metier` / `supprimer_mon_metier` | Modification de ses métiers déclarés, avec sauvegarde vérifiée. |
 | `conversation_salon` | Au plus 15 messages récents du salon courant, après activation explicite. |
 | `aide_bot` | Commandes pertinentes déjà enregistrées ; aucune exécution automatique. |
+| `consulter_site` | Deux pages publiques Moon-Bot ou officielles Dofus Rétro, extraits ciblés et cache de dix minutes. |
 | `demander_precision` | Demande une précision sans deuxième génération inutile. |
 
 Les outils ne lancent pas des chaînes de commandes Discord. Ils utilisent les
@@ -143,7 +152,7 @@ Aucune génération OpenAI n'est lancée par ces tests. Les tests d'enregistreme
 Discord n'établissent pas de connexion Discord, mais nécessitent `discord.py`.
 La suite `tests_evo` est incluse dans la découverte pytest et dans la CI GitHub.
 
-Le modèle est strictement `gpt-5.6-luna`, avec `reasoning.effort=medium` par défaut
+Le modèle est strictement `gpt-5.6-luna`, avec `reasoning.effort=high` par défaut
 pour l'analyse, la rédaction et le spécialiste. L'alias est vérifié et aucun modèle
 de remplacement n'est choisi si son accès échoue. Ce temps de réflexion supplémentaire
 ne remplace pas les vérifications des outils et ne garantit pas une réponse sans erreur.
@@ -199,7 +208,7 @@ La clé `OPENAI_API_KEY` existante est réutilisée. Ne pas la recopier dans le 
 ```dotenv
 EVO_ENABLED=1
 EVO_MODEL=gpt-5.6-luna
-EVO_REASONING_EFFORT=medium
+EVO_REASONING_EFFORT=high
 # Facultatif si le bot appartient à un seul serveur.
 EVO_GUILD_ID=
 # Vide : toutes les discussions accessibles du serveur, sauf #console et ses fils.
@@ -213,7 +222,7 @@ EVO_MAX_OUTPUT_TOKENS=400
 EVO_ANALYSIS_MAX_OUTPUT_TOKENS=3000
 EVO_WRITER_MAX_OUTPUT_TOKENS=3000
 EVO_SPECIALIST_MAX_OUTPUT_TOKENS=1800
-EVO_MAX_MODEL_CALLS=2
+EVO_MAX_MODEL_CALLS=3
 EVO_MAX_DEEP_MODEL_CALLS=3
 EVO_MAX_TOOL_CALLS=5
 EVO_USER_DAILY_CALLS=60
@@ -283,9 +292,9 @@ Avant chaque génération :
 5. L'usage retourné ajuste la réservation ; une anomalie supérieure au maximum
    prévu bloque le mois pour contrôle.
 
-Deux générations normales, ou trois au total en mode approfondi, et cinq outils
+Deux générations habituelles, trois au maximum avec vérification ou approfondissement, et cinq outils
 maximum par demande. La réponse demandée reste courte : environ 400 tokens visibles,
-et 250 pour la note du spécialiste. Avec `medium`, la limite API inclut aussi les
+et 250 pour la note du spécialiste. Avec `high`, la limite API inclut aussi les
 tokens de raisonnement : 3 000 pour l'analyse, 3 000 pour la rédaction et 1 800 pour
 le spécialiste. Toute cette enveloppe est réservée avant génération ; le règlement
 compte la sortie totale réellement consommée, raisonnement compris. Une réponse
@@ -305,12 +314,19 @@ appelé que si l'enveloppe commune restante le permet ; sinon le rédacteur rép
 en mode normal. Chaque rôle emploie le même registre, le même quota personnel et
 un identifiant de réservation distinct. `EVO_MAX_OUTPUT_TOKENS` règle le souhait
 de longueur visible, plafonné à 400, et non l'enveloppe de raisonnement. Le nombre
-d'appels normaux reste plafonné à deux. `EVO_REASONING_EFFORT` accepte `none`, `low`
-ou `medium` ; `none` reprend les petites enveloppes sans raisonnement.
+d'appels reste plafonné à trois. `EVO_REASONING_EFFORT` accepte `none`, `low`,
+`medium` ou `high` ; `none` reprend les petites enveloppes sans raisonnement.
+
+Avant de proposer des lectures supplémentaires au modèle, le bot réserve le dernier
+rédacteur dans `#console`. Si le modèle répond directement, seule cette réservation
+jamais soumise est libérée, montant et quota compris, après écriture vérifiée.
+Une réservation restaurée au redémarrage ou déjà soumise ne peut pas être libérée
+par ce mécanisme. Après chaque génération réglée, le solde de la demande reflète
+son coût confirmé, ce qui évite de conserver une marge déjà devenue inutile.
 
 Au tarif standard actuel, 1 000 tokens supplémentaires de raisonnement représentent
 0,0012 USD de coût fournisseur, soit 0,12 USD pour cent réponses consommant chacune
-ce supplément. Il s'agit d'un exemple, pas d'un surcoût fixe associé à `medium`.
+ce supplément. Il s'agit d'un exemple, pas d'un surcoût fixe associé à `high`.
 Les plafonds mensuel, journalier et par demande restent inchangés.
 
 Un timeout, une annulation, une erreur HTTP ou l'absence de compteurs d'usage
@@ -405,8 +421,12 @@ irréversible. Les anciens modules du bot conservent leurs propres politiques.
   effets non interprétés sont écartés de ce classement.
 - Le simulateur FM est estimatif ; ses probabilités ne sont pas des données Ankama
   certifiées. Puits inconnu reste inconnu.
-- Aucune recherche Internet générale, actualité Ankama, cotation HDV ou navigation
-  libre n'est ajoutée. Aucun coût `web_search` caché.
+- La consultation Web reste limitée à Moon-Bot, `www.dofus-retro.com` et aux articles
+  du Support Ankama explicitement consacrés à Rétro. Deux pages maximum par demande,
+  cinq extraits courts par page et cache de dix minutes. Les adresses doivent venir
+  du membre, des outils, des points d'entrée prédéfinis ou d'une page déjà consultée.
+  Aucun compte, cookie de connexion, recherche Web payante ou cotation HDV ajouté.
+  Les pages bloquées ou illisibles sont signalées sans contournement.
 - Le modèle peut encore mal interpréter une question ou un résultat. Les tests
   automatiques vérifient l'orchestration et les garde-fous, pas la justesse de toutes
   ses futures recommandations. Comparer les premiers résultats à `/objet` et `/exo`.
@@ -474,6 +494,7 @@ mois. Une demande déjà envoyée à OpenAI ne peut pas être « dé-facturée �
 `utils/evo_memory.py` : références structurées et suivis reconnus localement.
 `utils/evo_equipment.py` : index et classements déterministes.
 `utils/evo_monsters.py` : grades, plages de statistiques et données manquantes.
+`utils/evo_web.py` : pages publiques autorisées, extraits bornés et cache temporaire.
 `utils/evo_safety.py` : schémas, bornes, sources, redaction et permissions.
 `utils/evo_config.py` : configuration stricte, opt-in indépendant.
 `utils/xixou_api.py` : petits adaptateurs publics ajoutés, clients existants conservés.

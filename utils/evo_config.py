@@ -80,11 +80,11 @@ class EvoConfig:
     request_nano: int = 15_000_000
     max_input: int = 7500
     max_output: int = 400
-    reasoning_effort: str = "medium"
+    reasoning_effort: str = "high"
     analysis_tokens: int = 3000
     writer_tokens: int = 3000
     specialist_tokens: int = 1800
-    max_calls: int = 2
+    max_calls: int = 3
     deep_max_calls: int = 3
     specialist_output: int = 250
     max_tools: int = 5
@@ -99,10 +99,11 @@ class EvoConfig:
 
     def output_limit(self, role: str) -> int:
         """Je borne ensemble les tokens de raisonnement et de texte de chaque rôle."""
-        if self.reasoning_effort not in {"none", "low", "medium"}:
-            raise EvoError("EVO_REASONING_EFFORT doit être none, low ou medium.")
+        if self.reasoning_effort not in {"none", "low", "medium", "high"}:
+            raise EvoError("EVO_REASONING_EFFORT doit être none, low, medium ou high.")
         limits = {
             "analysis": (self.analysis_tokens, 800, 4000),
+            "verification": (self.analysis_tokens, 800, 4000),
             "writer": (self.writer_tokens, 800, 4000),
             "specialist": (self.specialist_tokens, 500, 3000),
         }
@@ -142,13 +143,13 @@ class EvoConfig:
             request_nano=money("EVO_REQUEST_USD", "0.015", "0.05"),
             max_input=integer("EVO_MAX_INPUT_TOKENS", 7500, 2000, 12000),
             max_output=min(integer("EVO_MAX_OUTPUT_TOKENS", 400, 200, 900), 400),
-            reasoning_effort=os.getenv("EVO_REASONING_EFFORT", "medium").strip().lower(),
+            reasoning_effort=os.getenv("EVO_REASONING_EFFORT", "high").strip().lower(),
             analysis_tokens=integer("EVO_ANALYSIS_MAX_OUTPUT_TOKENS", 3000, 800, 4000),
             writer_tokens=integer("EVO_WRITER_MAX_OUTPUT_TOKENS", 3000, 800, 4000),
             specialist_tokens=integer("EVO_SPECIALIST_MAX_OUTPUT_TOKENS", 1800, 500, 3000),
-            max_calls=min(integer("EVO_MAX_MODEL_CALLS", 2, 2, 3), 2),
+            max_calls=integer("EVO_MAX_MODEL_CALLS", 3, 2, 3),
             deep_max_calls=integer("EVO_MAX_DEEP_MODEL_CALLS", 3, 2, 3),
-            max_tools=integer("EVO_MAX_TOOL_CALLS", 5, 1, 6),
+            max_tools=integer("EVO_MAX_TOOL_CALLS", 5, 1, 5),
             user_daily_calls=integer("EVO_USER_DAILY_CALLS", 60, 1, 180),
             cooldown=integer("EVO_COOLDOWN_SECONDS", 12, 5, 300),
             history_channels=ids("EVO_HISTORY_CHANNEL_IDS"),

@@ -170,7 +170,10 @@ class RecipeAndPaginationTests(unittest.IsolatedAsyncioTestCase):
 class CatalogueScopeTests(unittest.TestCase):
     def test_topic_catalogues_stay_small_and_preserve_cross_domain_crafting(self):
         drop = {row["name"] for row in schemas_for("et avec 600 PP sources_drop")}
-        self.assertEqual(drop, {"sources_drop", "monstre", "fiche_objet", "aide_bot", "demander_precision"})
+        self.assertEqual(drop, {
+            "sources_drop", "monstre", "fiche_objet", "aide_bot",
+            "demander_precision", "consulter_site",
+        })
         recipe = {row["name"] for row in schemas_for("qui peut craft ça")}
         self.assertIn("recette", recipe)
         self.assertIn("artisans", recipe)

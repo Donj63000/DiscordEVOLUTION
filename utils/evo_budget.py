@@ -133,6 +133,8 @@ class Budget:
         self._closed = False
         self._epoch = 0
         self._safety = store.safety
+        self._unsubmitted: set[str] = set()
+        self._release_attempts: dict[str, dict] = {}
 
     def invalidate(self):
         """Je suspends le cache sans verrou, y compris pendant une vérification de leadership."""
@@ -154,6 +156,8 @@ class Budget:
         for identifier, record in previous["reservations"].items():
             current = restored["reservations"].get(identifier)
             if current is None:
+                if self._release_attempts.get(identifier) == record:
+                    continue
                 raise EvoError("Des réservations ont disparu de #console : appels IA bloqués.")
             immutable = set(record) - {"charged", "input_tokens", "output_tokens"}
             if (any(record[key] != current[key] for key in immutable)
@@ -175,6 +179,13 @@ class Budget:
         self._check_continuity(restored)
         self._state = restored
         self._uncertain = False
+        pending = {identifier for identifier, record in restored["reservations"].items()
+                   if record["charged"] is None}
+        self._unsubmitted.intersection_update(pending)
+        self._release_attempts = {
+            identifier: record for identifier, record in self._release_attempts.items()
+            if identifier in self._unsubmitted
+        }
         log.debug("evo budget restored guild_id=%s revision=%s", self.config.guild_id, restored["revision"])
 
     async def _ensure_ready(self):
@@ -318,11 +329,53 @@ class Budget:
                 "input_tokens": None, "output_tokens": None, "created_at": now.isoformat(),
             }
             await self._commit(candidate, expected_revision=state["revision"])
+            self._unsubmitted.add(identifier)
             return identifier
 
-    async def settle(self, identifier: str, input_tokens: int, output_tokens: int) -> None:
-        actual = quote(input_tokens, output_tokens)
+    async def mark_submitted(self, identifier: str) -> None:
+        """Je retire la preuve locale avant tout départ HTTP, sans la recréer à la relecture."""
         async with self._lock:
+            await self._ensure_ready()
+            record = self._state["reservations"].get(identifier)
+            if (record is None or record["charged"] is not None
+                    or identifier not in self._unsubmitted):
+                log.debug("evo budget submission refused identifier=%s", identifier)
+                raise EvoError("Cette réservation ne permet pas un nouvel appel IA.")
+            self._unsubmitted.remove(identifier)
+            self._release_attempts.pop(identifier, None)
+            log.debug("evo budget marked submitted identifier=%s", identifier)
+
+    async def release_unsubmitted(self, identifier: str) -> int:
+        """Je libère seulement une réservation locale dont aucun appel HTTP n'a commencé."""
+        async with self._lock:
+            await self._ensure_ready()
+            state = self._state
+            record = state["reservations"].get(identifier)
+            if (record is None or record["charged"] is not None
+                    or identifier not in self._unsubmitted):
+                log.debug("evo budget unused release refused identifier=%s", identifier)
+                raise EvoError("L'absence d'appel payant n'est pas prouvée : réservation conservée.")
+            candidate = copy.deepcopy(state)
+            del candidate["reservations"][identifier]
+            for name in (record["month_bucket"], record["day_bucket"], record["user_bucket"]):
+                bucket = candidate["buckets"][name]
+                bucket["used"] -= record["maximum"]
+                bucket["calls"] -= 1
+                if bucket == _empty_bucket():
+                    del candidate["buckets"][name]
+            self._release_attempts[identifier] = copy.deepcopy(record)
+            await self._commit(candidate, expected_revision=state["revision"])
+            self._unsubmitted.remove(identifier)
+            self._release_attempts.pop(identifier, None)
+            log.debug("evo budget unused reservation released identifier=%s maximum=%s",
+                      identifier, record["maximum"])
+            return record["maximum"]
+
+    async def settle(self, identifier: str, input_tokens: int, output_tokens: int) -> None:
+        async with self._lock:
+            self._unsubmitted.discard(identifier)
+            self._release_attempts.pop(identifier, None)
+            actual = quote(input_tokens, output_tokens)
             await self._ensure_ready()
             state = self._state
             record = state["reservations"].get(identifier)
@@ -393,5 +446,7 @@ class Budget:
 
     async def close(self):
         self._closed = True
+        self._unsubmitted.clear()
+        self._release_attempts.clear()
         self.invalidate()
         await self.store.close()
