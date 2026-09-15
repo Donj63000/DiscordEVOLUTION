@@ -16,6 +16,7 @@ from utils.evo_agent import EvoAgent, MeteredModel
 from utils.evo_budget import Budget
 from utils.evo_budget_store import ConsoleBudgetStore
 from utils.evo_config import EvoConfig, EvoError, NANO
+from utils.evo_messages import split_messages
 from utils.evo_safety import ToolContext, clean, output_text
 from utils.evo_exo import share_session, revoke_session, clear_member_shares, clear_shares
 
@@ -244,8 +245,13 @@ class EvoCog(commands.Cog):
                 await ctx.ensure_access()
                 if ctx.before_publish:
                     ctx.before_publish()
-                message = await send(output_text(answer, ctx.sources))
-                self._remember_reply(ctx, message)
+                for part in split_messages(output_text(answer, ctx.sources, ctx.config.response_chars)):
+                    await self.bot.ensure_evo_leadership()
+                    await ctx.ensure_access()
+                    if ctx.before_publish:
+                        ctx.before_publish()
+                    message = await send(part)
+                    self._remember_reply(ctx, message)
         except EvoError as exc:
             if ctx.action_receipt and ctx.action_receipt.get("action_effectuee"):
                 await send("Ton action a été enregistrée. Son détail n'est plus partagé ici ; ne relance pas l'action.")
@@ -284,8 +290,15 @@ class EvoCog(commands.Cog):
             return
         await interaction.response.defer(thinking=True)
 
+        sent = False
         async def send(content):
-            return await interaction.edit_original_response(content=content, allowed_mentions=NO_MENTIONS)
+            nonlocal sent
+            if not sent:
+                result = await interaction.edit_original_response(content=content, allowed_mentions=NO_MENTIONS)
+                sent = True
+                return result
+            return await interaction.followup.send(content=content, allowed_mentions=NO_MENTIONS,
+                                                   suppress_embeds=True, wait=True)
 
         await self._run(ctx, question, interaction.id, send, deepen=approfondir)
 
@@ -416,6 +429,8 @@ class EvoCog(commands.Cog):
                 f"réponse limitée à {config.max_output} tokens\n"
                 f"Blocage anomalie : {'oui' if data['blocked'] else 'non'} · "
                 f"Enrichissement Xixou : {'activé' if xixou else 'absent'}\n"
+                f"Recherche Web : {'activée' if config.web_search_enabled else 'désactivée'} "
+                f"· Taille réponse : {config.response_chars} unités UTF-16\n"
                 "Compteur prudent (marge de 15 %), pas facture réelle ni montant en euros. "
                 "Il couvre /evo et les échanges avec Evo. "
                 "Aucun compteur ne peut être remis à zéro via Discord."

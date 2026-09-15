@@ -14,12 +14,13 @@ from utils.evo_config import EvoError
 from utils.evo_safety import clean
 
 log = logging.getLogger(__name__)
-_POLITE = r"^(?:evo )?(?:s il te plait )?(?:peux tu |tu peux |pourrais tu |je veux que tu )?"
+_POLITE = (r"^(?:(?:bonjour|salut|evo|stp|svp|s il te plait) )*"
+           r"(?:(?:peux tu|tu peux|pourrais tu|tu pourrais|veux tu|je veux que tu) )?")
 _INTENTS = {
     "join": r"(?:inscris moi|inscrit moi|m inscrire|ajoute moi|m ajouter|je veux m inscrire|je m inscris)\b",
     "leave": r"(?:retire moi|desinscris moi|me desinscrire|me retirer|je veux me retirer|annule mon inscription)\b",
-    "set_job": r"(?:ajoute|ajouter|mets|met|enregistre|definis|passe|monte|corrige)\b",
-    "remove_job": r"(?:supprime|retire|enleve|efface)\b",
+    "set_job": r"(?:(?:m |me )?(?:ajoute|ajouter|rajoute|rajouter|mets|met|mettre|enregistre|enregistrer|definis|definir|passe|passer|monte|monter|corrige|corriger))\b",
+    "remove_job": r"(?:(?:m |me )?(?:supprime|supprimer|retire|retirer|enleve|enlever|efface|effacer))\b",
 }
 _WEEKDAYS = {name: index for index, name in enumerate(
     ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
@@ -212,3 +213,78 @@ async def set_own_job(ctx, metier, niveau):
 
 async def remove_own_job(ctx, metier):
     return await _job(ctx, metier, None, "remove_job")
+
+
+async def create_activity(ctx, titre, quand, description, lieu, capacite, duree_minutes):
+    """Create through the same validated, durable service as /activite creer."""
+    from utils.evo_intents import creation_values
+
+    ctx.check()
+    if type(ctx.trigger_id) is not int:
+        raise EvoError("La demande de création doit avoir un identifiant Discord.")
+    if len(ctx.bot.guilds) != 1 or ctx.bot.guilds[0].id != ctx.guild.id:
+        raise EvoError("Le registre des activités doit appartenir à un serveur identifié.")
+    try:
+        values = creation_values(
+            ctx.request_text, title=titre, when=quand, description=description,
+            location=lieu, capacity=capacite, duration=duree_minutes,
+        )
+    except ValueError as exc:
+        raise EvoError(str(exc)) from None
+    cog = ctx.bot.get_cog("ActiviteCog")
+    if cog is None or not cog.initialized:
+        raise EvoError("Le calendrier des activités n'est pas encore disponible.")
+    actor = SimpleNamespace(guild=ctx.guild, author=ctx.member)
+
+    async def validate_access():
+        await ctx.ensure_access()
+        actor.author = ctx.member
+        cog._guard(actor)
+        cog._require_validated(actor)
+        channel = cog._resolve_organisation_channel(ctx.guild)
+        if channel is None or not ctx.readable_here(channel):
+            raise EvoError("Le salon de publication doit être accessible ici.")
+        for subject in (ctx.member, ctx.guild.me):
+            permissions = channel.permissions_for(subject)
+            if not permissions.view_channel or not permissions.send_messages:
+                raise EvoError("Permission de publication manquante dans le salon d'organisation.")
+
+    async def before_mutation():
+        await validate_access()
+        if ctx.before_mutation is not None:
+            await ctx.before_mutation()
+        await validate_access()
+
+    try:
+        await validate_access()
+        record, created = await cog.create_activity(
+            actor, values, creation_key=_request_key(ctx), before_mutation=before_mutation,
+        )
+    except ActivityError as exc:
+        raise EvoError(str(exc)) from None
+    # Set a truthful receipt before any Discord side effect or model call.
+    receipt = {
+        "action_effectuee": True, "action": "creer_activite", "id": record["id"],
+        "activite": clean(record["titre"], 85), "date": record["starts_at"],
+        "capacite": record["capacity"], "duree_minutes": record["duration_minutes"],
+        "deja_traite": not created, "publication_en_attente": True,
+        "message": f"Sortie {clean(record['titre'], 85)} enregistrée (#{record['id']}). Tu es inscrit.",
+    }
+    ctx.action_receipt = receipt
+    try:
+        role_ok, published = await asyncio.gather(
+            cog._sync_legacy_roles(ctx.guild, record["id"]),
+            cog.sync_card(record["id"], ctx.guild, publish=True),
+        )
+        current = cog.events_for_guild(ctx.guild.id).get(record["id"], record)
+        receipt["publication_en_attente"] = not bool(published)
+        receipt["role_en_attente"] = not bool(role_ok)
+        link = cog._card_link(current)
+        if published and link:
+            receipt["source"] = ctx.source(link)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        receipt["synchronisation_en_attente"] = True
+        log.warning("evo activity publication pending type=%s", type(exc).__name__)
+    return receipt

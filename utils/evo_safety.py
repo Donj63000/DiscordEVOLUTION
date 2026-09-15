@@ -145,6 +145,8 @@ class ToolContext:
     conversation_brief: dict = field(default_factory=dict)
     web_pages: set[str] = field(default_factory=set)
     web_links: set[str] = field(default_factory=set)
+    web_search: object | None = None
+    web_sources: set[str] = field(default_factory=set)
 
     def check(self) -> None:
         if self.guild is None or self.guild.id != self.config.guild_id:
@@ -222,7 +224,7 @@ class ToolContext:
             port = parsed.port
         except ValueError:
             return ""
-        if (parsed.scheme == "https" and parsed.hostname in _ALLOWED_SOURCES
+        if (parsed.scheme == "https" and (parsed.hostname in _ALLOWED_SOURCES or url in self.web_sources)
                 and not parsed.username and not parsed.password and port in (None, 443)
                 and len(url) <= 500):
             self.sources.add(url)

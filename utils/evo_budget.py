@@ -14,6 +14,9 @@ from utils.evo_config import EvoConfig, EvoError
 log = logging.getLogger(__name__)
 INPUT_NANO_PER_TOKEN = 250
 OUTPUT_NANO_PER_TOKEN = 1200
+# OpenAI web_search: $10 / 1,000 calls, verified 2026-09-15.
+# quote() applies the same existing 15% safety margin to tokens and tool fees.
+WEB_SEARCH_NANO_PER_CALL = 10_000_000
 SCOPE = "evolution-evo-v1"
 SCHEMA_VERSION = 1
 
@@ -22,10 +25,13 @@ class BudgetLimitError(EvoError):
     """L'enveloppe ou le quota ne permet pas une nouvelle réservation."""
 
 
-def quote(input_tokens: int, output_tokens: int) -> int:
+def quote(input_tokens: int, output_tokens: int, web_calls: int = 0) -> int:
     if any(type(n) is not int or not 0 <= n <= 100000 for n in (input_tokens, output_tokens)):
         raise EvoError("Comptage de tokens invalide : appel bloqué.")
-    base = input_tokens * INPUT_NANO_PER_TOKEN + output_tokens * OUTPUT_NANO_PER_TOKEN
+    if type(web_calls) is not int or not 0 <= web_calls <= 20:
+        raise EvoError("Comptage de recherches Web invalide.")
+    base = (input_tokens * INPUT_NANO_PER_TOKEN + output_tokens * OUTPUT_NANO_PER_TOKEN
+            + web_calls * WEB_SEARCH_NANO_PER_CALL)
     return (base * 115 + 99) // 100
 
 
@@ -69,7 +75,7 @@ def validate_snapshot(payload, guild_id: int) -> dict:
                          "maximum", "charged", "input_tokens", "output_tokens", "created_at"}
         for identifier, record in records.items():
             if (not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{32}", identifier)
-                    or not isinstance(record, dict) or set(record) != record_fields):
+                    or not isinstance(record, dict) or set(record) not in (record_fields, record_fields | {"web_calls"})):
                 raise ValueError("reservation")
             request_key = record["request_key"]
             if (not isinstance(request_key, str) or not 1 <= len(request_key) <= 200
@@ -84,14 +90,17 @@ def validate_snapshot(payload, guild_id: int) -> dict:
                     or not re.fullmatch(re.escape(day) + r":user:[0-9a-f]{24}", user)
                     or not _nonnegative(record["maximum"]) or record["maximum"] < 1):
                 raise ValueError("reservation values")
+            web_calls = record.get("web_calls", 0)
+            if type(web_calls) is not int or not 0 <= web_calls <= 20:
+                raise ValueError("web usage")
             charged = record["charged"]
             if charged is None:
-                if record["input_tokens"] is not None or record["output_tokens"] is not None:
+                if record["input_tokens"] is not None or record["output_tokens"] is not None or web_calls:
                     raise ValueError("pending usage")
                 amount = record["maximum"]
             else:
                 if (not _nonnegative(charged)
-                        or charged != quote(record["input_tokens"], record["output_tokens"])):
+                        or charged != quote(record["input_tokens"], record["output_tokens"], web_calls)):
                     raise ValueError("charged usage")
                 amount = charged
             for bucket in (month, day, user):
@@ -232,12 +241,16 @@ class Budget:
                 raise EvoError("La réservation d'une anomalie fournisseur a disparu : IA bloquée.")
             actual = quote(*usage)
             if record["charged"] is not None:
-                if (record["input_tokens"], record["output_tokens"]) != usage:
+                if (record["input_tokens"], record["output_tokens"], record.get("web_calls", 0)) != (
+                    usage[0], usage[1], usage[2] if len(usage) > 2 else 0,
+                ):
                     raise EvoError("Une anomalie fournisseur contredit le registre : IA bloquée.")
                 continue
             for name in (record["month_bucket"], record["day_bucket"], record["user_bucket"]):
                 candidate["buckets"][name]["used"] += actual - record["maximum"]
             record.update(charged=actual, input_tokens=usage[0], output_tokens=usage[1])
+            if len(usage) > 2 and usage[2]:
+                record["web_calls"] = usage[2]
         for month in self._safety["months"]:
             candidate["buckets"].setdefault(month, _empty_bucket())["blocked"] = True
         if candidate != state:
@@ -371,11 +384,11 @@ class Budget:
                       identifier, record["maximum"])
             return record["maximum"]
 
-    async def settle(self, identifier: str, input_tokens: int, output_tokens: int) -> None:
+    async def settle(self, identifier: str, input_tokens: int, output_tokens: int, *, web_calls: int = 0) -> None:
         async with self._lock:
             self._unsubmitted.discard(identifier)
             self._release_attempts.pop(identifier, None)
-            actual = quote(input_tokens, output_tokens)
+            actual = quote(input_tokens, output_tokens, web_calls)
             await self._ensure_ready()
             state = self._state
             record = state["reservations"].get(identifier)
@@ -390,10 +403,12 @@ class Budget:
             candidate["reservations"][identifier].update(
                 charged=actual, input_tokens=input_tokens, output_tokens=output_tokens,
             )
+            if web_calls:
+                candidate["reservations"][identifier]["web_calls"] = web_calls
             anomaly = actual > record["maximum"]
             if anomaly:
                 candidate["buckets"][record["month_bucket"]]["blocked"] = True
-                self._remember_safety(record["month_bucket"], identifier, (input_tokens, output_tokens))
+                self._remember_safety(record["month_bucket"], identifier, (input_tokens, output_tokens, web_calls))
             await self._commit(candidate, expected_revision=state["revision"])
             if anomaly:
                 self._clear_safety()

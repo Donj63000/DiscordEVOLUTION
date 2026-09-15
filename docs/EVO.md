@@ -1,5 +1,8 @@
 # Evo — assistant conversationnel Evolution
 
+Mise à niveau IA : voir [audit, installation et limites](EVO_AI_UPGRADE.md).
+La recherche Internet est optionnelle et payante ; elle n'est pas activée implicitement.
+
 Python 3.11 ou plus récent. Persistance du compteur dans le salon `#console` existant.
 Evo consulte les outils du bot et effectue les modifications personnelles explicitement
 demandées. Les commandes classiques restent disponibles.
@@ -66,8 +69,10 @@ demande simplement longue ou difficile ne l'active pas automatiquement.
 
 Avant de répondre, Evo peut demander une seconde série de lectures pour vérifier
 une correspondance ou compléter une source. Les questions habituelles restent à
-deux générations ; une vérification utile permet une troisième, sans dépasser
-cinq outils au total. Une lecture identique est réutilisée dans la demande.
+deux générations. Par défaut, trois générations et cinq outils sont autorisés ;
+le Staff peut configurer jusqu'à six générations et douze outils. Plusieurs tours
+de lecture deviennent possibles, dans le même budget et avec une place réservée
+pour répondre. Une lecture identique est réutilisée dans la demande.
 Après une modification personnelle, le rédacteur ne relance aucun outil.
 Le mode approfondi utilise sa troisième génération pour le spécialiste et ne
 cumule pas celui-ci avec une nouvelle boucle de recherche.
@@ -75,7 +80,8 @@ cumule pas celui-ci avec une nouvelle boucle de recherche.
 ### Actions personnelles et partage Exo
 
 Evo peut inscrire ou désinscrire le demandeur d'une activité publiée, et ajouter,
-actualiser ou supprimer ses métiers. Les ambiguïtés demandent une précision ; les
+actualiser ou supprimer ses métiers, et créer une activité à sa demande directe
+(titre, date et heure requis, rôle validé). Les ambiguïtés demandent une précision ; les
 conditions des commandes natives, y compris la liste d'attente, restent applicables.
 Les changements de métiers et d'activités ne sont confirmés qu'après sauvegarde
 vérifiée dans `#console`. Une seule modification personnelle est permise par demande.
@@ -101,6 +107,8 @@ d'édition du panneau Exo bloque le partage jusqu'à resynchronisation ou réouv
 | `recette` | Recette intégrale calculée en Python, affichée et enrichie par pages de 8 ingrédients. |
 | `monstre` | Grades du wiki et inventaire Xixou vérifié par identifiant ET nom ; drops paginés. |
 | `chercher_equipements` | Index d'effets Xixou rapproché du wiki ; 5 résultats maximum. |
+| `proposer_stuff` | Base heuristique de huit emplacements, deux anneaux distincts ; jets interprétés, sans bonus de panoplie ni prix. |
+| `analyser_stuff` | Somme Python d'une liste nommée ; niveau/emplacements contrôlés partiellement, conditions non garanties. |
 | `comparer_objets` | Fiches de 2 ou 3 équipements et écarts de jets calculés en Python. |
 | `candidats_exo` | Heuristique de remontage, également sur les objets explicitement sélectionnés. |
 | `guide_fm` | Poids nominaux et limites du moteur existant, sans taux Ankama prétendument certifié. |
@@ -111,11 +119,13 @@ d'édition du panneau Exo bloque le partage jusqu'à resynchronisation ou réouv
 | `artisans` | Métiers déclarés des membres encore présents sur le serveur. |
 | `liste_metiers` | Liste paginée des métiers déclarés, nombre d'artisans et niveau maximal enregistré. |
 | `activites` | Sorties à venir effectivement publiées ; aucun brouillon ni audience Staff différente. |
+| `creer_activite` | Service commun avec `/activite creer`, sauvegarde puis publication, clé anti-doublon liée à la demande. |
 | `inscrire_activite` / `desinscrire_activite` | Inscription personnelle, règles natives et sauvegarde console. |
 | `definir_mon_metier` / `supprimer_mon_metier` | Modification de ses métiers déclarés, avec sauvegarde vérifiée. |
 | `conversation_salon` | Au plus 15 messages récents du salon courant, après activation explicite. |
 | `aide_bot` | Commandes pertinentes déjà enregistrées ; aucune exécution automatique. |
 | `consulter_site` | Deux pages publiques Moon-Bot ou officielles Dofus Rétro, extraits ciblés et cache de dix minutes. |
+| `rechercher_web` | Une recherche OpenAI par demande, opt-in ; filtre Rétro ou sujet général, citations vérifiées et frais dans le registre. |
 | `demander_precision` | Demande une précision sans deuxième génération inutile. |
 
 Les outils ne lancent pas des chaînes de commandes Discord. Ils utilisent les
@@ -292,8 +302,8 @@ Avant chaque génération :
 5. L'usage retourné ajuste la réservation ; une anomalie supérieure au maximum
    prévu bloque le mois pour contrôle.
 
-Deux générations habituelles, trois au maximum avec vérification ou approfondissement, et cinq outils
-maximum par demande. La réponse demandée reste courte : environ 400 tokens visibles,
+Deux générations habituelles, limites par défaut de trois générations et cinq outils,
+configurables jusqu'à six et douze respectivement. La réponse vise par défaut 400 tokens visibles,
 et 250 pour la note du spécialiste. Avec `high`, la limite API inclut aussi les
 tokens de raisonnement : 3 000 pour l'analyse, 3 000 pour la rédaction et 1 800 pour
 le spécialiste. Toute cette enveloppe est réservée avant génération ; le règlement
@@ -313,8 +323,10 @@ durable couvrant son entrée maximale et sa sortie autorisée. Le spécialiste n
 appelé que si l'enveloppe commune restante le permet ; sinon le rédacteur répond
 en mode normal. Chaque rôle emploie le même registre, le même quota personnel et
 un identifiant de réservation distinct. `EVO_MAX_OUTPUT_TOKENS` règle le souhait
-de longueur visible, plafonné à 400, et non l'enveloppe de raisonnement. Le nombre
-d'appels reste plafonné à trois. `EVO_REASONING_EFFORT` accepte `none`, `low`,
+de longueur visible, de 200 à 1 400 tokens, et non l'enveloppe de raisonnement.
+`EVO_MAX_RESPONSE_CHARS` borne la réponse à 6 000 unités UTF-16 par défaut
+(1 800 à 7 000 configurables), découpée en messages de 1 900 unités maximum.
+Le nombre d'appels reste borné par les limites configurées. `EVO_REASONING_EFFORT` accepte `none`, `low`,
 `medium` ou `high` ; `none` reprend les petites enveloppes sans raisonnement.
 
 Avant de proposer des lectures supplémentaires au modèle, le bot réserve le dernier
@@ -425,14 +437,19 @@ irréversible. Les anciens modules du bot conservent leurs propres politiques.
   du Support Ankama explicitement consacrés à Rétro. Deux pages maximum par demande,
   cinq extraits courts par page et cache de dix minutes. Les adresses doivent venir
   du membre, des outils, des points d'entrée prédéfinis ou d'une page déjà consultée.
-  Aucun compte, cookie de connexion, recherche Web payante ou cotation HDV ajouté.
-  Les pages bloquées ou illisibles sont signalées sans contournement.
+  Aucun compte ou cookie de connexion. Les pages bloquées restent sans contournement.
+  En complément, `rechercher_web` utilise la recherche OpenAI si explicitement
+  activée. Une requête publique seule est envoyée à cet appel dédié ; ni historique
+  ni profil Discord. Les instructions interdisent les données personnelles, et
+  Python refuse les mentions, identifiants Discord longs et secrets reconnaissables.
+  Ces filtres ne sont pas un détecteur universel de données personnelles.
+  Aucun prix HDV n'est inventé.
 - Le modèle peut encore mal interpréter une question ou un résultat. Les tests
   automatiques vérifient l'orchestration et les garde-fous, pas la justesse de toutes
   ses futures recommandations. Comparer les premiers résultats à `/objet` et `/exo`.
-- Evo modifie uniquement les inscriptions et métiers du demandeur, ainsi que sa
-  simulation FM partagée. Les actions sur des tiers, sanctions et créations de
-  sorties restent accessibles par les commandes natives avec leurs permissions.
+- Evo modifie uniquement les inscriptions et métiers du demandeur, sa simulation
+  FM partagée et crée les sorties qu'il demande explicitement, avec le rôle requis.
+  Les actions sur des tiers, sanctions et autres commandes restent hors des outils IA.
 
 ## 9. Recette de validation après déploiement
 

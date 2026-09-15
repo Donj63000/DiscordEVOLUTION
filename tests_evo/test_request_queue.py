@@ -257,12 +257,10 @@ async def test_cancelling_waiting_request_does_not_cancel_the_running_answer(que
 
 @pytest.mark.asyncio
 async def test_leadership_loss_when_leaving_queue_suspends_without_starting_another_generation(queue):
-    checks = 0
+    waiting = None
 
     async def ensure_leadership():
-        nonlocal checks
-        checks += 1
-        if checks == 3:
+        if waiting is not None and asyncio.current_task() is waiting.task:
             await queue.cog.suspend()
             raise EvoError("Une autre instance a repris le bot.")
 
@@ -274,7 +272,6 @@ async def test_leadership_loss_when_leaving_queue_suspends_without_starting_anot
     active.release.set()
     await finished(active, waiting)
 
-    assert checks == 3
     assert queue.agent.answer.await_count == 1
     assert queue.cog.budget.check_ready.await_count == 1
     queue.cog.budget.invalidate.assert_called_once()

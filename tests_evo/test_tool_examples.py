@@ -172,7 +172,7 @@ class CatalogueScopeTests(unittest.TestCase):
         drop = {row["name"] for row in schemas_for("et avec 600 PP sources_drop")}
         self.assertEqual(drop, {
             "sources_drop", "monstre", "fiche_objet", "aide_bot",
-            "demander_precision", "consulter_site",
+            "demander_precision", "consulter_site", "rechercher_web",
         })
         recipe = {row["name"] for row in schemas_for("qui peut craft ça")}
         self.assertIn("recette", recipe)

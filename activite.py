@@ -604,6 +604,55 @@ class ActiviteCog(commands.Cog):
         ))
         ctx.response_count += 1
 
+    async def create_activity(self, ctx, values, *, creation_key, before_mutation=None):
+        """Create one durable event; Discord publication is a separate, retryable step.
+
+        Shared by /activite and Evo. The caller owns its receipt and must not
+        retry with a fresh key after an uncertain write.
+        """
+        self._guard(ctx)
+        self._require_validated(ctx)
+        if not isinstance(creation_key, str) or not 1 <= len(creation_key) <= 200:
+            raise ActivityError("Identifiant de création invalide.")
+        async with self._mutation_lock:
+            self._guard(ctx)
+            self._require_validated(ctx)
+            existing = next((
+                data for data in self.events_for_guild(ctx.guild.id).values()
+                if data.get("creation_key") == creation_key and data["creator_id"] == ctx.author.id
+            ), None)
+            if existing:
+                return copy.deepcopy(existing), False
+            # Validation also happens under the lock: a queued request can become stale.
+            draft = validate_draft(values, now=self.now())
+            source_url = values.get("_announcement_url")
+            if source_url:
+                if not re.fullmatch(rf"https://discord\.com/channels/{ctx.guild.id}/[0-9]+/[0-9]+", source_url):
+                    raise ActivityError("Le lien d'annonce doit appartenir à ce serveur.")
+                draft["announcement_url"] = source_url
+            channel = self._resolve_organisation_channel(ctx.guild)
+            if channel is None:
+                raise ActivityError("Le salon d'organisation est introuvable. Demande au Staff de le configurer.")
+            if before_mutation is not None:
+                await before_mutation()
+            self._guard(ctx)
+            self._require_validated(ctx)
+            candidate = copy.deepcopy(self.activities_data)
+            key = str(candidate.get("next_id", 1))
+            while key in candidate["events"]:
+                key = str(int(key) + 1)
+            candidate["next_id"] = int(key) + 1
+            candidate["events"][key] = {
+                **draft, "id": key, "guild_id": ctx.guild.id,
+                "creator_id": ctx.author.id, "participants": [ctx.author.id], "waitlist": [],
+                "role_id": None, "cancelled": False, "revision": 0,
+                "reminder_24_sent": False, "reminder_1_sent": False,
+                "creation_key": creation_key, "publication_pending": True,
+                "role_sync_pending": True, "role_member_ids": [],
+            }
+            await self._commit(candidate, ctx=ctx)
+            return copy.deepcopy(self.activities_data["events"][key]), True
+
     async def command_creer(self, ctx, line=None):
         self._guard(ctx)
         self._require_validated(ctx)
@@ -616,40 +665,11 @@ class ActiviteCog(commands.Cog):
             if starts is None:
                 raise ActivityError("Utilise `/activite creer` ou Titre JJ/MM/AAAA HH:MM Description.")
             values.update(titre=title, date=starts.strftime("%d/%m/%Y %H:%M"), description=description)
-        draft = validate_draft(values, now=self.now())
-        source_url = supplied.get("_announcement_url")
-        if source_url:
-            if not re.fullmatch(rf"https://discord\.com/channels/{ctx.guild.id}/[0-9]+/[0-9]+", source_url):
-                raise ActivityError("Le lien d'annonce doit appartenir à ce serveur.")
-            draft["announcement_url"] = source_url
         creation_key = supplied.get("_creation_key") or (
             f"message:{ctx.guild.id}:{ctx.message.id}" if getattr(ctx, "message", None) else uuid.uuid4().hex
         )
-        async with self._mutation_lock:
-            existing = next((
-                data for data in self.events_for_guild(ctx.guild.id).values()
-                if data.get("creation_key") == creation_key and data["creator_id"] == ctx.author.id
-            ), None)
-            if existing:
-                key = existing["id"]
-            else:
-                channel = self._resolve_organisation_channel(ctx.guild)
-                if channel is None:
-                    raise ActivityError("Le salon d'organisation est introuvable. Demande au Staff de le configurer.")
-                candidate = copy.deepcopy(self.activities_data)
-                key = str(candidate.get("next_id", 1))
-                while key in candidate["events"]:
-                    key = str(int(key) + 1)
-                candidate["next_id"] = int(key) + 1
-                candidate["events"][key] = {
-                    **draft, "id": key, "guild_id": ctx.guild.id,
-                    "creator_id": ctx.author.id, "participants": [ctx.author.id], "waitlist": [],
-                    "role_id": None, "cancelled": False, "revision": 0,
-                    "reminder_24_sent": False, "reminder_1_sent": False,
-                    "creation_key": creation_key, "publication_pending": True,
-                    "role_sync_pending": True, "role_member_ids": [],
-                }
-                await self._commit(candidate, ctx=ctx)
+        record, _created = await self.create_activity(ctx, values, creation_key=creation_key)
+        key = record["id"]
         ctx.activity_committed = True
         record = self.activities_data["events"][key]
         receipt = await ctx.send(

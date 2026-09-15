@@ -96,6 +96,8 @@ class EvoConfig:
     max_sessions: int = 150
     session_seconds: int = 900
     knowledge_path: str = "config/evo_knowledge.json"
+    web_search_enabled: bool = False
+    response_chars: int = 6000
 
     def output_limit(self, role: str) -> int:
         """Je borne ensemble les tokens de raisonnement et de texte de chaque rôle."""
@@ -142,20 +144,24 @@ class EvoConfig:
             daily_nano=money("EVO_DAILY_USD", "0.12", "2"),
             request_nano=money("EVO_REQUEST_USD", "0.015", "0.05"),
             max_input=integer("EVO_MAX_INPUT_TOKENS", 7500, 2000, 12000),
-            max_output=min(integer("EVO_MAX_OUTPUT_TOKENS", 400, 200, 900), 400),
+            max_output=integer("EVO_MAX_OUTPUT_TOKENS", 400, 200, 1400),
             reasoning_effort=os.getenv("EVO_REASONING_EFFORT", "high").strip().lower(),
             analysis_tokens=integer("EVO_ANALYSIS_MAX_OUTPUT_TOKENS", 3000, 800, 4000),
             writer_tokens=integer("EVO_WRITER_MAX_OUTPUT_TOKENS", 3000, 800, 4000),
             specialist_tokens=integer("EVO_SPECIALIST_MAX_OUTPUT_TOKENS", 1800, 500, 3000),
-            max_calls=integer("EVO_MAX_MODEL_CALLS", 3, 2, 3),
-            deep_max_calls=integer("EVO_MAX_DEEP_MODEL_CALLS", 3, 2, 3),
-            max_tools=integer("EVO_MAX_TOOL_CALLS", 5, 1, 5),
+            max_calls=integer("EVO_MAX_MODEL_CALLS", 3, 2, 6),
+            deep_max_calls=integer("EVO_MAX_DEEP_MODEL_CALLS", 3, 2, 6),
+            max_tools=integer("EVO_MAX_TOOL_CALLS", 5, 1, 12),
             user_daily_calls=integer("EVO_USER_DAILY_CALLS", 60, 1, 180),
             cooldown=integer("EVO_COOLDOWN_SECONDS", 12, 5, 300),
             history_channels=ids("EVO_HISTORY_CHANNEL_IDS"),
             public_member_data=flag("EVO_PUBLIC_MEMBER_DATA"),
             public_job_data=flag("EVO_PUBLIC_JOB_DATA"),
+            web_search_enabled=flag("EVO_WEB_SEARCH_ENABLED"),
+            response_chars=integer("EVO_MAX_RESPONSE_CHARS", 6000, 1800, 7000),
         )
+        if settings.web_search_enabled and (settings.request_nano < 30_000_000 or settings.max_calls < 3):
+            raise EvoError("La recherche Web nécessite EVO_REQUEST_USD >= 0.03 et EVO_MAX_MODEL_CALLS >= 3.")
         for role in ("analysis", "writer", "specialist"):
             settings.output_limit(role)
         if settings.request_nano > settings.daily_nano or settings.daily_nano > settings.monthly_nano:

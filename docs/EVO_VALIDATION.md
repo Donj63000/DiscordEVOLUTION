@@ -1,5 +1,10 @@
 # Rapport de validation — Evo / Luna
 
+> Les résultats ci-dessous sont l'historique livré dans l'archive d'origine.
+> Ils n'attestent pas une exécution complète après ce patch.
+> La validation de la nouvelle mise à niveau, avec ses limites d'environnement,
+> est décrite dans [EVO_AI_UPGRADE.md](EVO_AI_UPGRADE.md).
+
 ## Raisonnement high, vérification et sources Web — 15 septembre 2026
 
 Suite complète : **2 492 tests réussis, 1 test historique ignoré**, en 41,24 secondes
