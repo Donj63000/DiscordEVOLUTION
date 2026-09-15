@@ -36,8 +36,8 @@ class ConversationBudgetTests(unittest.IsolatedAsyncioTestCase):
         specialist, writer = self.transport.calls[1:]
         self.assertEqual(specialist["tools"], [])
         self.assertEqual(specialist["tool_choice"], "none")
-        self.assertEqual(specialist["max_output_tokens"], 250)
-        self.assertEqual(writer["max_output_tokens"], 400)
+        self.assertEqual(specialist["max_output_tokens"], 1800)
+        self.assertEqual(writer["max_output_tokens"], 3000)
         self.assertIn("Note de conseil", json.dumps(writer["input"]))
         status = await self.budget.status()
         self.assertEqual(status["calls"], 3)
@@ -49,7 +49,7 @@ class ConversationBudgetTests(unittest.IsolatedAsyncioTestCase):
         agent = self.make_agent([response([function("guilde", {})]), answer("Réponse unique.")])
         await agent.answer(context(self.config), "Présentation complexe et détaillée de la guilde", 2)
         self.assertEqual(len(self.transport.calls), 2)
-        self.assertTrue(all(call["max_output_tokens"] == 400 for call in self.transport.calls))
+        self.assertTrue(all(call["max_output_tokens"] == 3000 for call in self.transport.calls))
 
     async def test_specialist_reservation_race_keeps_reserved_writer(self):
         agent = self.make_agent([response([function("guilde", {})]), answer("Réponse conservée.")])
@@ -76,7 +76,7 @@ class ConversationBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.budget.status())["calls"], 2)
 
     async def test_deep_falls_back_to_normal_for_a_small_request_envelope(self):
-        self.config = config(request_nano=1_800_000)
+        self.config = config(request_nano=9_000_000)
         self.budget.config = self.config
         agent = self.make_agent([response([function("guilde", {})]), answer("Réponse économique.")])
         result = await agent.answer(context(self.config), "Approfondis la guilde", 4)

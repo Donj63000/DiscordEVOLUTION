@@ -26,9 +26,12 @@ def category_name(value: str | None) -> str | None:
     if not value:
         return None
     key = search_key(value)
+    if not key:
+        return None
     alias = EQUIPMENT_ALIASES.get(key)
+    normalized = equipment_category(key)
     for category in EQUIPMENT_TYPES:
-        if alias == category or search_key(category) == key:
+        if alias == category or equipment_category(category) == normalized:
             return category
     raise EvoError("Type d'équipement inconnu. Exemple : coiffe, cape, anneau, bottes.")
 
@@ -128,26 +131,44 @@ def equipment_search(rows, *, category, min_level, max_level, priorities, no_mal
         raise EvoError("Le niveau minimum doit être inférieur au niveau maximum.")
     keys = [STAT_NAMES[k] for k in priorities]
     forbidden = [STAT_NAMES[k] for k in no_malus]
-    selected = [
-        row for row in rows
-        if type(row.entry.level) is int and min_level <= row.entry.level <= max_level
-        and (category is None or row.entry.category == category)
-        and (not query or search_key(query) in search_key(row.entry.name))
-        and all(row.bounds.get(key, (0, 0))[1] > 0 for key in keys)
-        # Toute plage pouvant devenir négative est exclue du filtre "sans malus".
-        and all(row.bounds.get(key, (0, 0))[0] >= 0 for key in forbidden)
-    ]
+    category_key = equipment_category(category) if category else None
+    words = search_key(query).split()
+    rows = tuple(rows)
+    typed = [row for row in rows if category_key is None
+             or equipment_category(row.entry.category) == category_key]
+    leveled = [row for row in typed if type(row.entry.level) is int
+               and min_level <= row.entry.level <= max_level]
+    named = [row for row in leveled if all(word in search_key(row.entry.name) for word in words)]
+    prioritized = [row for row in named if all(row.bounds.get(key, (0, 0))[1] > 0 for key in keys)]
+    selected = [row for row in prioritized if all(row.bounds.get(key, (0, 0))[0] >= 0 for key in forbidden)]
     selected.sort(key=lambda row: (
         tuple(-row.bounds.get(key, (0, 0))[1] for key in keys),
         row.entry.level, row.entry.name,
     ))
-    return {
+    counts = {
+        "objets_indexes": len(rows), "type": len(typed), "niveau": len(leveled),
+        "nom": len(named), "priorites": len(prioritized), "sans_malus": len(selected),
+    }
+    blocked_filter = next((name for name, count in counts.items() if count == 0), None)
+    log.debug("evo equipment search counts=%s blocked_filter=%s", counts, blocked_filter)
+    result = {
         "resultats": [row.payload() for row in selected[:5]],
         "correspondances": len(selected),
         "classement": "Tri lexicographique sur les jets maximums, dans l'ordre des priorités demandées.",
         "priorites": priorities,
+        "filtres_appliques": {
+            "type_objet": category, "niveau_min": min_level, "niveau_max": max_level,
+            "nom_contient": query, "sans_malus": no_malus,
+        },
+        "diagnostic_filtres": counts, "premier_filtre_sans_resultat": blocked_filter,
         "limites": "Jets naturels seuls ; conditions et panoplies à vérifier. Aucun prix ni optimisation globale de stuff.",
     }
+    if not selected and min_level == max_level:
+        result["precision_niveau"] = (
+            "Cette recherche impose un niveau d'objet exact. Le niveau d'un personnage est "
+            "normalement un plafond ; une tranche explicitement demandée doit rester respectée."
+        )
+    return result
 
 
 def compare_equipment(payloads):
@@ -182,6 +203,7 @@ def compare_equipment(payloads):
 
 def exo_candidates(rows, *, target, category, min_level, max_level, references=()):
     category = category_name(category)
+    category_key = equipment_category(category) if category else None
     if min_level > max_level:
         raise EvoError("Tranche de niveaux invalide.")
     requested = set(references)
@@ -196,7 +218,9 @@ def exo_candidates(rows, *, target, category, min_level, max_level, references=(
                 reasons.append("Ce bonus est déjà natif : ce ne serait pas un exo.")
             if row.unsupported:
                 reasons.append("Des effets non interprétés empêchent un classement fiable.")
-            if not min_level <= row.entry.level <= max_level or (category and row.entry.category != category):
+            if not min_level <= row.entry.level <= max_level or (
+                category_key and equipment_category(row.entry.category) != category_key
+            ):
                 reasons.append("Objet hors des filtres demandés.")
             if reasons:
                 excluded.append({"objet": row.entry.name, "reference": row.entry.token, "raisons": reasons})
@@ -205,7 +229,7 @@ def exo_candidates(rows, *, target, category, min_level, max_level, references=(
     candidates = [
         row for row in selected if is_mageable(row.entry)
         and min_level <= row.entry.level <= max_level
-        and (category is None or row.entry.category == category)
+        and (category_key is None or equipment_category(row.entry.category) == category_key)
         and target not in row.bounds
         and not row.unsupported
     ]

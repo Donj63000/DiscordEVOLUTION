@@ -266,6 +266,60 @@ class DiscordWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.agent.answer.await_count, 1)
         self.assertIn("quelques secondes", message.reply.await_args.args[0])
 
+    async def test_question_in_another_channel_waits_and_keeps_its_original_context(self):
+        entered, release, acknowledged = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        self.cog.config = config(channel_ids=frozenset({10, 30}), cooldown=0)
+        self.ctx.member.guild_permissions.manage_guild = True
+        self.channel.name = "staff"
+        self.permissions.public = False
+        other_permissions = self.ctx.guild.get_channel(30)
+        other_channel = MagicMock(spec=discord.TextChannel)
+        other_channel.id, other_channel.name = 30, "développeurs"
+        other_channel.guild = self.ctx.guild
+        other_channel.permissions_for.side_effect = other_permissions.permissions_for
+        self.ctx.guild.text_channels[2] = other_channel
+
+        async def answer(ctx, question, trigger_id):
+            if trigger_id == 462:
+                entered.set()
+                await release.wait()
+            return f"Réponse : {question}"
+
+        async def reply(content, **kwargs):
+            if "en attente" in content:
+                acknowledged.set()
+            return SimpleNamespace(id=1463)
+
+        self.agent.answer.side_effect = answer
+        first = self.interaction(462, 1462)
+        second = self.message(463, content="<@99> Et les donjons ?")
+        second.channel = other_channel
+        second.reply.side_effect = reply
+        active = asyncio.create_task(self.cog.evo.callback(self.cog, first, "Et les métiers ?"))
+        waiting = None
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            waiting = asyncio.create_task(self.cog.on_message(second))
+            await asyncio.wait_for(acknowledged.wait(), 2)
+            self.assertEqual(self.agent.answer.await_count, 1)
+            release.set()
+            await asyncio.wait_for(asyncio.gather(active, waiting), 2)
+        finally:
+            for task in (active, waiting):
+                if task:
+                    task.cancel()
+            await asyncio.gather(*(task for task in (active, waiting) if task), return_exceptions=True)
+
+        first_context, second_context = (call.args[0] for call in self.agent.answer.await_args_list)
+        self.assertIs(first_context.channel, self.channel)
+        self.assertIs(second_context.channel, other_channel)
+        self.assertEqual(first_context.member.id, second_context.member.id)
+        self.assertEqual(second.reply.await_count, 2)
+        self.assertIn("Et les donjons ?", second.reply.await_args.args[0])
+        self.assertIn("Et les métiers ?", first.edit_original_response.await_args.kwargs["content"])
+        self.assertFalse(self.cog._active)
+        self.assertFalse(self.cog._waiting)
+
     async def test_existing_agent_requires_current_leadership_and_ready_budget(self):
         await self.cog._ready()
         await self.cog._ready()

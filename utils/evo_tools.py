@@ -23,6 +23,7 @@ from utils.evo_config import EvoError
 from utils.evo_equipment import (
     EquipmentIndex, STAT_NAMES, compare_equipment, equipment_search, exo_candidates,
 )
+from utils.evo_memory import has_stat_unit_nearby
 from utils.evo_safety import ToolContext, bounded_json, clean, compact, parse_arguments
 from utils.exo_data import parse_effects
 from utils.exo_engine import DISCLAIMER, STATS
@@ -67,7 +68,7 @@ TOOLS = [
           "page": number(1, 13)}),
     tool("monstre", "Zones, statistiques et drops vérifiés, par pages de 10. Page 1 au début.",
          {"nom": text(), "page": number(1, 100)}),
-    tool("chercher_equipements", "5 équipements, triés par jets max dans l'ordre des priorités. Pas de prix.",
+    tool("chercher_equipements", "5 équipements équipables : niveau du joueur = plafond, minimum 1 sauf borne explicite. nom_contient filtre seulement un nom d'objet, jamais classe ou élément. Pas de prix.",
          {"type_objet": text(nullable=True), "niveau_min": number(1, 200), "niveau_max": number(1, 200),
           "priorites": array(choice(STAT_NAMES), 1, 3), "sans_malus": array(choice(STAT_NAMES), 0, 3),
           "nom_contient": text(maximum=60)}),
@@ -82,13 +83,15 @@ TOOLS = [
     tool("ma_session_fm", "Consulte uniquement ton atelier /exo explicitement partagé dans ce salon.", {}),
     tool("poser_rune", "Une rune sur ta simulation partagée ici, demande directe actuelle requise ; pas de conseil ni lot.",
          {"rune": text()}),
-    tool("guilde", "Présentation Discord et salons publics. Ne révèle aucune donnée Staff.", {}, "guild"),
+    tool("guilde", "Nombre actuel de membres Discord, présentation du serveur et salons publics.", {}, "guild"),
     tool("connaissances_guilde", "Recherche les faits publics validés par le Staff : règles, histoire, habitudes.",
          {"question": text(maximum=180)}, "guild"),
     tool("membre", "Identifie un membre et son profil Dofus déclaré, jamais une biographie inventée.",
          {"nom": text()}, "guild"),
     tool("artisans", "Métiers déclarés des membres actuels. Aucun changement de profil.",
          {"metier": text(), "niveau_min": number(1, 100)}, "guild"),
+    tool("liste_metiers", "Liste les métiers réellement déclarés, avec nombre d'artisans et niveau maximal. 10 métiers par page, page 1 au début.",
+         {"page": number(1, 1000)}, "guild"),
     tool("activites", "Sorties publiées et accessibles à l'audience de ce salon, places et dates réelles.",
          {"recherche": text(), "jours": number(1, 60)}, "guild"),
     tool("inscrire_activite", "T'inscrit à la sortie nommée ou identifiée, seulement sur ta demande explicite.",
@@ -129,12 +132,12 @@ def schemas_for(question: str) -> list[dict]:
         (r"sortie|sorties|activite|activites|calendrier|inscris|inscrire|inscrit|inscrits|desinscris|"
          r"donjon|donjons|organise|orga|inscrire_activite|desinscrire_activite",
          {"activites", "inscrire_activite", "desinscrire_activite"}),
-        (r"artisan|artisans|metier|metiers|paysan|bucheron|alchimiste|mineur|pecheur|tailleur|bijoutier|"
-         r"cordonnier|forgeron|sculpteur|definir_mon_metier|supprimer_mon_metier",
-         {"artisans", "membre", "definir_mon_metier", "supprimer_mon_metier"}),
+        (r"artisan|artisans|metier|metiers|job|jobs|paysan|bucheron|alchimiste|mineur|pecheur|tailleur|bijoutier|"
+         r"cordonnier|forgeron|sculpteur|liste_metiers|definir_mon_metier|supprimer_mon_metier",
+         {"artisans", "liste_metiers", "membre", "definir_mon_metier", "supprimer_mon_metier"}),
         (r"membre|membres|profil|personnage|personnages|mule|mules",
-         {"membre", "artisans", "definir_mon_metier", "supprimer_mon_metier"}),
-        (r"guilde|evolution|regle|regles|reglement|histoire|existe|connaissances_guilde",
+         {"guilde", "membre", "artisans", "definir_mon_metier", "supprimer_mon_metier"}),
+        (r"guilde|discord|serveur|evolution|regle|regles|reglement|histoire|existe|connaissances_guilde",
          {"guilde", "connaissances_guilde", "membre"}),
         (r"salon|resume|resumer|conversation_salon", {"conversation_salon", "guilde"}),
     )
@@ -147,6 +150,62 @@ def schemas_for(question: str) -> list[dict]:
     selected.update({"aide_bot", "demander_precision"})
     log.debug("evo tool catalogue selected count=%s", len(selected))
     return [spec["schema"] for spec in TOOLS if spec["schema"]["name"] in selected]
+
+
+def catalogue_name(value):
+    """Je rapproche articles et pluriels simples, jamais une ressemblance approximative."""
+    words = search_key(value).split()
+    if words and words[0] in {"le", "la", "les", "un", "une", "des", "l"}:
+        words = words[1:]
+    return " ".join(word[:-1] if len(word) > 3 and word.endswith("s")
+                    and not word.endswith("ss") else word for word in words)
+
+
+def equipment_constraints(ctx, minimum, maximum, name):
+    """Le niveau du joueur borne les objets équipables sans effacer une plage demandée."""
+    question = search_key(ctx.request_text)
+    preferences = ctx.conversation_brief.get("preferences", {})
+    explicit = re.search(r"\b(?:entre|de)\s+(\d{1,3})\s+(?:et|a)\s+(\d{1,3})\b", question)
+    lower = re.search(r"\b(?:minimum|min|au moins|a partir de)\s*(?:niveau\s*)?(\d{1,3})\b", question)
+    exact = re.search(r"\b(?:exactement|uniquement|strictement)\s*(?:de\s+)?(?:niveau|lv|lvl|nv)?\s*(\d{1,3})\b", question)
+    if explicit and has_stat_unit_nearby(question, explicit.start(), explicit.end()):
+        explicit = None
+    if lower and has_stat_unit_nearby(question, lower.start(), lower.end()):
+        lower = None
+    if exact and has_stat_unit_nearby(question, exact.start(), exact.end()):
+        exact = None
+    level = preferences.get("niveau")
+    if explicit and 1 <= int(explicit[1]) <= int(explicit[2]) <= 200:
+        minimum, maximum = int(explicit[1]), int(explicit[2])
+    elif exact and 1 <= int(exact[1]) <= 200:
+        minimum = maximum = int(exact[1])
+    elif lower and 1 <= int(lower[1]) <= 200:
+        minimum = int(lower[1])
+    elif preferences.get("niveau_min_equipement") and preferences.get("niveau_max_equipement"):
+        minimum = preferences["niveau_min_equipement"]
+        maximum = preferences["niveau_max_equipement"]
+    elif str(level).isdigit() and 1 <= int(level) <= 200:
+        minimum, maximum = 1, min(maximum, int(level))
+    name_words = set(search_key(name).split()) if name else set()
+    if name_words and name_words <= {
+        "cra", "iop", "sacrieur", "eniripsa", "enutrof", "osamodas", "sadida", "sram",
+        "ecaflip", "feca", "xelor", "pandawa", "terre", "feu", "eau", "air", "multi",
+        "force", "intelligence", "chance", "agilite",
+    } and not re.search(r"\b(?:nom|nomme|appele|contenant|contient)\b", question):
+        name = ""
+    return minimum, maximum, name
+
+
+def prepared_tools(question):
+    """Je prépare les lectures simples certaines pour garder une seule rédaction IA."""
+    key = search_key(question)
+    if re.fullmatch(
+        r"(?:combien de|quel est le nombre(?: actuel| total)? de) "
+        r"(?:membres|personnes|gens|humains|bots)(?: au total)? "
+        r"(?:sur|dans|du) (?:(?:le|notre|ce) )?(?:discord|serveur)(?: au total)?", key,
+    ):
+        return [("guilde", {})]
+    return []
 
 
 def item_payload(detail, enrichment=None):
@@ -193,6 +252,8 @@ def drop_payload(detail, enrichment, pp=None, pp_groupe=None):
                     for rate in bounds
                 ]
                 row["taux_personnel"] = [format_percent(rate) for rate in rates]
+                if rates[0] == rates[1]:
+                    row["taux_personnel_unique"] = format_percent(rates[0])
                 bounds = tuple(rates)
                 row["conditionnel"] = met is None
                 row["seuil_atteint"] = met
@@ -262,6 +323,11 @@ class EvoTools:
         wiki = self.wiki(ctx)
         entries = await (wiki.client.items() if kind == "item" else wiki.client.monsters())
         found, fuzzy = find_entries(entries, query, 6)
+        if fuzzy or len(found) != 1:
+            canonical = catalogue_name(query)
+            exact = [entry for entry in entries if catalogue_name(entry.name) == canonical]
+            if exact:
+                found, fuzzy = exact[:6], False
         if not found:
             raise EvoError("Aucune correspondance dans le catalogue du bot.")
         if len(found) != 1 or fuzzy:
@@ -306,6 +372,8 @@ class EvoTools:
 
     def encode_result(self, name, value):
         """Je préserve chaque ligne de la page avant de réduire les détails annexes."""
+        if name == "sources_drop" and isinstance(value.get("variantes"), list):
+            return self.encode_family(value)
         result = json.loads(bounded_json(value, 5200))
         key = {"recette": "ingredients", "monstre": "drops"}.get(name)
         if key is None or key not in value or len(result.get(key, [])) == len(value[key]):
@@ -336,6 +404,32 @@ class EvoTools:
             raise EvoError("Cette page est trop volumineuse. Consulte la commande Discord de l'objet.")
         return encoded
 
+    def encode_family(self, value):
+        """Les six couleurs restent présentes même si le détail des zones est volumineux."""
+        for source_limit in (2, 1, 0):
+            reduced = dict(value)
+            reduced["variantes"] = []
+            for variant in value["variantes"]:
+                row = dict(variant)
+                row["sources_drop"] = []
+                for source in variant["sources_drop"][:source_limit]:
+                    detail = {key: item for key, item in source.items() if key != "taux_par_niveau"}
+                    detail["zones"] = [clean(zone, 70) for zone in source["zones"][:3]]
+                    detail["zones_limitees"] = len(source["zones"]) > 3
+                    row["sources_drop"].append(detail)
+                row["sources_limitees"] = row["nombre_sources"] > source_limit
+                reduced["variantes"].append(row)
+            reduced["detail_sources"] = (
+                f"Au plus {source_limit} sources et trois zones par source, sans détail par niveau ; "
+                "demander une couleur pour les taux et sources complets."
+            )
+            encoded = json.loads(bounded_json(reduced, 5200))
+            if len(encoded.get("variantes", [])) == len(value["variantes"]):
+                log.debug("evo family compacted variants=%s sources_per_variant=%s",
+                          len(value["variantes"]), source_limit)
+                return encoded
+        raise EvoError("Les variantes sont trop nombreuses à détailler. Précise une couleur.")
+
     def _sources(self, ctx, value):
         if isinstance(value, dict):
             for item in value.values():
@@ -351,10 +445,49 @@ class EvoTools:
         return ambiguity if ambiguity else item_payload(*(await self.detail(ctx, entry)))
 
     async def do_sources_drop(self, ctx, objet, pp, pp_groupe):
+        if not objet.startswith("item:"):
+            entries = await self.wiki(ctx).client.items()
+            key = catalogue_name(objet)
+            exact = [item for item in entries if catalogue_name(item.name) == key]
+            family = [item for item in entries if catalogue_name(item.name).startswith(key + " ")]
+            if not exact and len(key.split()) >= 3 and 2 <= len(family) <= 6:
+                return await self.family_sources(ctx, objet, family, pp, pp_groupe)
         entry, ambiguity = await self.resolve(ctx, objet)
         if ambiguity:
             return ambiguity
         return drop_payload(*(await self.detail(ctx, entry)), pp, pp_groupe)
+
+    async def family_sources(self, ctx, query, entries, pp, pp_groupe):
+        """Je présente les variantes exactes d'une famille et leurs zones vérifiées."""
+        details = await asyncio.gather(*(self.detail(ctx, item) for item in entries))
+        variants, zone_items = [], {}
+        for detail, enrichment in details:
+            payload = drop_payload(detail, enrichment, pp, pp_groupe)
+            sources = payload["sources_drop"]
+            for source in sources:
+                for zone in source["zones"]:
+                    zone_items.setdefault(zone, set()).add(detail.entry.name)
+            variants.append({
+                "objet": detail.entry.name, "reference": detail.entry.token,
+                "source": detail.entry.url,
+                "sources_drop": [{key: row[key] for key in (
+                    "monstre", "zones", "taux_base", "taux_personnel", "taux_personnel_unique",
+                    "seuil_pp", "quota_partage", "conditionnel", "seuil_atteint", "raison",
+                    "taux_par_niveau",
+                ) if key in row} for row in sources[:2]],
+                "regle": payload["regle"],
+                "nombre_sources": payload["nombre_sources"],
+                "sources_limitees": len(sources) > 2,
+            })
+        common = sorted((zone for zone in zone_items if len(zone_items[zone]) >= 2),
+                        key=lambda zone: (-len(zone_items[zone]), zone))
+        log.debug("evo resource family resolved variants=%s zones=%s", len(variants), len(common))
+        return {
+            "famille": clean(query, 100), "variantes": variants, "nombre_variantes": len(variants),
+            "zones_communes": [{"zone": zone, "variantes": len(zone_items[zone])} for zone in common[:8]],
+            "limites": "Deux sources par variante au maximum ; demander une couleur pour le détail. "
+                       "Zones renseignées, sans densité ni rendement horaire mesuré.",
+        }
 
     async def do_recette(self, ctx, objet, quantite, avec_sources, page=1):
         entry, ambiguity = await self.resolve(ctx, objet)
@@ -413,21 +546,13 @@ class EvoTools:
         }
 
     async def do_monstre(self, ctx, nom, page=1):
+        from utils.evo_monsters import monster_statistics
+
         entry, ambiguity = await self.resolve(ctx, nom, "monster")
         if ambiguity:
             return ambiguity
         detail, _ = await self.detail(ctx, entry)
-        grades = []
-        for row in detail.data.get("grades", [])[:8]:
-            if not isinstance(row, dict):
-                continue
-            # Les zéros collectifs sont des sentinelles "non renseigné" dans ce wiki.
-            missing = all(row.get(k) in (None, 0) for k in ("hp", "ap", "mp"))
-            grades.append({
-                "niveau": row.get("level"), "pv": None if missing else row.get("hp"),
-                "pa": None if missing else row.get("ap"), "pm": None if missing else row.get("mp"),
-                "resistances": row.get("resist"),
-            })
+        statistics = monster_statistics(detail.data)
         enrichment_client = self.wiki(ctx).enrichment_client
         catalog = None
         if enrichment_client and enrichment_client.enabled:
@@ -450,7 +575,7 @@ class EvoTools:
         if not 1 <= page <= pages:
             raise EvoError(f"L'inventaire de ce monstre contient {pages} page(s).")
         return {
-            "monstre": entry.name, "grades": grades, "source": entry.url,
+            "monstre": entry.name, **statistics, "source": entry.url,
             "cache_ancien": detail.stale, "zones": match.get("zones", []) if match else [],
             "drops": drops[(page - 1) * 10:page * 10], "nombre_drops_renseignes": len(drops),
             "page": page, "pages": pages, "page_suivante": page + 1 if page < pages else None,
@@ -462,6 +587,9 @@ class EvoTools:
         }
 
     async def do_chercher_equipements(self, ctx, type_objet, niveau_min, niveau_max, priorites, sans_malus, nom_contient):
+        niveau_min, niveau_max, nom_contient = equipment_constraints(
+            ctx, niveau_min, niveau_max, nom_contient,
+        )
         rows, info = await self.equipment.get(self.wiki(ctx))
         return {**equipment_search(
             rows, category=type_objet, min_level=niveau_min, max_level=niveau_max,
@@ -527,12 +655,19 @@ class EvoTools:
             for c in getattr(ctx.guild, "text_channels", ())
             if c.permissions_for(ctx.guild.default_role).view_channel and ctx.readable_here(c)
         ][:12]
-        return {
+        result = {
             "nom": ctx.guild.name, "description": clean(getattr(ctx.guild, "description", ""), 500),
             "nombre_membres_discord": getattr(ctx.guild, "member_count", None),
             "salons_publics": channels,
             "note": "Le nombre Discord peut inclure les bots. Aucun historique privé consulté.",
         }
+        members = getattr(ctx.guild, "members", ())
+        if (getattr(ctx.guild, "chunked", False)
+                and len(members) == result["nombre_membres_discord"]):
+            result["nombre_bots"] = sum(bool(member.bot) for member in members)
+            result["nombre_humains"] = len(members) - result["nombre_bots"]
+        log.debug("evo guild count available=%s", result["nombre_membres_discord"] is not None)
+        return result
 
     async def do_connaissances_guilde(self, ctx, question):
         path = Path(ctx.config.knowledge_path)
@@ -621,7 +756,7 @@ class EvoTools:
         return result
 
     async def do_artisans(self, ctx, metier, niveau_min):
-        if not ctx.config.public_member_data or not self.legacy_available(ctx):
+        if not (ctx.config.public_member_data or ctx.config.public_job_data) or not self.legacy_available(ctx):
             raise EvoError("L'annuaire des métiers n'est pas autorisé pour Evo dans cette configuration.")
         jobs = ctx.bot.get_cog("JobCog")
         if not getattr(jobs, "initialized", False):
@@ -641,6 +776,49 @@ class EvoTools:
                     results.append({"membre": member.display_name, "metier": job, "niveau": level})
         results.sort(key=lambda row: (-row["niveau"], row["membre"]))
         return {"artisans": results[:10], "total": len(results), "source": "Métiers déclarés via /job."}
+
+    async def do_liste_metiers(self, ctx, page=1):
+        """Je pagine les métiers déclarés sans exposer les profils ou les noms des membres."""
+        if not (ctx.config.public_member_data or ctx.config.public_job_data) or not self.legacy_available(ctx):
+            raise EvoError("L'annuaire des métiers n'est pas autorisé pour Evo dans cette configuration.")
+        jobs = ctx.bot.get_cog("JobCog")
+        if not getattr(jobs, "initialized", False):
+            raise EvoError("L'annuaire des métiers n'est pas encore chargé.")
+        data = getattr(jobs, "jobs_data", None)
+        if not isinstance(data, dict):
+            raise EvoError("L'annuaire des métiers est indisponible.")
+        declared = {}
+        for uid, row in data.items():
+            identifier = str(uid)
+            if not identifier.isascii() or not identifier.isdigit() or not isinstance(row, dict):
+                continue
+            member = ctx.guild.get_member(int(identifier))
+            if member is None or member.bot or not isinstance(row.get("jobs"), dict):
+                continue
+            for name, level in row["jobs"].items():
+                if not isinstance(name, str) or type(level) is not int or not 1 <= level <= 100:
+                    continue
+                key = search_key(name)
+                if not key:
+                    continue
+                job = declared.setdefault(key, {
+                    "metier": clean(name.strip(), 100), "membres": set(), "niveau_max": level,
+                })
+                job["membres"].add(member.id)
+                job["niveau_max"] = max(job["niveau_max"], level)
+        rows = [
+            {"metier": row["metier"], "nombre_artisans": len(row["membres"]), "niveau_max": row["niveau_max"]}
+            for _, row in sorted(declared.items())
+        ]
+        pages = max(1, (len(rows) + 9) // 10)
+        if type(page) is not int or not 1 <= page <= pages:
+            raise EvoError(f"L'annuaire des métiers contient {pages} page(s).")
+        log.debug("evo job directory listed total=%s page=%s pages=%s", len(rows), page, pages)
+        return {
+            "metiers": rows[(page - 1) * 10:page * 10], "total": len(rows),
+            "page": page, "pages": pages, "page_suivante": page + 1 if page < pages else None,
+            "source": "Métiers déclarés via /job par les membres actuels du serveur, hors bots.",
+        }
 
     async def do_activites(self, ctx, recherche, jours):
         cog = ctx.bot.get_cog("ActiviteCog")
@@ -734,7 +912,8 @@ class EvoTools:
         return {
             "commandes": rows[:18],
             "capacites_evo": (
-                "Consultations et, si activées, actions demandées sur tes propres métiers, inscriptions "
+                "Consultations, liste des métiers et recherche d'artisans si l'annuaire est autorisé ; "
+                "si activées, actions demandées sur tes propres métiers, inscriptions "
                 "et simulation /exo explicitement partagée dans ce salon. Pas de modération ni action sur autrui."
             ),
             "web": "Pas de recherche Web générale ni de frais web_search dans cette version.",

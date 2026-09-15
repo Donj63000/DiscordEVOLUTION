@@ -139,6 +139,7 @@ class ToolContext:
     before_mutation: object | None = None
     action_receipt: dict | None = None
     before_publish: object | None = None
+    conversation_brief: dict = field(default_factory=dict)
 
     def check(self) -> None:
         if self.guild is None or self.guild.id != self.config.guild_id:

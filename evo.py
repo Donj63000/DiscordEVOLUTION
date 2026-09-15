@@ -21,6 +21,9 @@ from utils.evo_exo import share_session, revoke_session, clear_member_shares, cl
 
 log = logging.getLogger(__name__)
 NO_MENTIONS = discord.AllowedMentions.none()
+MAX_ACTIVE_REQUESTS = 2
+MAX_WAITING_REQUESTS = 2
+REQUEST_WAIT_SECONDS = 120
 
 
 class EvoCog(commands.Cog):
@@ -31,6 +34,9 @@ class EvoCog(commands.Cog):
         self.budget = None
         self._init_lock = asyncio.Lock()
         self._active = {}
+        self._active_questions = {}
+        self._waiting = {}
+        self._slot_changed = asyncio.Event()
         self._cooldowns = {}
         self._cleanup_task = None
         self._closed = False
@@ -128,8 +134,86 @@ class EvoCog(commands.Cog):
             return "Je suis là 🙂 Pose-moi ta question sur Dofus Rétro ou la guilde."
         return None
 
+    async def _admit_request(self, ctx, question, send, deepen):
+        """Je garde une seule question en attente par membre, pendant deux minutes au plus."""
+        user_key = (ctx.guild.id, ctx.member.id)
+        task = asyncio.current_task()
+        signature = (ctx.channel.id, " ".join(question.casefold().split()), deepen)
+        waiting = self._waiting.get(user_key)
+        if self._active_questions.get(user_key) == signature:
+            await send("Je traite déjà cette même question dans ce salon 🙂")
+            return False
+        if waiting:
+            content = ("Cette question est déjà en attente ; je te répondrai ici."
+                       if waiting[1] == signature else
+                       "Tu as déjà une question en attente. Attends sa réponse avant d'en ajouter une autre 🙂")
+            log.debug("evo queue refused member_id=%s reason=already_waiting", ctx.member.id)
+            await send(content)
+            return False
+        if user_key not in self._active:
+            if len(self._active) >= MAX_ACTIVE_REQUESTS:
+                await send("Je réponds déjà à deux camarades. Réessaie après leurs réponses 🙂")
+                return False
+            if time.monotonic() - self._cooldowns.get(user_key, -1000) < ctx.config.cooldown:
+                await send("Laisse quelques secondes entre deux questions pour partager le budget.")
+                return False
+        else:
+            if len(self._waiting) >= MAX_WAITING_REQUESTS:
+                log.debug("evo queue refused member_id=%s reason=full", ctx.member.id)
+                await send("La courte file d'attente est pleine. Réessaie après ma réponse 🙂")
+                return False
+            version = self._state_version
+            self._waiting[user_key] = (task, signature)
+            log.debug("evo request queued member_id=%s channel_id=%s", ctx.member.id, ctx.channel.id)
+            try:
+                async with asyncio.timeout(REQUEST_WAIT_SECONDS):
+                    await send(
+                        "Ta question est en attente. Je la traiterai ici après ma réponse en cours "
+                        "et le délai entre questions. L'attente est limitée à deux minutes. "
+                        "/evo-oublier annule aussi cette attente."
+                    )
+                    while True:
+                        self._slot_changed.clear()
+                        if version != self._state_version:
+                            raise EvoError("Evo s'est réinitialisé : ta question en attente est annulée.")
+                        remaining_cooldown = (
+                            ctx.config.cooldown + self._cooldowns.get(user_key, -1000) - time.monotonic()
+                        )
+                        available = user_key not in self._active and len(self._active) < MAX_ACTIVE_REQUESTS
+                        if available and remaining_cooldown <= 0:
+                            break
+                        if available:
+                            try:
+                                async with asyncio.timeout(remaining_cooldown):
+                                    await self._slot_changed.wait()
+                            except TimeoutError:
+                                pass
+                        else:
+                            await self._slot_changed.wait()
+            except TimeoutError:
+                log.debug("evo queue expired member_id=%s", ctx.member.id)
+                await send("L'attente a dépassé deux minutes. Ta question n'a pas été lancée ; tu peux la renvoyer.")
+                return False
+            except asyncio.CancelledError:
+                log.debug("evo queue cancelled member_id=%s", ctx.member.id)
+                try:
+                    async with asyncio.timeout(5):
+                        await send("Ta question en attente a été annulée.")
+                except Exception as exc:
+                    log.debug("evo queue cancellation notice failed type=%s", type(exc).__name__)
+                raise
+            finally:
+                if self._waiting.get(user_key, (None,))[0] is task:
+                    self._waiting.pop(user_key, None)
+            self._configuration()
+            log.debug("evo queued request starting member_id=%s channel_id=%s", ctx.member.id, ctx.channel.id)
+        self._active[user_key] = task
+        self._active_questions[user_key] = signature
+        self._cooldowns[user_key] = time.monotonic()
+        return True
+
     async def _run(self, ctx, question, trigger_id, send, *, prompt_if_empty=False, deepen=False):
-        """Pas de file illimitée : deux demandes simultanées, une par membre."""
+        """Je conserve les demandes et leurs salons sans dépasser les limites communes."""
         if trigger_id in self._seen_triggers:
             log.debug("evo duplicate trigger_id=%s", trigger_id)
             return
@@ -140,20 +224,10 @@ class EvoCog(commands.Cog):
         if len(question) > 1200 or (not question.strip() and not prompt_if_empty):
             await send("Écris une question de 1 à 1 200 caractères.")
             return
-        if user_key in self._active:
-            await send("Je termine déjà une réponse pour toi. Une demande à la fois 🙂")
-            return
-        if len(self._active) >= 2:
-            await send("Je réponds déjà à deux camarades. Réessaie après leurs réponses 🙂")
-            return
-        now = time.monotonic()
-        if now - self._cooldowns.get(user_key, -1000) < ctx.config.cooldown:
-            await send("Laisse quelques secondes entre deux questions pour partager le budget.")
-            return
         task = asyncio.current_task()
-        self._active[user_key] = task
-        self._cooldowns[user_key] = now
         try:
+            if not await self._admit_request(ctx, question, send, deepen):
+                return
             async with asyncio.timeout(110):
                 await ctx.ensure_access()
                 answer = self._local_answer(question, prompt_if_empty)
@@ -190,6 +264,8 @@ class EvoCog(commands.Cog):
         finally:
             if self._active.get(user_key) is task:
                 self._active.pop(user_key, None)
+                self._active_questions.pop(user_key, None)
+                self._slot_changed.set()
 
     @app_commands.command(name="evo", description="Discute avec Evo : Dofus Rétro, drops, équipements et guilde.")
     @app_commands.describe(question="Ta question dans ce salon, en langage naturel.",
@@ -275,10 +351,12 @@ class EvoCog(commands.Cog):
         if interaction.guild is None:
             return
         await interaction.response.defer(ephemeral=True)
-        task = self._active.get((interaction.guild.id, interaction.user.id))
-        if task is not None and task is not asyncio.current_task():
+        user_key = (interaction.guild.id, interaction.user.id)
+        waiting = self._waiting.get(user_key, (None,))[0]
+        tasks = {waiting, self._active.get(user_key)} - {None, asyncio.current_task()}
+        for task in tasks:
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         if self.agent:
             self.agent.sessions.forget(interaction.guild.id, interaction.user.id)
         clear_member_shares(self.bot, interaction.guild.id, interaction.user.id)
@@ -357,7 +435,7 @@ class EvoCog(commands.Cog):
         self._last_messages.clear()
         clear_shares(self.bot)
         current = asyncio.current_task()
-        tasks = list({task for task in self._active.values() if task is not current})
+        tasks = list((set(self._active.values()) | {item[0] for item in self._waiting.values()}) - {current})
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

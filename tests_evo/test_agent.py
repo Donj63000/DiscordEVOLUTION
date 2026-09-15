@@ -35,7 +35,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         payload = self.transport.calls[1]
         result_items = [x for x in payload["input"] if x.get("type") == "function_call_output"]
         self.assertEqual(json.loads(result_items[0]["output"])["nom"], "Evolution Test")
-        self.assertEqual(payload["reasoning"]["effort"], "none")
+        self.assertEqual(payload["reasoning"]["effort"], "medium")
         self.assertFalse(payload["store"])
         self.assertIn("Réponse dans le salon courant", payload["instructions"])
         self.assertTrue(all(t["type"] == "function" for t in payload["tools"]))
@@ -195,7 +195,8 @@ class MeteredRecoveryTests(unittest.IsolatedAsyncioTestCase):
     def payload(self):
         return {
             "model": self.config.model, "store": False, "service_tier": "default",
-            "reasoning": {"effort": "none"}, "max_output_tokens": self.config.max_output,
+            "reasoning": {"effort": self.config.reasoning_effort},
+            "max_output_tokens": self.config.output_limit("writer"),
             "input": [{"role": "user", "content": "Question de test"}], "tools": [],
         }
 

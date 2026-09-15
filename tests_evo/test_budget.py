@@ -278,7 +278,8 @@ class BudgetTests(unittest.IsolatedAsyncioTestCase):
 
     def payload(self):
         return {"model": self.config.model, "store": False, "service_tier": "default",
-                "reasoning": {"effort": "none"}, "max_output_tokens": self.config.max_output,
+                "reasoning": {"effort": self.config.reasoning_effort},
+                "max_output_tokens": self.config.analysis_tokens,
                 "input": [{"role": "user", "content": "hello"}], "tools": []}
 
     async def test_provider_timeout_retains_reservation_and_no_retry(self):

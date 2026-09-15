@@ -61,7 +61,7 @@ sont réduits avec une indication explicite lorsque nécessaire.
 
 | N° | Demande | Traitement et limite |
 |---|---|---|
-| 24 | Qui est paysan niveau 100 ? | Métiers déclarés des membres actuels, si leur consultation publique est autorisée par la configuration. |
+| 24 | Qui est paysan niveau 100 ? | Métiers déclarés des membres actuels, avec `EVO_PUBLIC_JOB_DATA=1` ou l'autorisation plus large des profils. |
 | 25 | C'est qui Coca ? | Résoudre un membre puis lire son profil déclaré autorisé. Ni biographie, ni personnalité, ni information provenant de MP. |
 | 26 | Qui est disponible ce soir ? | Activités publiées et inscriptions renseignées. Une inscription n'est pas une disponibilité générale ; pas de sondage créé automatiquement. |
 | 27 | Les sorties de cette semaine ? | Dates réelles, identifiants, inscrits, capacité et places restantes calculées en Python. |

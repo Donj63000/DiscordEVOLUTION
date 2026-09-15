@@ -1,5 +1,33 @@
 # Rapport de validation — Evo / Luna
 
+## Retours Discord et raisonnement medium — 15 septembre 2026
+
+La suite complète de l'état final passe : **2 411 tests réussis, 1 test historique
+ignoré**, en 39,42 secondes sous Python 3.13. `git diff --check` passe.
+
+Les scénarios reproduisent les questions remontées par les essais Discord :
+
+- Objet Turquoise exact reconnu avec article, pluriel ou référence, PP personnelle
+  et de groupe séparées, cible CM conservée et confirmation non répétée.
+- Recherche d'équipements jusqu'au niveau du personnage ; type pluriel normalisé,
+  classe/élément retirés du filtre de nom, plages de statistiques distinctes des niveaux.
+- Famille des six Plumes de Piou issue du catalogue, choix d'une couleur et
+  conservation des seuils conditionnels même lors de la réduction du résultat.
+- Annuaire des artisans activable sans ouvrir les autres profils ; membres partis
+  et données historiques d'une autre guilde exclus. Liste paginée des métiers,
+  nombre d'artisans par métier et nombre courant de membres Discord.
+- Grades et résistances du Crocabulia calculés depuis les données du wiki, sans
+  inventer les PV/PA/PM manquants ni confondre niveau et nombre de grades.
+- File d'attente bornée par membre, dédoublonnage, annulation, réponses dans le
+  salon d'origine et recontrôle des permissions et du leadership avant traitement.
+- Luna en raisonnement `medium`, plafonds API comprenant réflexion et texte ;
+  réservation durable de la rédaction finale et spécialiste facultatif dans la
+  même enveloppe. Les sorties incomplètes ne déclenchent pas d'action partielle.
+
+Les tests utilisent des clients simulés, sans appel OpenAI payant. Les vérifications
+de catalogue sont des lectures publiques ; elles ne constituent pas un test réel
+de la qualité des réponses de Luna en `medium`. Les plafonds de dépenses sont inchangés.
+
 ## Discussions dans tous les salons accessibles — 15 septembre 2026
 
 La suite complète passe : **2 259 tests réussis, 1 test historique ignoré**, en
