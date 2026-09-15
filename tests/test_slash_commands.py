@@ -516,13 +516,13 @@ def test_poll_fields_reject_ambiguous_legacy_syntax(values):
 @pytest.mark.asyncio
 async def test_slash_job_correction_replaces_prefix_confirmation_and_persists(slash_bot):
     from job import JobCog
+    from tests_evo.budget_helpers import FakeConsole
 
     job = JobCog(slash_bot)
     job.cog_load = AsyncMock()
     job.initialized = True
     job.load_from_console = AsyncMock(return_value=True)
     job.save_data_local = Mock()
-    job.dump_data_to_console = AsyncMock(return_value=True)
 
     async def send_embed(ctx, embed):
         await ctx.send(embed=embed)
@@ -533,6 +533,8 @@ async def test_slash_job_correction_replaces_prefix_confirmation_and_persists(sl
     catalog.register_commands()
     command = slash_bot.tree.get_command("job").get_command("ajouter")
     interaction = make_interaction(slash_bot, command)
+    console = FakeConsole(slash_bot, interaction.guild)
+    job.get_console_channel = AsyncMock(return_value=console)
     prefix_ctx = SimpleNamespace(
         guild=interaction.guild, channel=interaction.channel, author=interaction.user, send=AsyncMock()
     )
@@ -557,7 +559,10 @@ async def test_slash_job_correction_replaces_prefix_confirmation_and_persists(sl
     assert reply.cancelled()
     assert prefix_ctx.send.await_count == 1
     assert job.jobs_data[str(AUTHOR_ID)]["jobs"] == {"Forgeur d’armes": 100}
-    job.dump_data_to_console.assert_awaited_once_with(interaction.guild)
+    assert console.sends == 1
+    assert console.messages[0].pinned
+    persisted = await job._snapshot_reader.extract_payload(console.messages[0])
+    assert persisted[str(AUTHOR_ID)]["jobs"] == {"Forgeur d’armes": 100}
     embed = interaction.followup.send.call_args.kwargs["embed"]
     assert embed.title == "Mise à jour du métier"
 

@@ -19,9 +19,11 @@ class DiscordRegistrationTests(unittest.IsolatedAsyncioTestCase):
         try:
             await bot.add_cog(EvoCog(bot))
             names = {cmd.name for cmd in bot.tree.get_commands()}
-            self.assertTrue({"evo", "evo-budget", "evo-oublier"} <= names)
+            self.assertTrue({"evo", "evo-budget", "evo-oublier", "evo-exo"} <= names)
             evo = bot.tree.get_command("evo")
-            self.assertEqual([p.name for p in evo.parameters], ["question"])
+            self.assertEqual([p.name for p in evo.parameters], ["question", "approfondir"])
+            self.assertFalse(evo.parameters[1].required)
+            self.assertEqual([p.name for p in bot.tree.get_command("evo-exo").parameters], ["partager"])
             self.assertTrue(evo.guild_only)
             self.assertFalse(bot.tree.get_command("evo-budget").default_permissions.administrator)
             self.assertTrue(bot.tree.get_command("evo-budget").default_permissions.manage_guild)

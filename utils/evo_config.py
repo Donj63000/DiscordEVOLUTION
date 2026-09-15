@@ -79,8 +79,10 @@ class EvoConfig:
     daily_nano: int = 120_000_000
     request_nano: int = 15_000_000
     max_input: int = 7500
-    max_output: int = 600
-    max_calls: int = 3
+    max_output: int = 400
+    max_calls: int = 2
+    deep_max_calls: int = 3
+    specialist_output: int = 250
     max_tools: int = 5
     user_daily_calls: int = 60
     cooldown: int = 12
@@ -116,8 +118,9 @@ class EvoConfig:
             daily_nano=money("EVO_DAILY_USD", "0.12", "2"),
             request_nano=money("EVO_REQUEST_USD", "0.015", "0.05"),
             max_input=integer("EVO_MAX_INPUT_TOKENS", 7500, 2000, 12000),
-            max_output=integer("EVO_MAX_OUTPUT_TOKENS", 600, 200, 900),
-            max_calls=integer("EVO_MAX_MODEL_CALLS", 3, 2, 3),
+            max_output=min(integer("EVO_MAX_OUTPUT_TOKENS", 400, 200, 900), 400),
+            max_calls=min(integer("EVO_MAX_MODEL_CALLS", 2, 2, 3), 2),
+            deep_max_calls=integer("EVO_MAX_DEEP_MODEL_CALLS", 3, 2, 3),
             max_tools=integer("EVO_MAX_TOOL_CALLS", 5, 1, 6),
             user_daily_calls=integer("EVO_USER_DAILY_CALLS", 60, 1, 180),
             cooldown=integer("EVO_COOLDOWN_SECONDS", 12, 5, 300),

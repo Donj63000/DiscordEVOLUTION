@@ -129,6 +129,11 @@ class ToolContext:
     member: object
     config: object
     sources: set[str] = field(default_factory=set)
+    request_text: str = ""
+    trigger_id: int | None = None
+    before_mutation: object | None = None
+    action_receipt: dict | None = None
+    before_publish: object | None = None
 
     def check(self) -> None:
         if self.guild is None or self.guild.id != self.config.guild_id:

@@ -1,7 +1,8 @@
 # Evo — assistant conversationnel Evolution
 
 Python 3.11 ou plus récent. Persistance du compteur dans le salon `#console` existant.
-Le code ajoute une IA en lecture seule ; il ne remplace pas les commandes classiques.
+Evo consulte les outils du bot et effectue les modifications personnelles explicitement
+demandées. Les commandes classiques restent disponibles.
 
 ## 1. Ce qui est installé
 
@@ -23,7 +24,7 @@ reçoit une invitation locale à poser une question, sans génération.
 
 Toutes les réponses de conversation sont publiques dans le salon, y compris les
 messages d'erreur. L'option `prive` est retirée. Les ateliers personnels `/exo`
-restent privés et ne sont pas accessibles aux outils d'Evo. La mémoire est séparée
+restent privés jusqu'au partage explicite de leur état courant. La mémoire est séparée
 par serveur, salon et membre. Les mentions de rôle ou `@everyone` ne déclenchent rien.
 
 `/evo-oublier` efface son contexte du bot et annule sa demande en cours, sans
@@ -37,23 +38,58 @@ le premier registre, après vérification de son absence. Un registre existant o
 illisible ne peut pas être remplacé. Les confirmations administratives restent
 éphémères, tout comme celle de `/evo-oublier`.
 
-## 2. Les 16 outils
+### Rédaction et mode approfondi
+
+L'IA rédige les réponses, y compris les salutations. Les outils calculent les taux,
+quantités et comparaisons. Les suivis reconnus, comme « avec 600 PP » ou « j'en veux
+5 », préparent directement les données puis demandent une seule rédaction IA.
+
+`/evo question:... approfondir:true` ou un message commençant par « approfondis »
+autorise un spécialiste supplémentaire. Il reçoit un petit ensemble de faits et
+rend une note de conseil au rédacteur, sans outils, écriture ou sous-délégation.
+Ce mode est facultatif et partage exactement le même budget par demande. Une
+demande simplement longue ou difficile ne l'active pas automatiquement.
+
+### Actions personnelles et partage Exo
+
+Evo peut inscrire ou désinscrire le demandeur d'une activité publiée, et ajouter,
+actualiser ou supprimer ses métiers. Les ambiguïtés demandent une précision ; les
+conditions des commandes natives, y compris la liste d'attente, restent applicables.
+Les changements de métiers et d'activités ne sont confirmés qu'après sauvegarde
+vérifiée dans `#console`. Une seule modification personnelle est permise par demande.
+
+`/evo-exo partager:true` partage l'état courant de son atelier dans le salon courant.
+L'accord est lié à l'atelier et à sa révision, expire au plus après 15 minutes et
+est révoqué par `/evo-exo partager:false`, `/evo-oublier` ou un redémarrage. Une
+modification effectuée dans le panneau privé exige un nouveau partage. Une rune
+demandée à Evo dans sa propre simulation autorise son résultat et avance le partage
+à cette nouvelle révision. Aucun export privé complet n'est transmis au modèle.
+Les états Exo ne sont pas conservés dans l'historique conversationnel d'Evo.
+
+Le rédacteur reçoit le résultat réellement confirmé. Si la génération échoue après
+l'action, un reçu technique est publié sans rejouer l'action. Une erreur incertaine
+d'édition du panneau Exo bloque le partage jusqu'à resynchronisation ou réouverture.
+
+## 2. Les outils
 
 | Outil interne | Données utilisées / limites |
 |---|---|
 | `fiche_objet` | Fiche Moon-Bot, effets et détails Xixou lorsqu'ils sont disponibles. |
 | `sources_drop` | Sources et zones Xixou ; calculs du `drop_calculator` existant. |
-| `recette` | Recette du wiki, quantités multipliées en Python ; obtention des 8 premiers ingrédients au plus. |
-| `monstre` | Grades du wiki et inventaire Xixou vérifié par identifiant ET nom. |
+| `recette` | Recette intégrale calculée en Python, affichée et enrichie par pages de 8 ingrédients. |
+| `monstre` | Grades du wiki et inventaire Xixou vérifié par identifiant ET nom ; drops paginés. |
 | `chercher_equipements` | Index d'effets Xixou rapproché du wiki ; 5 résultats maximum. |
-| `comparer_objets` | Fiches de 2 ou 3 équipements, pas de prix inventés. |
-| `candidats_exo` | Heuristique de remontage : nombre de lignes, puis lignes lourdes. |
+| `comparer_objets` | Fiches de 2 ou 3 équipements et écarts de jets calculés en Python. |
+| `candidats_exo` | Heuristique de remontage, également sur les objets explicitement sélectionnés. |
 | `guide_fm` | Poids nominaux et limites du moteur existant, sans taux Ankama prétendument certifié. |
+| `ma_session_fm` / `poser_rune` | État partagé et rune unique dans sa simulation personnelle. |
 | `guilde` | Nom, description, nombre de membres Discord et salons publics accessibles. |
 | `connaissances_guilde` | Faits publics validés dans `config/evo_knowledge.json`. |
 | `membre` | Profil, personnages et métiers déclarés ; consentement d'administration pour les autres membres. |
 | `artisans` | Métiers déclarés des membres encore présents sur le serveur. |
 | `activites` | Sorties à venir effectivement publiées ; aucun brouillon ni audience Staff différente. |
+| `inscrire_activite` / `desinscrire_activite` | Inscription personnelle, règles natives et sauvegarde console. |
+| `definir_mon_metier` / `supprimer_mon_metier` | Modification de ses métiers déclarés, avec sauvegarde vérifiée. |
 | `conversation_salon` | Au plus 15 messages récents du salon courant, après activation explicite. |
 | `aide_bot` | Commandes pertinentes déjà enregistrées ; aucune exécution automatique. |
 | `demander_precision` | Demande une précision sans deuxième génération inutile. |
@@ -149,8 +185,9 @@ EVO_MONTHLY_USD=2.00
 EVO_DAILY_USD=0.12
 EVO_REQUEST_USD=0.015
 EVO_MAX_INPUT_TOKENS=7500
-EVO_MAX_OUTPUT_TOKENS=600
-EVO_MAX_MODEL_CALLS=3
+EVO_MAX_OUTPUT_TOKENS=400
+EVO_MAX_MODEL_CALLS=2
+EVO_MAX_DEEP_MODEL_CALLS=3
 EVO_MAX_TOOL_CALLS=5
 EVO_USER_DAILY_CALLS=60
 EVO_COOLDOWN_SECONDS=12
@@ -216,11 +253,19 @@ Avant chaque génération :
 5. L'usage retourné ajuste la réservation ; une anomalie supérieure au maximum
    prévu bloque le mois pour contrôle.
 
-Trois générations et cinq outils maximum par demande, 600 tokens de sortie par
-génération, 7 500 tokens d'entrée, 110 secondes de traitement, deux demandes
+Deux générations normales, ou trois au total en mode approfondi, et cinq outils
+maximum par demande. Le rédacteur est limité à 400 tokens de sortie, le spécialiste
+à 250 tokens. Les autres limites sont 7 500 tokens d'entrée, 110 secondes de traitement, deux demandes
 simultanées globalement, une par membre et 12 secondes entre ses demandes.
 `EVO_USER_DAILY_CALLS=60` signifie **60 générations**, pas 60 conversations :
 une demande peut consommer plusieurs générations.
+
+Avant une mutation ou un spécialiste, la rédaction finale reçoit une réservation
+durable couvrant son entrée maximale et sa sortie autorisée. Le spécialiste n'est
+appelé que si l'enveloppe commune restante le permet ; sinon le rédacteur répond
+en mode normal. Chaque rôle emploie le même registre, le même quota personnel et
+un identifiant de réservation distinct. Les anciens réglages 600 tokens / 3 appels
+normaux sont plafonnés à 400 / 2 sans empêcher le démarrage du bot.
 
 Un timeout, une annulation, une erreur HTTP ou l'absence de compteurs d'usage
 conserve le maximum réservé par prudence. C'est volontairement pessimiste,
@@ -236,11 +281,12 @@ OpenAI dédié**, désactiver la recharge automatique si elle n'est pas souhait�
 surveiller le tableau de facturation. Une simple alerte de budget ne suffit pas ;
 la documentation fournisseur précise aussi un possible délai d'application.
 
-Le contexte est limité à deux échanges précédents, quelques références de
-résultats et 15 minutes d'inactivité. Il n'y a ni embeddings, ni base vectorielle,
+Le contexte est limité à deux échanges précédents, un bref structuré des références
+et contraintes, et 15 minutes d'inactivité. L'ordre mémorisé correspond aux objets
+effectivement nommés dans la réponse publiée. Il n'y a ni embeddings, ni base vectorielle,
 ni recherche web facturée. Les catalogues HTTP et leurs caches déjà présents sont
-réutilisés. Les petits messages « salut », « merci » et « confidentialité » sont
-traités localement sans génération.
+réutilisés. Les petits messages « salut », « merci » et « confidentialité » nécessitent
+une génération sans outils. Une mention seule et les erreurs techniques restent locales.
 
 ## 7. Connaissances publiques de la guilde
 
@@ -311,8 +357,9 @@ irréversible. Les anciens modules du bot conservent leurs propres politiques.
 - Le modèle peut encore mal interpréter une question ou un résultat. Les tests
   automatiques vérifient l'orchestration et les garde-fous, pas la justesse de toutes
   ses futures recommandations. Comparer les premiers résultats à `/objet` et `/exo`.
-- Le bot ne réalise aucune inscription, modification de profil, sanction ou action
-  Staff. Un membre doit employer la commande Discord autorisée pour agir.
+- Evo modifie uniquement les inscriptions et métiers du demandeur, ainsi que sa
+  simulation FM partagée. Les actions sur des tiers, sanctions et créations de
+  sorties restent accessibles par les commandes natives avec leurs permissions.
 
 ## 9. Recette de validation après déploiement
 
@@ -324,16 +371,20 @@ Commencer dans un seul salon avec peu de membres et conserver les plafonds par d
 | Répéter l'initialisation | Refus de remplacer le registre. |
 | `/evo-budget` en Staff | Compteur lisible, pas de génération ni remise à zéro. |
 | La même commande sans permission | Accès refusé. |
-| `/evo question:salut` | Réponse locale, aucune consommation de génération. |
+| `/evo question:salut` | Réponse rédigée par l'IA, une génération sans outils. |
 | Mentionner le bot avec une question dès la première conversation | Réponse publique dans le salon. |
 | Mentionner uniquement le bot | Invitation publique à poser une question, sans génération. |
 | Répondre à Evo en le mentionnant aussi | Une seule réponse. |
 | Mentionner Evo dans un salon privé ou `#console` | Aucun traitement conversationnel. |
 | Demander le drop d'une ressource connue | Source exacte ; comparer avec `/objet`. |
-| Répondre « et avec 600 PP ? » | Même ressource, nouveau calcul PP. |
+| Répondre « et avec 600 PP ? » | Même ressource, calcul Python puis une rédaction IA. |
 | Demander une coiffe terre niveau 120 | Critères et limites explicites, uniquement objets présents. |
 | Demander le plus simple à exo PA | Heuristique de remontage ; pas de probabilité inventée. |
-| Demander sa session FM | Invitation à utiliser `/exo`, aucun détail privé consulté. |
+| Demander sa session FM sans partage | Invitation à partager explicitement, aucun détail privé consulté. |
+| Partager puis demander son puits | Valeur exacte, uniquement dans le salon du partage. |
+| Révoquer pendant une génération FM | État privé absent de la réponse publiée. |
+| « Ajoute Bûcheron 100 à mon profil » | Sauvegarde confirmée puis réponse IA. |
+| « Approfondis ce choix » | Un spécialiste maximum, dans la même enveloppe. |
 | Demander qui exerce un métier | Membres actuels déclarés uniquement, si opt-in activé. |
 | Demander un résumé dans un salon non autorisé | Refus de lire son historique. |
 | Un autre membre répond au message d'Evo | Aucune reprise de la mémoire du premier membre. |
@@ -357,13 +408,18 @@ mois. Une demande déjà envoyée à OpenAI ne peut pas être « dé-facturée �
 `utils/evo_agent.py` : boucle Responses/function calling, comptage et transport bornés.
 `utils/evo_budget.py` : compteurs, réservations et état confirmé sous verrou local.
 `utils/evo_budget_store.py` : sauvegarde stricte et restauration depuis `#console`.
-`utils/evo_tools.py` : adaptateurs métier en lecture seule.
+`utils/evo_tools.py` : outils bornés et catalogue ciblé selon la question.
+`utils/evo_actions.py` : actions personnelles et services métier partagés.
+`utils/evo_exo.py` : consentement ponctuel, état minimal et simulation privée.
+`utils/evo_memory.py` : références structurées et suivis reconnus localement.
 `utils/evo_equipment.py` : index et classements déterministes.
 `utils/evo_safety.py` : schémas, bornes, sources, redaction et permissions.
 `utils/evo_config.py` : configuration stricte, opt-in indépendant.
 `utils/xixou_api.py` : petits adaptateurs publics ajoutés, clients existants conservés.
 `main.py` et `utils/command_policy.py` : chargement natif et séparation des anciennes IA.
 `tests_evo/` : tests hors ligne dédiés ; `docs/EVO_VALIDATION.md` décrit ce qui a été vérifié.
+
+La matrice des 50 exemples et de leurs limites figure dans [EVO_EXAMPLES.md](EVO_EXAMPLES.md).
 
 Les tests locaux utilisent un faux salon Discord et des transports OpenAI simulés.
 Ils n'ont besoin ni d'une base SQL ni d'une clé réseau réelle. Une exécution connectée

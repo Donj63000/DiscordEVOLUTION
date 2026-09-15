@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from itertools import combinations
+import logging
 import time
 
 from utils.dofus_wiki import EQUIPMENT_ALIASES, EQUIPMENT_TYPES, search_key
@@ -17,6 +19,7 @@ STAT_NAMES = {
     "pa": "pa", "pm": "pm", "dommages": "do", "critiques": "cc",
 }
 STAT_LABELS = {key: stat.name for key, stat in STATS.items()}
+log = logging.getLogger(__name__)
 
 
 def category_name(value: str | None) -> str | None:
@@ -147,12 +150,60 @@ def equipment_search(rows, *, category, min_level, max_level, priorities, no_mal
     }
 
 
-def exo_candidates(rows, *, target, category, min_level, max_level):
+def compare_equipment(payloads):
+    """Je calcule les écarts de jets comparables sans assimiler une donnée absente à zéro."""
+    comparisons = []
+    for first, second in combinations(payloads, 2):
+        first_stats, second_stats = first.get("jets_naturels", {}), second.get("jets_naturels", {})
+        differences = {}
+        complete = bool(first_stats and second_stats) and not (
+            first.get("effets_non_interpretes") or second.get("effets_non_interpretes")
+        )
+        for name in sorted(first_stats.keys() | second_stats.keys()):
+            left, right = first_stats.get(name), second_stats.get(name)
+            if not complete and (left is None or right is None):
+                continue
+            left, right = left or [0, 0], right or [0, 0]
+            differences[name] = {
+                "ecart_min": left[0] - right[0], "ecart_max": left[1] - right[1],
+                "avantage_jet_max": (
+                    first["reference"] if left[1] > right[1] else
+                    second["reference"] if right[1] > left[1] else "egalite"
+                ),
+            }
+        comparisons.append({
+            "premier": first["reference"], "second": second["reference"],
+            "ecarts_premier_moins_second": differences,
+            "comparaison_complete": complete,
+        })
+    log.debug("evo equipment compared pairs=%s", len(comparisons))
+    return comparisons
+
+
+def exo_candidates(rows, *, target, category, min_level, max_level, references=()):
     category = category_name(category)
     if min_level > max_level:
         raise EvoError("Tranche de niveaux invalide.")
+    requested = set(references)
+    selected = [row for row in rows if not requested or row.entry.token in requested]
+    excluded = []
+    if requested:
+        for row in selected:
+            reasons = []
+            if not is_mageable(row.entry):
+                reasons.append("Objet non forgeable dans le moteur.")
+            if target in row.bounds:
+                reasons.append("Ce bonus est déjà natif : ce ne serait pas un exo.")
+            if row.unsupported:
+                reasons.append("Des effets non interprétés empêchent un classement fiable.")
+            if not min_level <= row.entry.level <= max_level or (category and row.entry.category != category):
+                reasons.append("Objet hors des filtres demandés.")
+            if reasons:
+                excluded.append({"objet": row.entry.name, "reference": row.entry.token, "raisons": reasons})
+        for reference in sorted(requested - {row.entry.token for row in selected}):
+            excluded.append({"reference": reference, "raisons": ["Effets vérifiés indisponibles dans l'index."]})
     candidates = [
-        row for row in rows if is_mageable(row.entry)
+        row for row in selected if is_mageable(row.entry)
         and min_level <= row.entry.level <= max_level
         and (category is None or row.entry.category == category)
         and target not in row.bounds
@@ -173,6 +224,7 @@ def exo_candidates(rows, *, target, category, min_level, max_level):
         results.append(value)
     return {
         "resultats": results, "candidats": len(candidates), "objectif": target.upper(),
+        "objets_demandes": list(references), "exclus": excluded,
         "methode": "Heuristique : moins de lignes, puis moins de lignes de poids nominal ≥ 10.",
         "limites": (
             "Un bonus natif n'est pas un exo. Un remontage plus simple n'augmente pas le taux de passage. "

@@ -74,6 +74,12 @@ def job_cog():
     cog.load_from_console = fake_load_from_console
     cog.dump_data_to_console = fake_dump_data
     cog.save_data_local = lambda: None
+    cog._restore_jobs_for_mutation = AsyncMock()
+
+    async def persist_candidate(guild, candidate):
+        await cog.dump_data_to_console(guild)
+
+    cog._persist_jobs_candidate = persist_candidate
     return cog
 
 

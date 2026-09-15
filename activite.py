@@ -737,12 +737,18 @@ class ActiviteCog(commands.Cog):
         await ctx.send("Fiche publiée et actualisée." if result else
                        "Impossible de publier la fiche. Vérifie le salon et les permissions du bot.")
 
-    async def _change_membership(self, ctx, args, action):
+    async def change_membership(self, ctx, args, action, *, validate_record=None, before_mutation=None,
+                                request_key=None):
+        """Je sauvegarde une inscription personnelle avant toute notification."""
         self._record(ctx, args)
         if action == "join":
             self._require_validated(ctx)
         async with self._mutation_lock:
             record = self._record(ctx, args)
+            if validate_record is not None:
+                validate_record(record)
+            if request_key and any(row.get("key") == request_key for row in record.get("evo_requests", [])):
+                raise ActivityError("Cette demande d'inscription a déjà été traitée. Vérifie la fiche actuelle.")
             candidate = copy.deepcopy(self.activities_data)
             changed = candidate["events"][record["id"]]
             changed["waitlist"] = [
@@ -754,25 +760,49 @@ class ActiviteCog(commands.Cog):
             ))
             text, promoted = change_roster(changed, ctx.author.id, action, now=self.now())
             changed["role_sync_pending"] = True
+            if request_key:
+                changed["evo_requests"] = (
+                    changed.get("evo_requests", []) + [{"key": request_key, "action": action}]
+                )[-100:]
+            if before_mutation is not None:
+                await before_mutation()
+                self._guard(ctx)
+                if validate_record is not None:
+                    validate_record(record)
+                if action == "join":
+                    self._require_validated(ctx)
+                change_roster(copy.deepcopy(record), ctx.author.id, action, now=self.now())
             await self._commit(candidate, ctx=ctx)
             self._dirty_cards.add(record["id"])
-        ctx.activity_committed = True
         current = self.activities_data["events"][record["id"]]
+        return {"id": record["id"], "titre": current["titre"], "texte": text,
+                "participants": len(current["participants"]),
+                "capacite": current.get("capacity", DEFAULT_CAPACITY), "promoted": promoted,
+                "liste_attente": ctx.author.id in current.get("waitlist", []),
+                "source": self._card_link(current)}
+
+    async def sync_membership(self, guild, identifier, member_id, promoted):
+        await self._sync_legacy_roles(guild, identifier, [member_id, *promoted])
+        await self.sync_card(identifier, guild)
+        current = self.activities_data["events"][identifier]
+        if promoted:
+            await self._notify_members(
+                guild, current, f"Une place s'est libérée pour **{safe(current['titre'], 100)}** : "
+                "tu passes de la liste d'attente aux inscrits.", promoted,
+            )
+
+    async def _change_membership(self, ctx, args, action):
+        result = await self.change_membership(ctx, args, action)
+        ctx.activity_committed = True
+        current = self.activities_data["events"][result["id"]]
         link = self._card_link(current)
         await ctx.send(
-            f"✅ {ctx.author.mention} {text}\n**{safe(current['titre'], 100)}** · "
+            f"✅ {ctx.author.mention} {result['texte']}\n**{safe(current['titre'], 100)}** · "
             f"{len(current['participants'])}/{current.get('capacity', DEFAULT_CAPACITY)} inscrits"
             + (f"\nAnnonce : {link}" if link else ""),
             allowed_mentions=discord.AllowedMentions.none(),
         )
-        await self._sync_legacy_roles(ctx.guild, record["id"], [ctx.author.id, *promoted])
-        await self.sync_card(record["id"], ctx.guild)
-        current = self.activities_data["events"][record["id"]]
-        if promoted:
-            await self._notify_members(
-                ctx.guild, current, f"Une place s'est libérée pour **{safe(current['titre'], 100)}** : "
-                "tu passes de la liste d'attente aux inscrits.", promoted,
-            )
+        await self.sync_membership(ctx.guild, result["id"], ctx.author.id, result["promoted"])
 
     async def command_join(self, ctx, args=None):
         if not str(args or "").strip():

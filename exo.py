@@ -273,6 +273,8 @@ class ExoView(discord.ui.View):
         self.modals = set()
         self.undo_session = None
         self.retired = False
+        self.evo_requests: set[str] = set()
+        self.evo_uncertain = False
         self.page = 0
         self.search_entries = []
         self.search_page = 0
@@ -287,6 +289,9 @@ class ExoView(discord.ui.View):
 
     def stop(self):
         self.retired = True
+        for key, grant in list(self.cog.evo_shares.items()):
+            if grant.view is self:
+                self.cog.evo_shares.pop(key, None)
         for modal in list(self.modals):
             modal.stop()
         self.modals.clear()
@@ -506,8 +511,15 @@ class ExoView(discord.ui.View):
             )
         return build_embed(self.session)
 
-    async def publish(self, interaction, *, initial=False):
+    async def publish(self, interaction=None, *, initial=False):
+        """Actualise le panneau existant ; Evo utilise uniquement son message ephemere."""
         self.require_active()
+        if interaction is None:
+            if not getattr(getattr(self.message, "flags", None), "ephemeral", False):
+                raise WikiError("Le panneau privé de l'atelier n'est plus disponible.")
+            editor = self.message.edit
+        else:
+            editor = interaction.edit_original_response
         if self.session.tab == "maths" and not self.search_entries:
             snapshot = copy.deepcopy(self.session)
             async with self.cog.compute_slots:
@@ -532,25 +544,27 @@ class ExoView(discord.ui.View):
         if image is not None and self.published_image is image and retained:
             embed.set_thumbnail(url="attachment://exo-objet.png")
             kwargs["attachments"] = retained
-            message = await interaction.edit_original_response(**kwargs)
+            message = await editor(**kwargs)
         elif image is not None:
             stream = BytesIO(image.data)
             file = discord.File(stream, filename="exo-objet.png")
             embed.set_thumbnail(url="attachment://exo-objet.png")
             kwargs["attachments"] = [file]
             try:
-                message = await interaction.edit_original_response(**kwargs)
+                message = await editor(**kwargs)
             except discord.HTTPException:
                 self.require_active()
                 embed.set_thumbnail(url=image.source_url)
                 kwargs["attachments"] = []
-                message = await interaction.edit_original_response(**kwargs)
+                message = await editor(**kwargs)
             finally:
                 file.close()
                 stream.close()
         else:
             kwargs["attachments"] = []
-            message = await interaction.edit_original_response(**kwargs)
+            message = await editor(**kwargs)
+        if interaction is None and message is None:
+            raise WikiError("La mise à jour du panneau privé n'a pas été confirmée.")
         if message is not None:
             self.message = message
             self.published_image = image
@@ -559,6 +573,20 @@ class ExoView(discord.ui.View):
     async def commit(self, interaction, candidate: Session, *, undo=False):
         if not await self.ensure_active(interaction):
             return
+        await self._commit(interaction, candidate, undo=undo)
+
+    async def commit_private(self, candidate: Session, *, revision: int):
+        """Valide une rune Evo sous le verrou de la vue et confirme le panneau prive."""
+        self.require_active()
+        if not self.lock.locked() or self.session.revision != revision:
+            raise WikiError("Le panneau a changé. Partagez à nouveau son état actuel avec Evo.")
+        try:
+            await self._commit(None, candidate, undo=True)
+        except (Exception, asyncio.CancelledError):
+            self.evo_uncertain = True
+            raise
+
+    async def _commit(self, interaction, candidate: Session, *, undo=False):
         previous, old_undo = self.session, self.undo_session
         candidate.revision = previous.revision + 1
         self.session = candidate
@@ -571,6 +599,7 @@ class ExoView(discord.ui.View):
             self.session, self.undo_session = previous, old_undo
             self.rebuild()
             raise
+        self.evo_uncertain = False
         log.debug("exo: committed owner=%s revision=%s mode=%s", self.owner_id, candidate.revision, candidate.mode)
 
     @staticmethod
@@ -830,6 +859,7 @@ class ExoCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.views: dict[tuple[int, int], ExoView] = {}
+        self.evo_shares: dict[tuple[int, int, int], object] = {}
         self.open_locks: dict[tuple[int, int], asyncio.Lock] = {}
         self.compute_slots = asyncio.Semaphore(2)
         self.closed = False
@@ -866,6 +896,7 @@ class ExoCog(commands.Cog):
 
     async def cog_unload(self):
         self.closed = True
+        self.evo_shares.clear()
         views = list(self.views.values())
         for view in views:
             await view.on_timeout("Module rechargé · sauvegarde de session")

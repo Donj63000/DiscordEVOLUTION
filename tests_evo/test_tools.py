@@ -219,15 +219,17 @@ class DomainTests(unittest.IsolatedAsyncioTestCase):
         result = await self.tools.execute("run_bot_command", '{"command":"ban"}', context(), {"run_bot_command"})
         self.assertIn("erreur", result)
 
-    async def test_private_exo_denied_publicly(self):
+    async def test_unshared_exo_error_is_preserved(self):
         ctx = context()
-        ctx.bot.get_cog = Mock(side_effect=AssertionError("Atelier privé consulté"))
-        result = await self.tools.execute("ma_session_fm", "{}", ctx, {"ma_session_fm"})
+        with patch("utils.evo_exo.read_shared_session", new=AsyncMock(
+            side_effect=EvoError("Aucun atelier partagé dans ce salon.")
+        )) as read:
+            result = await self.tools.execute("ma_session_fm", "{}", ctx, {"ma_session_fm"})
+        read.assert_awaited_once_with(ctx)
         self.assertIn("erreur", result)
         self.assertNotIn("jets", result)
-        self.assertNotIn("ma_session_fm", BY_NAME)
-        self.assertNotIn("ma_session_fm", {tool["name"] for tool in schemas_for("ma session exo")})
-        ctx.bot.get_cog.assert_not_called()
+        self.assertIn("ma_session_fm", BY_NAME)
+        self.assertIn("ma_session_fm", {tool["name"] for tool in schemas_for("ma session exo")})
 
     async def test_other_member_data_requires_consent(self):
         ctx = context(cogs={"PlayersCog": NS(initialized=True, persos_data={"3": {"main": "SECRET_CHARACTER"}})})
@@ -283,6 +285,9 @@ class DomainTests(unittest.IsolatedAsyncioTestCase):
         ctx.bot.cogs["ActiviteCog"] = NS(initialized=True, events_for_guild=lambda gid: events)
         result = await self.tools.do_activites(ctx, "", 7)
         self.assertEqual([a["titre"] for a in result["activites"]], ["Sortie publique"])
+        self.assertEqual(result["activites"][0]["identifiant"], "ok")
+        self.assertEqual(result["activites"][0]["places_restantes"], 7)
+        self.assertTrue(result["activites"][0]["deja_inscrit"])
 
     async def test_knowledge_other_guild_not_read(self):
         with tempfile.TemporaryDirectory() as td:

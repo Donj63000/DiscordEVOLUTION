@@ -1530,12 +1530,9 @@ class IAStaff(commands.Cog):
             canonical = job_name.strip()
         if not canonical:
             raise RuntimeError("Nom de métier invalide.")
-        entry = job_cog.jobs_data.setdefault(target_id, {"name": display_name, "jobs": {}})
-        entry["name"] = display_name
-        entry.setdefault("jobs", {})
-        entry["jobs"][canonical] = level_value
-        job_cog.save_data_local()
-        await job_cog.dump_data_to_console(guild)
+        await job_cog.update_member_job(
+            guild, target_id, display_name, canonical, level_value, allow_new=True,
+        )
         return self._format_command_summary(
             ["[IA] job.set"],
             f"**{display_name}** possède désormais **{canonical}** niveau **{level_value}**.",
@@ -1558,9 +1555,7 @@ class IAStaff(commands.Cog):
             canonical = job_name.strip()
         if canonical not in entry["jobs"]:
             raise RuntimeError(f"{display_name} n'a pas {canonical}.")
-        del entry["jobs"][canonical]
-        job_cog.save_data_local()
-        await job_cog.dump_data_to_console(guild)
+        await job_cog.update_member_job(guild, target_id, display_name, canonical, None, allow_new=True)
         return self._format_command_summary(
             ["[IA] job.remove"],
             f"Le métier **{canonical}** a été retiré pour **{display_name}**.",

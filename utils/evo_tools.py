@@ -1,4 +1,4 @@
-"""Outils /evo en lecture seule, branchés sur les modules installés d'Evolution.
+"""Outils /evo bornés, branchés sur les modules installés d'Evolution.
 
 Aucune exécution de commande libre, aucun accès à l'environnement, aux tickets,
 aux avertissements, aux MP ou aux messages supprimés. Pas de client web arbitraire.
@@ -20,7 +20,9 @@ from utils.drop_calculator import (
     personal_rate, rate_bounds, source_count, threshold_met,
 )
 from utils.evo_config import EvoError
-from utils.evo_equipment import EquipmentIndex, STAT_NAMES, equipment_search, exo_candidates
+from utils.evo_equipment import (
+    EquipmentIndex, STAT_NAMES, compare_equipment, equipment_search, exo_candidates,
+)
 from utils.evo_safety import ToolContext, bounded_json, clean, compact, parse_arguments
 from utils.exo_data import parse_effects
 from utils.exo_engine import DISCLAIMER, STATS
@@ -60,21 +62,26 @@ TOOLS = [
     tool("sources_drop", "Monstres, zones et taux calculés en Python. PP null = taux de base.",
          {"objet": text(), "pp": number(0, 10000, nullable=True),
           "pp_groupe": number(0, 100000, nullable=True)}),
-    tool("recette", "Ingrédients multipliés et, sur demande, sources de chaque ressource.",
-         {"objet": text(), "quantite": number(1, 100), "avec_sources": {"type": "boolean"}}),
-    tool("monstre", "Statistiques par niveau et drops explicitement présents dans les catalogues.",
-         {"nom": text()}),
+    tool("recette", "Recette exacte multipliée en Python, par pages de 8 ingrédients. Page 1 au début.",
+         {"objet": text(), "quantite": number(1, 100), "avec_sources": {"type": "boolean"},
+          "page": number(1, 13)}),
+    tool("monstre", "Zones, statistiques et drops vérifiés, par pages de 10. Page 1 au début.",
+         {"nom": text(), "page": number(1, 100)}),
     tool("chercher_equipements", "5 équipements, triés par jets max dans l'ordre des priorités. Pas de prix.",
          {"type_objet": text(nullable=True), "niveau_min": number(1, 200), "niveau_max": number(1, 200),
           "priorites": array(choice(STAT_NAMES), 1, 3), "sans_malus": array(choice(STAT_NAMES), 0, 3),
           "nom_contient": text(maximum=60)}),
-    tool("comparer_objets", "Compare les jets naturels et conditions de 2 ou 3 objets nommés.",
+    tool("comparer_objets", "Fiches et écarts de jets naturels calculés en Python pour 2 ou 3 objets.",
          {"objets": array(text(), 2, 3)}),
     tool("candidats_exo", "Candidats de remontage simple. Heuristique, PAS taux de réussite ni coût garanti.",
          {"bonus": choice(("pa", "pm", "po")), "type_objet": text(nullable=True),
-          "niveau_min": number(1, 200), "niveau_max": number(1, 200)}),
+          "niveau_min": number(1, 200), "niveau_max": number(1, 200),
+          "objets": array(text(), 0, 3)}),
     tool("guide_fm", "Poids nominaux du moteur existant et limites du simulateur. Pas de taux Ankama certifié.",
          {"sujet": text()}),
+    tool("ma_session_fm", "Consulte uniquement ton atelier /exo explicitement partagé dans ce salon.", {}),
+    tool("poser_rune", "Une rune sur ta simulation partagée ici, demande directe actuelle requise ; pas de conseil ni lot.",
+         {"rune": text()}),
     tool("guilde", "Présentation Discord et salons publics. Ne révèle aucune donnée Staff.", {}, "guild"),
     tool("connaissances_guilde", "Recherche les faits publics validés par le Staff : règles, histoire, habitudes.",
          {"question": text(maximum=180)}, "guild"),
@@ -84,6 +91,14 @@ TOOLS = [
          {"metier": text(), "niveau_min": number(1, 100)}, "guild"),
     tool("activites", "Sorties publiées et accessibles à l'audience de ce salon, places et dates réelles.",
          {"recherche": text(), "jours": number(1, 60)}, "guild"),
+    tool("inscrire_activite", "T'inscrit à la sortie nommée ou identifiée, seulement sur ta demande explicite.",
+         {"activite": text()}, "guild"),
+    tool("desinscrire_activite", "Retire uniquement ta propre inscription, sur ta demande explicite.",
+         {"activite": text()}, "guild"),
+    tool("definir_mon_metier", "Ajoute ou actualise ton métier déclaré sur ta demande explicite.",
+         {"metier": text(), "niveau": number(1, 100)}, "guild"),
+    tool("supprimer_mon_metier", "Supprime uniquement ton propre métier déclaré, sur ta demande explicite.",
+         {"metier": text()}, "guild"),
     tool("conversation_salon", "Échantillon des 15 derniers messages du salon actuel, uniquement si autorisé.",
          {}, "guild"),
     tool("aide_bot", "Commandes disponibles pour les membres. N'exécute aucune commande.",
@@ -92,19 +107,46 @@ TOOLS = [
          {"question": text(maximum=250)}, "both"),
 ]
 BY_NAME = {spec["schema"]["name"]: spec for spec in TOOLS}
+MUTATING_TOOLS = frozenset({
+    "poser_rune", "inscrire_activite", "desinscrire_activite", "definir_mon_metier", "supprimer_mon_metier",
+})
 
 
 def schemas_for(question: str) -> list[dict]:
-    """Filtre local peu coûteux. En cas de doute, les deux domaines sont fournis."""
+    """Je fournis les outils du sujet courant et garde un repli lorsque le sujet est inconnu."""
     key = search_key(question)
-    game = bool(re.search(r"\b(dofus|drop|drops|stuff|item|items|objet|equipement|force|terre|feu|eau|air|"
-                          r"coiffe|cape|anneau|bottes|exo|fm|rune|runes|puits|pp|pa|pm|recette|craft|monstre|"
-                          r"gelano|prospection|vita|lvl|niveau)\b", key))
-    guild = bool(re.search(r"\b(guilde|membre|membres|qui|artisan|artisans|metier|metiers|profil|"
-                           r"sortie|sorties|activite|activites|calendrier|salon|resume|reglement|evolution|"
-                           r"inscrit|inscrits|organise|orga)\b", key))
-    domains = {"game", "guild"} if game == guild else {"game"} if game else {"guild"}
-    return [spec["schema"] for spec in TOOLS if spec["domain"] in domains | {"both"}]
+    topics = (
+        (r"drop|drops|prospection|pp|ressource|ressources|monstre|monstres|sources_drop",
+         {"sources_drop", "monstre", "fiche_objet"}),
+        (r"recette|recettes|craft|crafter|fabriquer|ingredients|exemplaires",
+         {"recette", "sources_drop", "fiche_objet", "artisans"}),
+        (r"stuff|item|items|objet|objets|equipement|equipements|force|terre|feu|eau|air|coiffe|cape|anneau|"
+         r"anneaux|bottes|gelano|vita|vitalite|comparer|compare|comparer_objets|chercher_equipements",
+         {"chercher_equipements", "comparer_objets", "fiche_objet"}),
+        (r"exo|fm|rune|runes|puits|remontage|(?:pa|ra)\s+(?:fo|ine|age|cha|vi|sa|pod)|"
+         r"ga\s+(?:pa|pme)|ma_session_fm|poser_rune|candidats_exo|guide_fm",
+         {"guide_fm", "ma_session_fm", "poser_rune", "candidats_exo", "comparer_objets", "fiche_objet"}),
+        (r"sortie|sorties|activite|activites|calendrier|inscris|inscrire|inscrit|inscrits|desinscris|"
+         r"donjon|donjons|organise|orga|inscrire_activite|desinscrire_activite",
+         {"activites", "inscrire_activite", "desinscrire_activite"}),
+        (r"artisan|artisans|metier|metiers|paysan|bucheron|alchimiste|mineur|pecheur|tailleur|bijoutier|"
+         r"cordonnier|forgeron|sculpteur|definir_mon_metier|supprimer_mon_metier",
+         {"artisans", "membre", "definir_mon_metier", "supprimer_mon_metier"}),
+        (r"membre|membres|profil|personnage|personnages|mule|mules",
+         {"membre", "artisans", "definir_mon_metier", "supprimer_mon_metier"}),
+        (r"guilde|evolution|regle|regles|reglement|histoire|existe|connaissances_guilde",
+         {"guilde", "connaissances_guilde", "membre"}),
+        (r"salon|resume|resumer|conversation_salon", {"conversation_salon", "guilde"}),
+    )
+    selected = set()
+    for pattern, names in topics:
+        if re.search(r"\b(?:" + pattern + r")\b", key):
+            selected.update(names)
+    if not selected:
+        selected = set(BY_NAME)
+    selected.update({"aide_bot", "demander_precision"})
+    log.debug("evo tool catalogue selected count=%s", len(selected))
+    return [spec["schema"] for spec in TOOLS if spec["schema"]["name"] in selected]
 
 
 def item_payload(detail, enrichment=None):
@@ -131,13 +173,15 @@ def drop_payload(detail, enrichment, pp=None, pp_groupe=None):
     rule = item_drop_rule(detail.entry.category, detail.entry.name)
     rows = []
     for source in enrichment.drops if enrichment else ():
+        bounds = None if rule is DropRule.QUEST else rate_bounds(source)
+        if bounds is not None and source_count(source.maximum) == 0:
+            bounds = (Decimal(0), Decimal(0))
         row = {
             "monstre": source.name, "taux_base": source.rate or None,
             "taux_par_niveau": list(source.level_rates), "seuil_pp": source.pp or None,
             "quota_partage": source.maximum or None, "zones": list(source.zones),
         }
         if settings is not None:
-            bounds = rate_bounds(source)
             met = threshold_met(settings, source.pp)
             if rule is DropRule.QUEST or bounds is None:
                 row["taux_personnel"] = None
@@ -149,13 +193,43 @@ def drop_payload(detail, enrichment, pp=None, pp_groupe=None):
                     for rate in bounds
                 ]
                 row["taux_personnel"] = [format_percent(rate) for rate in rates]
+                bounds = tuple(rates)
                 row["conditionnel"] = met is None
                 row["seuil_atteint"] = met
+        row["plage_classee"] = [format_percent(rate) for rate in bounds] if bounds else None
+        row["_bornes"] = bounds
         rows.append(row)
+    rows.sort(key=lambda row: (
+        row["_bornes"] is None,
+        -(row["_bornes"] or (Decimal(-1), Decimal(-1)))[0],
+        -(row["_bornes"] or (Decimal(-1), Decimal(-1)))[1],
+        search_key(row["monstre"]),
+    ))
+    best = None
+    comparable = bool(rows) and all(row["_bornes"] is not None for row in rows)
+    conditional = any(row.get("conditionnel") for row in rows)
+    if not comparable:
+        comparison = "Des taux sont inconnus : impossible d'affirmer quelle source est la meilleure."
+    elif conditional:
+        comparison = "Comparaison conditionnelle : certains seuils de PP ne sont pas confirmés."
+    elif len(rows) == 1:
+        comparison = "Une seule source renseignée ; aucun classement comparatif possible."
+    elif all(rows[0]["_bornes"][0] > row["_bornes"][1] for row in rows[1:]):
+        best = rows[0]["monstre"]
+        comparison = "Cette source domine les plages de toutes les autres sources renseignées."
+    elif all(row["_bornes"] == rows[0]["_bornes"] and row["_bornes"][0] == row["_bornes"][1] for row in rows):
+        comparison = "Les sources renseignées sont ex æquo sur le taux."
+    else:
+        comparison = "Les plages se chevauchent : le niveau du monstre peut changer le classement."
+    for row in rows:
+        row.pop("_bornes")
+    log.debug("evo drop sources ranked count=%s comparable=%s conditional=%s", len(rows), comparable, conditional)
     return {
         "objet": detail.entry.name, "reference": detail.entry.token,
         "pp_personnelle": pp, "pp_groupe": pp_groupe, "regle": rule.value,
         "sources_drop": rows[:12], "nombre_sources": len(rows),
+        "classement": "Minimum renseigné décroissant, puis maximum ; taux du jet individuel seulement.",
+        "meilleure_source_taux": best, "comparaison": comparison,
         "recoltes": [
             {"ressource": x.name, "metier": x.job, "niveau": x.level}
             for x in enrichment.harvests
@@ -219,7 +293,7 @@ class EvoTools:
             async with asyncio.timeout(24):
                 value = await getattr(self, "do_" + name)(ctx, **params)
             self._sources(ctx, value)
-            return json.loads(bounded_json(value, 5200))
+            return self.encode_result(name, value)
         except EvoError as exc:
             return {"erreur": str(exc)}
         except ValueError:
@@ -229,6 +303,38 @@ class EvoTools:
         except Exception as exc:
             log.warning("evo tool failed tool=%s type=%s", name, type(exc).__name__)
             return {"erreur": "Cette source est indisponible. Utilise la commande classique ou précise ta demande."}
+
+    def encode_result(self, name, value):
+        """Je préserve chaque ligne de la page avant de réduire les détails annexes."""
+        result = json.loads(bounded_json(value, 5200))
+        key = {"recette": "ingredients", "monstre": "drops"}.get(name)
+        if key is None or key not in value or len(result.get(key, [])) == len(value[key]):
+            return result
+        reduced = dict(value)
+        if name == "recette":
+            reduced["ingredients"] = [
+                {key: clean(row[key], 120) if key == "nom" else row[key]
+                 for key in ("nom", "quantite", "reference")}
+                for row in value["ingredients"]
+            ]
+            reduced.pop("zones_communes", None)
+            reduced["portee_sources"] = (
+                "Page complète des quantités. Détails des sources trop volumineux : "
+                "consulter sources_drop pour chaque référence nécessaire."
+            )
+        else:
+            reduced["drops"] = [
+                {key: clean(row.get(key), 120) or None
+                 for key in ("ressource", "taux_base", "seuil_pp", "quota_partage")}
+                for row in value["drops"]
+            ]
+            reduced["grades"] = []
+            reduced["details_reduits"] = "Taux par niveau omis ; consulter la ressource pour ces précisions."
+        log.debug("evo paginated result compacted tool=%s rows=%s", name, len(value[key]))
+        encoded = json.loads(bounded_json(reduced, 5200))
+        if len(encoded.get(key, [])) != len(value[key]):
+            raise EvoError("Cette page est trop volumineuse. Consulte la commande Discord de l'objet.")
+        return encoded
 
     def _sources(self, ctx, value):
         if isinstance(value, dict):
@@ -250,7 +356,7 @@ class EvoTools:
             return ambiguity
         return drop_payload(*(await self.detail(ctx, entry)), pp, pp_groupe)
 
-    async def do_recette(self, ctx, objet, quantite, avec_sources):
+    async def do_recette(self, ctx, objet, quantite, avec_sources, page=1):
         entry, ambiguity = await self.resolve(ctx, objet)
         if ambiguity:
             return ambiguity
@@ -271,24 +377,42 @@ class EvoTools:
             if previous["nom"] != row["name"]:
                 raise EvoError("Deux ingrédients partagent un identifiant incohérent.")
             previous["quantite"] += row["qty"] * quantite
-        ingredients = list(totals.values())
+        pages = (len(totals) + 7) // 8
+        if not 1 <= page <= pages:
+            raise EvoError(f"Cette recette contient {pages} page(s) d'ingrédients.")
+        ingredients = list(totals.values())[(page - 1) * 8:page * 8]
         if avec_sources:
             async def enrich(row):
-                sources = await self.do_sources_drop(ctx, row["reference"], None, None)
+                try:
+                    sources = await self.do_sources_drop(ctx, row["reference"], None, None)
+                except EvoError as exc:
+                    return {**row, "obtention": {"erreur": str(exc)}}
                 return {**row, "obtention": {
                     "drops": sources.get("sources_drop", [])[:3],
                     "recoltes": sources.get("recoltes", [])[:2],
                     "source": sources.get("source"),
                     "limites": sources.get("limites", sources.get("message", "")),
                 }}
-            ingredients = list(await asyncio.gather(*(enrich(row) for row in ingredients[:8])))
+            ingredients = list(await asyncio.gather(*(enrich(row) for row in ingredients)))
+        zones = {}
+        for ingredient in ingredients:
+            for drop in ingredient.get("obtention", {}).get("drops", []):
+                for zone in drop.get("zones", []):
+                    zones.setdefault(zone, {})[ingredient["reference"]] = ingredient["nom"]
+        log.debug("evo recipe multiplied quantity=%s ingredients=%s page=%s pages=%s", quantite, len(totals), page, pages)
         return {
-            "objet": entry.name, "exemplaires": quantite, "ingredients": ingredients,
-            "nombre_ingredients": len(totals), "obtention_limitee_aux_8_premiers": bool(avec_sources and len(totals) > 8),
+            "objet": entry.name, "reference": entry.token, "exemplaires": quantite, "ingredients": ingredients,
+            "nombre_ingredients": len(totals), "page": page, "pages": pages,
+            "page_suivante": page + 1 if page < pages else None,
+            "zones_communes": [
+                {"zone": zone, "ingredients": list(resources.values())}
+                for zone, resources in sorted(zones.items()) if len(resources) > 1
+            ],
+            "portee_sources": "Sources limitées aux ingrédients de cette page ; pas un itinéraire optimal.",
             "source": entry.url,
         }
 
-    async def do_monstre(self, ctx, nom):
+    async def do_monstre(self, ctx, nom, page=1):
         entry, ambiguity = await self.resolve(ctx, nom, "monster")
         if ambiguity:
             return ambiguity
@@ -322,14 +446,18 @@ class EvoTools:
                     "taux_par_niveau": list(source.level_rates),
                 })
             log.debug("evo monster inventory normalized drops=%s", len(drops))
+        pages = max(1, (len(drops) + 9) // 10)
+        if not 1 <= page <= pages:
+            raise EvoError(f"L'inventaire de ce monstre contient {pages} page(s).")
         return {
             "monstre": entry.name, "grades": grades, "source": entry.url,
             "cache_ancien": detail.stale, "zones": match.get("zones", []) if match else [],
-            "drops": drops[:10], "nombre_drops_renseignes": len(drops),
+            "drops": drops[(page - 1) * 10:page * 10], "nombre_drops_renseignes": len(drops),
+            "page": page, "pages": pages, "page_suivante": page + 1 if page < pages else None,
             "date_catalogue": catalog.get("genere_le") if catalog else None,
             "limites": "Sources disponibles, pas un rendement horaire ou un prix. "
                       "La fiche de ressource fournit le calcul PP détaillé. "
-                      + ("Drops du catalogue Xixou ; liste limitée à 10."
+                      + ("Drops du catalogue Xixou ; 10 résultats par page, sans classement de valeur."
                          if match else "Inventaire des drops indisponible ou identité non vérifiée."),
         }
 
@@ -342,13 +470,35 @@ class EvoTools:
 
     async def do_comparer_objets(self, ctx, objets):
         results = await asyncio.gather(*(self.do_fiche_objet(ctx, name) for name in objets))
-        return {"objets": results, "limites": "Comparer les jets naturels ; le stuff complet et les prix sont inconnus."}
+        if any("a_preciser" in result for result in results):
+            return {"objets": results, "comparaisons": [], "message": "Précise les identités avant de comparer."}
+        return {
+            "objets": results, "comparaisons": compare_equipment(results),
+            "methode_ecarts": "Premier objet moins second, minimum contre minimum et maximum contre maximum.",
+            "limites": "Jets naturels seulement ; pas de delta global si des effets manquent. Le stuff complet et les prix sont inconnus.",
+        }
 
-    async def do_candidats_exo(self, ctx, bonus, type_objet, niveau_min, niveau_max):
+    async def do_candidats_exo(self, ctx, bonus, type_objet, niveau_min, niveau_max, objets=()):
+        references = []
+        for name in objets:
+            entry, ambiguity = await self.resolve(ctx, name)
+            if ambiguity:
+                return ambiguity
+            if entry.token not in references:
+                references.append(entry.token)
         rows, info = await self.equipment.get(self.wiki(ctx))
         return {**exo_candidates(
             rows, target=bonus, category=type_objet, min_level=niveau_min, max_level=niveau_max,
+            references=references,
         ), "couverture": info}
+
+    async def do_ma_session_fm(self, ctx):
+        from utils.evo_exo import read_shared_session
+        return await read_shared_session(ctx)
+
+    async def do_poser_rune(self, ctx, rune):
+        from utils.evo_exo import apply_shared_rune
+        return await apply_shared_rune(ctx, rune)
 
     async def do_guide_fm(self, ctx, sujet):
         key = search_key(sujet)
@@ -499,7 +649,7 @@ class EvoTools:
         now = datetime.now(timezone.utc)
         end = now + timedelta(days=jours)
         rows = []
-        for event in cog.events_for_guild(ctx.guild.id).values():
+        for event_id, event in cog.events_for_guild(ctx.guild.id).items():
             if event.get("cancelled") or not event.get("message_id"):
                 continue  # Ne révèle pas les brouillons.
             channel = ctx.guild.get_channel(int(event.get("channel_id") or 0))
@@ -515,11 +665,16 @@ class EvoTools:
                 continue
             participants = event.get("participants", [])
             creator = ctx.guild.get_member(int(event.get("creator_id") or 0))
+            capacity = event.get("capacity", 8)
+            if type(capacity) is not int or capacity < 0:
+                capacity = None
             rows.append({
-                "titre": event.get("titre"), "date": starts.isoformat(),
+                "identifiant": str(event_id), "titre": event.get("titre"), "date": starts.isoformat(),
                 "description": clean(event.get("description"), 300),
                 "createur": creator.display_name if creator else "non renseigné",
-                "inscrits": len(participants), "capacite": event.get("capacity", 8),
+                "inscrits": len(participants), "capacite": capacity,
+                "places_restantes": max(0, capacity - len(participants)) if capacity is not None else None,
+                "deja_inscrit": any(str(uid) == str(ctx.member.id) for uid in participants),
                 "membres": [
                     m.display_name for uid in participants[:12]
                     if (m := ctx.guild.get_member(int(uid))) is not None
@@ -527,7 +682,24 @@ class EvoTools:
                 "source": f"https://discord.com/channels/{ctx.guild.id}/{channel.id}/{event['message_id']}",
             })
         rows.sort(key=lambda row: row["date"])
+        log.debug("evo public activities listed count=%s days=%s", len(rows), jours)
         return {"activites": rows[:8], "horizon_jours": jours, "note": "Activités publiées seulement ; aucune inscription effectuée."}
+
+    async def do_inscrire_activite(self, ctx, activite):
+        from utils.evo_actions import join_activity
+        return await join_activity(ctx, activite)
+
+    async def do_desinscrire_activite(self, ctx, activite):
+        from utils.evo_actions import leave_activity
+        return await leave_activity(ctx, activite)
+
+    async def do_definir_mon_metier(self, ctx, metier, niveau):
+        from utils.evo_actions import set_own_job
+        return await set_own_job(ctx, metier, niveau)
+
+    async def do_supprimer_mon_metier(self, ctx, metier):
+        from utils.evo_actions import remove_own_job
+        return await remove_own_job(ctx, metier)
 
     async def do_conversation_salon(self, ctx):
         if ctx.channel.id not in ctx.config.history_channels:
@@ -561,7 +733,10 @@ class EvoTools:
                 rows.append({"commande": "/" + command.qualified_name, "description": clean(command.description, 100)})
         return {
             "commandes": rows[:18],
-            "capacites_evo": "Questions et consultations en lecture seule. Pour agir, utiliser la commande Discord autorisée.",
+            "capacites_evo": (
+                "Consultations et, si activées, actions demandées sur tes propres métiers, inscriptions "
+                "et simulation /exo explicitement partagée dans ce salon. Pas de modération ni action sur autrui."
+            ),
             "web": "Pas de recherche Web générale ni de frais web_search dans cette version.",
         }
 

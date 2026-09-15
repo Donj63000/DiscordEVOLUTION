@@ -17,6 +17,7 @@ from utils.evo_budget import Budget
 from utils.evo_budget_store import ConsoleBudgetStore
 from utils.evo_config import EvoConfig, EvoError, NANO
 from utils.evo_safety import ToolContext, clean, output_text
+from utils.evo_exo import share_session, revoke_session, clear_member_shares, clear_shares
 
 log = logging.getLogger(__name__)
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -123,25 +124,9 @@ class EvoCog(commands.Cog):
         normalized = clean(question, 1200).strip().casefold().rstrip(" !?.")
         if not normalized and prompt_if_empty:
             return "Je suis là 🙂 Pose-moi ta question sur Dofus Rétro ou la guilde."
-        if normalized in {"salut", "coucou", "hello", "bonjour", "yo", "merci", "merci evo"}:
-            if normalized.startswith("merci"):
-                return "Avec plaisir 🙂"
-            return (
-                "Salut ! Pose-moi ta question sur Dofus Rétro ou la guilde 🙂 "
-                "Je m'appuie sur les données du bot ; /evo-oublier efface notre contexte."
-            )
-        if normalized in {"confidentialité", "confidentialite", "vie privée", "vie privee"}:
-            return (
-                "Je réponds publiquement quand tu me mentionnes, utilises /evo ou réponds "
-                "à mon dernier message pour toi. Je reçois ta question, notre petit contexte "
-                "et les résultats utiles des outils ; ces données sont envoyées à OpenAI. "
-                "Le contexte expire après 15 minutes d'inactivité ; /evo-oublier le supprime "
-                "du bot. Les messages publiés restent sur Discord. Les tickets, MP, salons "
-                "privés et données Staff sont exclus."
-            )
         return None
 
-    async def _run(self, ctx, question, trigger_id, send, *, prompt_if_empty=False):
+    async def _run(self, ctx, question, trigger_id, send, *, prompt_if_empty=False, deepen=False):
         """Pas de file illimitée : deux demandes simultanées, une par membre."""
         if trigger_id in self._seen_triggers:
             log.debug("evo duplicate trigger_id=%s", trigger_id)
@@ -173,28 +158,41 @@ class EvoCog(commands.Cog):
                     log.debug("evo local reply trigger_id=%s", trigger_id)
                 else:
                     agent = await self._ready()
-                    answer = await agent.answer(ctx, question, trigger_id)
+                    options = {"deepen": True} if deepen else {}
+                    answer = await agent.answer(ctx, question, trigger_id, **options)
                 await self.bot.ensure_evo_leadership()
                 ctx.check()
+                if ctx.before_publish:
+                    ctx.before_publish()
                 message = await send(output_text(answer, ctx.sources))
                 self._remember_reply(ctx, message)
         except EvoError as exc:
-            await send(output_text(str(exc), set()))
+            if ctx.action_receipt and ctx.action_receipt.get("action_effectuee"):
+                await send("Ton action a été enregistrée. Son détail n'est plus partagé ici ; ne relance pas l'action.")
+            else:
+                await send(output_text(str(exc), set()))
         except TimeoutError:
-            await send("La réponse a pris trop de temps. J'ai arrêté les appels, sans relance automatique.")
+            if ctx.action_receipt and ctx.action_receipt.get("action_effectuee"):
+                await send("Ton action a été enregistrée. La rédaction a expiré ; ne relance pas l'action.")
+            else:
+                await send("La réponse a pris trop de temps. J'ai arrêté les appels, sans relance automatique.")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("evo request failed type=%s", type(exc).__name__)
-            await send("Je n'ai pas pu terminer cette recherche. Aucun appel supplémentaire n'est lancé.")
+            if ctx.action_receipt and ctx.action_receipt.get("action_effectuee"):
+                await send("Ton action a été enregistrée, mais sa réponse n'a pas pu être publiée complètement.")
+            else:
+                await send("Je n'ai pas pu terminer cette recherche. Aucun appel supplémentaire n'est lancé.")
         finally:
             if self._active.get(user_key) is task:
                 self._active.pop(user_key, None)
 
     @app_commands.command(name="evo", description="Discute avec Evo : Dofus Rétro, drops, équipements et guilde.")
-    @app_commands.describe(question="Ta question publique, en langage naturel.")
+    @app_commands.describe(question="Ta question publique, en langage naturel.",
+                           approfondir="Autorise un spécialiste supplémentaire dans le même budget.")
     @app_commands.guild_only()
-    async def evo(self, interaction: discord.Interaction, question: str):
+    async def evo(self, interaction: discord.Interaction, question: str, approfondir: bool = False):
         try:
             ctx = self._context(interaction.guild, interaction.channel, interaction.user)
         except EvoError as exc:
@@ -207,7 +205,7 @@ class EvoCog(commands.Cog):
         async def send(content):
             return await interaction.edit_original_response(content=content, allowed_mentions=NO_MENTIONS)
 
-        await self._run(ctx, question, interaction.id, send)
+        await self._run(ctx, question, interaction.id, send, deepen=approfondir)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -241,6 +239,32 @@ class EvoCog(commands.Cog):
             question = mention.sub("", message.content).strip() if mentioned else message.content
             await self._run(ctx, question, message.id, send, prompt_if_empty=mentioned)
 
+    @app_commands.command(name="evo-exo", description="Partage ou révoque l'état courant de ton atelier dans ce salon.")
+    @app_commands.describe(partager="Autorise Evo à utiliser publiquement l'état courant de ton atelier.")
+    @app_commands.guild_only()
+    async def exo_share(self, interaction: discord.Interaction, partager: bool):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            ctx = self._context(interaction.guild, interaction.channel, interaction.user)
+            await self.bot.ensure_evo_leadership()
+            if partager:
+                await share_session(ctx)
+                content = (
+                    "L'état courant de ton atelier est partagé avec Evo dans ce salon pour 15 minutes "
+                    "au maximum. Une modification privée demande un nouveau partage. "
+                    "/evo-exo partager:false révoque cet accès."
+                )
+            else:
+                await revoke_session(ctx)
+                content = "Le partage de ton atelier avec Evo est révoqué dans ce salon."
+            if self.agent:
+                self.agent.sessions.forget(ctx.guild.id, ctx.member.id)
+            log.debug("evo exo sharing guild_id=%s member_id=%s enabled=%s",
+                      ctx.guild.id, ctx.member.id, partager)
+        except EvoError as exc:
+            content = str(exc)
+        await interaction.edit_original_response(content=output_text(content, set()), allowed_mentions=NO_MENTIONS)
+
     @app_commands.command(name="evo-oublier", description="Efface ton contexte Evo du bot, sans appel IA.")
     @app_commands.guild_only()
     async def forget(self, interaction: discord.Interaction):
@@ -253,6 +277,7 @@ class EvoCog(commands.Cog):
             await asyncio.gather(task, return_exceptions=True)
         if self.agent:
             self.agent.sessions.forget(interaction.guild.id, interaction.user.id)
+        clear_member_shares(self.bot, interaction.guild.id, interaction.user.id)
         for key in list(self._last_messages):
             if key[0] == interaction.guild.id and key[2] == interaction.user.id:
                 self._last_messages.pop(key, None)
@@ -302,6 +327,8 @@ class EvoCog(commands.Cog):
                 f"Appels réservés : {data['calls']} · Réservations non réglées : "
                 f"{data['pending_nano']/NANO:.4f} USD\n"
                 f"Tokens confirmés : {data['input_tokens']} entrée / {data['output_tokens']} sortie\n"
+                f"Générations : {config.max_calls} normales / {config.deep_max_calls} approfondies ; "
+                f"réponse limitée à {config.max_output} tokens\n"
                 f"Blocage anomalie : {'oui' if data['blocked'] else 'non'} · "
                 f"Enrichissement Xixou : {'activé' if xixou else 'absent'}\n"
                 "Compteur prudent (marge de 15 %), pas facture réelle ni montant en euros. "
@@ -324,6 +351,7 @@ class EvoCog(commands.Cog):
         if budget:
             budget.invalidate()
         self._last_messages.clear()
+        clear_shares(self.bot)
         current = asyncio.current_task()
         tasks = list({task for task in self._active.values() if task is not current})
         for task in tasks:

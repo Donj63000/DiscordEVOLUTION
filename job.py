@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
+import copy
 import os
 import json
 import re
@@ -16,6 +17,7 @@ from discord.ext import commands, tasks
 from collections import defaultdict
 from utils.channel_resolver import resolve_text_channel
 from utils.discord_history import fetch_channel_history, fetch_channel_message
+from utils.console_json_store import ConsoleJSONSnapshotStore
 
 CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 DATA_FILE = os.path.join(os.path.dirname(__file__), "jobs_data.json")
@@ -47,6 +49,10 @@ CONSOLE_PRESERVE_MARKERS = (
 )
 
 CLEAR_CONSOLE_CONFIRMATION = os.getenv("CLEAR_CONSOLE_CONFIRMATION", "CONFIRMER")
+
+
+class JobPersistenceError(RuntimeError):
+    """Je refuse de confirmer une modification dont la sauvegarde est incertaine."""
 
 
 def _canon_json(d: dict) -> str:
@@ -169,6 +175,11 @@ class JobCog(commands.Cog):
         self.console_message_id = None
         self._console_last_sync = 0.0
         self._console_sync_lock = asyncio.Lock()
+        self._mutation_lock = asyncio.Lock()
+        self._remote_uncertain = False
+        self._snapshot_reader = ConsoleJSONSnapshotStore(
+            bot, marker="===BOTJOBS===", filename="jobs_data.json", pin_messages=True,
+        )
         self._job_submissions: dict[tuple[int | None, int, int], asyncio.Event] = {}
         self._console_sync_ttl = max(float(os.getenv("JOB_CONSOLE_SYNC_TTL", "30")), 0.0)
         self._console_history_limit = max(
@@ -298,6 +309,13 @@ class JobCog(commands.Cog):
             await ctx.send(embed=embed)
 
     async def load_from_console(self, guild: discord.Guild):
+        async with self._mutation_lock:
+            if self._remote_uncertain:
+                await self._restore_jobs_for_mutation(guild)
+                return True
+            return await self._load_from_console(guild)
+
+    async def _load_from_console(self, guild: discord.Guild):
         async with self._console_sync_lock:
             now = time.monotonic()
             if (
@@ -340,109 +358,11 @@ class JobCog(commands.Cog):
             return False
 
     async def publish_to_console(self, guild: discord.Guild):
-        ch = await self.get_console_channel(guild)
-        if not ch:
-            return False
-
-        data_canon = _canon_json(self.jobs_data)
-        digest = _md5(data_canon)
-        header = f"===BOTJOBS=== etag:{digest}"
-
-        last = await self._find_last_marker(ch, "===BOTJOBS===", filename="jobs_data.json")
-
-        if len(data_canon) < 1900:
-            content = f"{header}\n```json\n{data_canon}\n```"
-            if last and ("etag:" in (last.content or "")) and (digest in last.content):
-                self.console_message_id = last.id
-                self._console_last_sync = time.monotonic()
-                return True
-            message = None
-            try:
-                if last:
-                    await last.edit(content=content, attachments=[])
-                    message = last
-                else:
-                    message = await ch.send(content)
-            except discord.HTTPException as exc:
-                log.debug(
-                    "Jobs: snapshot edit/send failed subcommand=job.snapshot guild_id=%s channel_id=%s message_id=%s action=edit_or_send error=%s",
-                    guild.id,
-                    ch.id,
-                    getattr(last, "id", None),
-                    exc,
-                )
-                if last:
-                    try:
-                        await last.delete()
-                    except discord.HTTPException as delete_exc:
-                        log.debug(
-                            "Jobs: snapshot delete fallback failed subcommand=job.delete guild_id=%s channel_id=%s message_id=%s action=delete error=%s",
-                            guild.id,
-                            ch.id,
-                            last.id,
-                            delete_exc,
-                        )
-                message = await ch.send(content)
-            if message:
-                self.console_message_id = message.id
-                self._console_last_sync = time.monotonic()
-                await self._ensure_pinned(message)
+        async with self._mutation_lock:
+            if self._remote_uncertain:
+                raise JobPersistenceError("Le registre métiers doit être relu avant toute publication.")
+            await self._commit_jobs_candidate(guild, copy.deepcopy(self.jobs_data))
             return True
-
-        payload = data_canon.encode("utf-8")
-        file_obj = io.BytesIO(payload)
-        file_obj.seek(0)
-
-        if last and ("etag:" in (last.content or "")) and (digest in last.content):
-            self.console_message_id = last.id
-            self._console_last_sync = time.monotonic()
-            return True
-
-        message = None
-        try:
-            if last:
-                try:
-                    await last.edit(
-                        content=f"{header} (fichier)",
-                        attachments=[discord.File(file_obj, filename="jobs_data.json")],
-                    )
-                    message = last
-                except discord.HTTPException as exc:
-                    log.debug(
-                        "Jobs: file snapshot edit failed subcommand=job.snapshot guild_id=%s channel_id=%s message_id=%s action=edit_attachment error=%s",
-                        guild.id,
-                        ch.id,
-                        last.id,
-                        exc,
-                    )
-                    try:
-                        await last.delete()
-                    except discord.HTTPException as delete_exc:
-                        log.debug(
-                            "Jobs: file snapshot delete fallback failed subcommand=job.delete guild_id=%s channel_id=%s message_id=%s action=delete error=%s",
-                            guild.id,
-                            ch.id,
-                            last.id,
-                            delete_exc,
-                        )
-                    file_obj.seek(0)
-                    message = await ch.send(
-                        f"{header} (fichier)",
-                        file=discord.File(file_obj, filename="jobs_data.json"),
-                    )
-            else:
-                message = await ch.send(
-                    f"{header} (fichier)",
-                    file=discord.File(file_obj, filename="jobs_data.json"),
-                )
-        finally:
-            with suppress(OSError):
-                file_obj.close()
-        if message:
-            self.console_message_id = message.id
-            self._console_last_sync = time.monotonic()
-            await self._ensure_pinned(message)
-        return True
 
     async def initialize_data(self):
         console_loaded = False
@@ -487,6 +407,147 @@ class JobCog(commands.Cog):
 
     async def dump_data_to_console(self, guild: discord.Guild):
         return await self.publish_to_console(guild)
+
+    async def _read_jobs_snapshot(self, guild):
+        channel = await self.get_console_channel(guild)
+        if channel is None:
+            raise JobPersistenceError("Salon #console introuvable : aucune modification confirmée.")
+        candidates = {}
+        if self.console_message_id is not None:
+            current = await channel.fetch_message(self.console_message_id)
+            if not self._snapshot_reader._is_snapshot_message(current):
+                raise JobPersistenceError("Le snapshot métiers a été remplacé : relecture Staff requise.")
+            candidates[current.id] = current
+        pins = await channel.pins()
+        recent = await fetch_channel_history(channel, limit=200, reason="jobs.mutation", raise_errors=True)
+        for message in [*pins, *recent]:
+            if self._snapshot_reader._is_snapshot_message(message):
+                candidates[message.id] = message
+        if not candidates:
+            async for message in channel.history(limit=None):
+                if self._snapshot_reader._is_snapshot_message(message):
+                    candidates[message.id] = message
+                    break
+        if not candidates:
+            return channel, None, None
+        message = max(candidates.values(), key=lambda item: (
+            getattr(item, "edited_at", None) or getattr(item, "created_at", None), item.id,
+        ))
+        payload = await self._snapshot_reader.extract_payload(message)
+        if (not isinstance(payload, dict) or any(
+                not isinstance(row, dict) or not isinstance(row.get("jobs", {}), dict)
+                for row in payload.values())):
+            raise JobPersistenceError("Le snapshot métiers est illisible : aucune écriture autorisée.")
+        return channel, message, payload
+
+    async def _restore_jobs_for_mutation(self, guild):
+        try:
+            _, message, payload = await self._read_jobs_snapshot(guild)
+            if payload is None and (self.jobs_data or self._remote_uncertain):
+                raise JobPersistenceError("Le snapshot métiers a disparu : restauration Staff requise.")
+            self.jobs_data = payload or {}
+            self.console_message_id = message.id if message else None
+            self._remote_uncertain = False
+            self.initialized = True
+        except BaseException as exc:
+            self._remote_uncertain = True
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            log.debug("Jobs: restore uncertain guild_id=%s error=%s", guild.id, type(exc).__name__)
+            raise JobPersistenceError("Lecture du registre métiers impossible : aucune modification autorisée.") from None
+
+    async def _persist_jobs_candidate(self, guild, candidate):
+        channel, existing, current = await self._read_jobs_snapshot(guild)
+        if current is not None and current != self.jobs_data:
+            raise JobPersistenceError("Les métiers ont changé dans #console : relecture nécessaire.")
+        if current is None and self.jobs_data:
+            raise JobPersistenceError("Le snapshot métiers a disparu : aucune écriture confirmée.")
+        body = json.dumps(candidate, ensure_ascii=False, indent=2).replace("`", "\\u0060")
+        header = f"===BOTJOBS=== etag:{_md5(_canon_json(candidate))}"
+        content = f"{header}\n```json\n{body}\n```"
+        file = None
+        if len(content.encode("utf-16-le")) // 2 > 1950:
+            raw = body.encode("utf-8")
+            if len(raw) > getattr(guild, "filesize_limit", 8 * 1024 * 1024):
+                raise JobPersistenceError("Le snapshot métiers dépasse la limite Discord.")
+            file = discord.File(io.BytesIO(raw), filename="jobs_data.json")
+            content = header
+        try:
+            if existing is not None:
+                await existing.edit(content=content, attachments=[file] if file else [],
+                                    allowed_mentions=discord.AllowedMentions.none())
+                message = existing
+            else:
+                message = await channel.send(content, allowed_mentions=discord.AllowedMentions.none(),
+                                             **({"file": file} if file else {}))
+            self.console_message_id = message.id
+            if not message.pinned:
+                await message.pin(reason="Source de vérité des métiers")
+            confirmed = await channel.fetch_message(message.id)
+            if await self._snapshot_reader.extract_payload(confirmed) != candidate:
+                raise JobPersistenceError("La sauvegarde métiers n'a pas été confirmée dans #console.")
+            log.debug("Jobs: candidate verified guild_id=%s message_id=%s", guild.id, message.id)
+        finally:
+            if file:
+                file.close()
+
+    async def _commit_jobs_candidate(self, guild, candidate):
+        try:
+            async with asyncio.timeout(20):
+                await self._persist_jobs_candidate(guild, candidate)
+        except BaseException as exc:
+            self._remote_uncertain = True
+            log.debug("Jobs: mutation uncertain guild_id=%s error=%s", guild.id, type(exc).__name__)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise JobPersistenceError(
+                "Sauvegarde des métiers incertaine : aucune modification confirmée. "
+                "Le registre sera relu avant de réessayer."
+            ) from None
+        self.jobs_data = candidate
+        self._remote_uncertain = False
+        self._console_last_sync = time.monotonic()
+        self.save_data_local()
+
+    async def update_member_job(self, guild, member_id, display_name, job_name, level, *,
+                                allow_new=False, before_mutation=None, superseded=None, request_key=None):
+        """Je sérialise les modifications natives et Evo sur le même registre durable."""
+        if level is not None and (type(level) is not int or not JOB_MIN_LEVEL <= level <= JOB_MAX_LEVEL):
+            raise JobPersistenceError("Le niveau doit être compris entre 1 et 100.")
+        async with self._mutation_lock:
+            await self._restore_jobs_for_mutation(guild)
+            if superseded is not None and superseded.is_set():
+                return None
+            canonical = self.resolve_job_name(job_name)
+            if canonical is None and allow_new:
+                canonical = job_name.strip()
+            if not canonical or len(canonical) > 100:
+                raise JobPersistenceError("Métier inconnu : précise un métier du catalogue.")
+            identifier = str(member_id)
+            candidate = copy.deepcopy(self.jobs_data)
+            row = candidate.setdefault(identifier, {"name": display_name, "jobs": {}})
+            if request_key and any(item.get("key") == request_key for item in row.get("evo_requests", [])):
+                return {"modifie": False, "metier": canonical, "niveau": level, "deja_traite": True}
+            previous = row.get("jobs", {}).get(canonical)
+            if level is None:
+                if canonical not in row.get("jobs", {}):
+                    return {"modifie": False, "metier": canonical, "niveau": None}
+                del row["jobs"][canonical]
+            else:
+                if previous == level:
+                    return {"modifie": False, "metier": canonical, "niveau": level}
+                row["name"] = display_name
+                row.setdefault("jobs", {})[canonical] = level
+            if request_key:
+                row["evo_requests"] = (
+                    row.get("evo_requests", []) + [{"key": request_key, "metier": canonical, "niveau": level}]
+                )[-100:]
+            if before_mutation is not None:
+                await before_mutation()
+            if superseded is not None and superseded.is_set():
+                return None
+            await self._commit_jobs_candidate(guild, candidate)
+            return {"modifie": True, "metier": canonical, "niveau": level, "ancien_niveau": previous}
 
     def _as_temp_file(self, data_str: str) -> str:
         tmp = tempfile.NamedTemporaryFile(delete=False, mode="w", encoding="utf-8", suffix=".json")
@@ -642,12 +703,12 @@ class JobCog(commands.Cog):
             await self.send_logo_embed(ctx, e)
             return
 
-        if author_id not in self.jobs_data:
-            self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
-        self.jobs_data[author_id]["name"] = author_name
-        self.jobs_data[author_id]["jobs"][job_name] = level
-        self.save_data_local()
-        await self.dump_data_to_console(ctx.guild)
+        result = await self.update_member_job(
+            ctx.guild, author_id, author_name, job_name, level,
+            allow_new=True, superseded=superseded,
+        )
+        if result is None:
+            return
         e = discord.Embed(title="Nouveau métier créé", description=f"Le métier **{job_name}** a été créé et défini au niveau {level} pour {author_name}.", color=discord.Color.green())
         await self.send_logo_embed(ctx, e)
 
@@ -670,31 +731,27 @@ class JobCog(commands.Cog):
 
     async def prune_jobs(self):
         union_ids = await self.compute_member_union_ids()
-        to_remove = []
-        for key in list(self.jobs_data.keys()):
-            if key.isdigit():
-                if int(key) not in union_ids:
-                    to_remove.append(key)
-            else:
-                found = False
-                for m in self.bot.get_all_members():
-                    if m.display_name.lower() == key.lower() or m.name.lower() == key.lower():
-                        found = True
-                        break
-                if not found:
-                    to_remove.append(key)
-        removed = 0
-        for k in to_remove:
-            del self.jobs_data[k]
-            removed += 1
-        if removed > 0:
-            self.save_data_local()
-            for gg in self.bot.guilds:
-                ch = await self.get_console_channel(gg)
-                if ch:
-                    await self.dump_data_to_console(gg)
-                    break
-        return removed
+        guild = None
+        for candidate_guild in self.bot.guilds:
+            if await self.get_console_channel(candidate_guild):
+                guild = candidate_guild
+                break
+        if guild is None:
+            return 0
+        async with self._mutation_lock:
+            await self._restore_jobs_for_mutation(guild)
+            candidate = copy.deepcopy(self.jobs_data)
+            for key, row in list(candidate.items()):
+                present = int(key) in union_ids if key.isdigit() else any(
+                    m.display_name.lower() == key.lower() or m.name.lower() == key.lower()
+                    for m in self.bot.get_all_members()
+                )
+                if not present:
+                    del candidate[key]
+            removed = len(self.jobs_data) - len(candidate)
+            if removed:
+                await self._commit_jobs_candidate(guild, candidate)
+            return removed
 
     @tasks.loop(hours=6)
     async def auto_prune(self):
@@ -702,20 +759,19 @@ class JobCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        user_id = str(member.id)
-        removed = False
-        if user_id in self.jobs_data:
-            del self.jobs_data[user_id]
-            removed = True
-        else:
-            for key in list(self.jobs_data.keys()):
-                if not key.isdigit() and self.jobs_data[key].get("name", "").lower() == member.display_name.lower():
-                    del self.jobs_data[key]
-                    removed = True
-                    break
-        if removed:
-            self.save_data_local()
-            await self.dump_data_to_console(member.guild)
+        async with self._mutation_lock:
+            await self._restore_jobs_for_mutation(member.guild)
+            candidate = copy.deepcopy(self.jobs_data)
+            user_id = str(member.id)
+            if user_id in candidate:
+                del candidate[user_id]
+            else:
+                for key, row in list(candidate.items()):
+                    if not key.isdigit() and row.get("name", "").lower() == member.display_name.lower():
+                        del candidate[key]
+                        break
+            if candidate != self.jobs_data:
+                await self._commit_jobs_candidate(member.guild, candidate)
 
     @staticmethod
     def _is_job_level_submission(args: tuple[str, ...]) -> bool:
@@ -888,12 +944,10 @@ class JobCog(commands.Cog):
                     ctx, job_input, level_int, author_id, author_name, superseded=superseded
                 )
                 return
-            if author_id not in self.jobs_data:
-                self.jobs_data[author_id] = {"name": author_name, "jobs": {}}
-            self.jobs_data[author_id]["name"] = author_name
-            self.jobs_data[author_id]["jobs"][canonical] = level_int
-            self.save_data_local()
-            await self.dump_data_to_console(ctx.guild)
+            if await self.update_member_job(
+                ctx.guild, author_id, author_name, canonical, level_int, superseded=superseded,
+            ) is None:
+                return
             desc = f"Le métier **{canonical}** (initialement demandé : `{job_input}`) a été défini au niveau **{level_int}** pour **{author_name}**."
             warn = ""
             if canonical in SPECIALIZATION_SET and not any(b in self.jobs_data[author_id]["jobs"] for b in SPECIALIZATION_ALLOWED_BASE):
@@ -915,9 +969,7 @@ class JobCog(commands.Cog):
                 e = discord.Embed(title="Impossible", description=f"Vous n'avez pas le métier {canonical}.", color=discord.Color.orange())
                 await self.send_logo_embed(ctx, e)
                 return
-            del self.jobs_data[author_id]["jobs"][canonical]
-            self.save_data_local()
-            await self.dump_data_to_console(ctx.guild)
+            await self.update_member_job(ctx.guild, author_id, author_name, canonical, None)
             e = discord.Embed(title="Métier supprimé", description=f"Le métier {canonical} a été supprimé pour {author_name}.", color=discord.Color.red())
             await self.send_logo_embed(ctx, e)
             return
@@ -943,12 +995,11 @@ class JobCog(commands.Cog):
                         ctx, job_input, level_int, author_id, author_name, superseded=superseded
                     )
                 else:
-                    author_jobs = self.jobs_data.get(author_id, {"name": author_name, "jobs": {}})
-                    author_jobs["name"] = author_name
-                    author_jobs["jobs"][canonical] = level_int
-                    self.jobs_data[author_id] = author_jobs
-                    self.save_data_local()
-                    await self.dump_data_to_console(ctx.guild)
+                    if await self.update_member_job(
+                        ctx.guild, author_id, author_name, canonical, level_int, superseded=superseded,
+                    ) is None:
+                        return
+                    author_jobs = self.jobs_data[author_id]
                     warn = ""
                     if canonical in SPECIALIZATION_SET and not any(b in author_jobs["jobs"] for b in SPECIALIZATION_ALLOWED_BASE):
                         warn = "\n⚠️ Vous n'avez aucun métier de base associé à cette spécialisation."

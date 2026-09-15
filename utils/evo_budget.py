@@ -18,6 +18,10 @@ SCOPE = "evolution-evo-v1"
 SCHEMA_VERSION = 1
 
 
+class BudgetLimitError(EvoError):
+    """L'enveloppe ou le quota ne permet pas une nouvelle réservation."""
+
+
 def quote(input_tokens: int, output_tokens: int) -> int:
     if any(type(n) is not int or not 0 <= n <= 100000 for n in (input_tokens, output_tokens)):
         raise EvoError("Comptage de tokens invalide : appel bloqué.")
@@ -297,11 +301,11 @@ class Budget:
             daily = state["buckets"].get(day, _empty_bucket())
             personal = state["buckets"].get(user, _empty_bucket())
             if monthly["blocked"] or monthly["used"] + maximum > self.config.monthly_nano:
-                raise EvoError("Le budget IA du mois est atteint ou mis en sécurité.")
+                raise BudgetLimitError("Le budget IA du mois est atteint ou mis en sécurité.")
             if daily["used"] + maximum > self.config.daily_nano:
-                raise EvoError("Le petit budget IA de la journée est atteint.")
+                raise BudgetLimitError("Le petit budget IA de la journée est atteint.")
             if personal["calls"] >= self.config.user_daily_calls:
-                raise EvoError("Tu as atteint ton quota IA du jour. Il se renouvelle à minuit UTC.")
+                raise BudgetLimitError("Tu as atteint ton quota IA du jour. Il se renouvelle à minuit UTC.")
             candidate = copy.deepcopy(state)
             for name in (month, day, user):
                 bucket = candidate["buckets"].setdefault(name, _empty_bucket())
@@ -354,6 +358,22 @@ class Budget:
             self._remember_safety(month)
             await self._commit(candidate, expected_revision=self._state["revision"])
             self._clear_safety()
+
+    async def can_reserve(self, user_key: str, maximum: int) -> bool:
+        """Je vérifie l'enveloppe facultative sans modifier les compteurs."""
+        async with self._lock:
+            await self._ensure_ready()
+            _, month, day, user = self.buckets(user_key)
+            buckets = self._state["buckets"]
+            monthly = buckets.get(month, _empty_bucket())
+            daily = buckets.get(day, _empty_bucket())
+            personal = buckets.get(user, _empty_bucket())
+            return (
+                0 < maximum <= self.config.request_nano and not monthly["blocked"]
+                and monthly["used"] + maximum <= self.config.monthly_nano
+                and daily["used"] + maximum <= self.config.daily_nano
+                and personal["calls"] < self.config.user_daily_calls
+            )
 
     async def status(self) -> dict:
         async with self._lock:

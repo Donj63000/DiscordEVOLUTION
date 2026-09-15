@@ -69,7 +69,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         await agent.answer(context(self.config), "Quelle guilde ?", 104)
         self.assertEqual(tools.do_guilde.await_count, 1)
 
-    async def test_three_generation_and_five_tool_limits(self):
+    async def test_two_generation_and_five_tool_limits(self):
         calls1 = [function("guilde", {}, "g1"),
                   function("membre", {"nom": "moi"}, "m1"),
                   function("connaissances_guilde", {"question": "règles"}, "k1")]
@@ -79,9 +79,9 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         tools = EvoTools()
         real = tools.execute
         tools.execute = AsyncMock(side_effect=real)
-        agent = self.agent([response(calls1), response(calls2), answer("Voilà les informations disponibles.")], tools)
+        agent = self.agent([response(calls1 + calls2), answer("Voilà les informations disponibles.")], tools)
         await agent.answer(context(self.config), "Membres et guilde et aide", 105)
-        self.assertEqual(len(self.transport.calls), 3)
+        self.assertEqual(len(self.transport.calls), 2)
         self.assertEqual(tools.execute.await_count, 5)
         self.assertEqual(self.transport.calls[-1]["tools"], [])
         self.assertEqual(self.transport.calls[-1]["tool_choice"], "none")

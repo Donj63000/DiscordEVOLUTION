@@ -73,6 +73,15 @@ class StubJobCog:
     async def initialize_data(self):
         self.initialized = True
 
+    async def update_member_job(self, guild, member_id, display_name, job_name, level, **kwargs):
+        entry = self.jobs_data.setdefault(str(member_id), {"name": display_name, "jobs": {}})
+        if level is None:
+            entry["jobs"].pop(job_name, None)
+        else:
+            entry["jobs"][job_name] = level
+        self.saved = True
+        self.dumped_guild = guild
+
     def save_data_local(self):
         self.saved = True
 
