@@ -1,8 +1,8 @@
-"""Lectures métier vérifiables : cache Discord incomplet != membre absent."""
+"""Annuaire déclaratif : un métier enregistré ne prouve pas une identité Discord."""
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 import re
 import time
@@ -69,7 +69,10 @@ def artisan_question(question: str) -> dict | None:
 
 @dataclass(frozen=True)
 class Declaration:
+    # L'identifiant de fiche sert au dédoublonnage, jamais à une mention Discord.
+    record_key: int | str
     owner_id: int | None
+    name: str | None
     job: str
     level: int
 
@@ -117,7 +120,8 @@ class JobDirectory:
     def _declarations(self, job: str | None, minimum: int) -> tuple[list[Declaration], int]:
         if self._snapshot is None:
             raise EvoError("Le snapshot des métiers n'a pas été chargé.")
-        rows, invalid = [], 0
+        rows: dict[tuple[int | str, str], Declaration] = {}
+        invalid = 0
         wanted = search_key(canonical_job(job)) if job is not None else None
         for uid, record in self._snapshot.items():
             if not isinstance(record, dict) or not isinstance(record.get("jobs"), dict):
@@ -127,6 +131,13 @@ class JobDirectory:
             owner = (int(identifier) if identifier.isascii() and identifier.isdigit()
                      and len(identifier) <= 20 else 0)
             owner = owner if 0 < owner < 2**64 else None
+            # Le nom est un libellé déclaré dans /job, pas une preuve d'identité.
+            # Ne jamais retrouver un propriétaire par pseudo ou par ressemblance.
+            stored_name = record.get("name")
+            declared_name = None
+            if isinstance(stored_name, str):
+                declared_name = " ".join(clean(stored_name, 100).split()) or None
+            record_key = owner if owner is not None else identifier
             for name, level in record["jobs"].items():
                 if not isinstance(name, str) or not search_key(name):
                     invalid += 1
@@ -137,9 +148,19 @@ class JobDirectory:
                 if type(level) is not int or not 1 <= level <= 100:
                     invalid += 1
                     continue
-                if level >= minimum:
-                    rows.append(Declaration(owner, canonical, level))
-        return rows, invalid
+                key = (record_key, search_key(canonical))
+                previous = rows.get(key)
+                # Dédoublonner avant de filtrer le niveau préserve le nom d'une
+                # même fiche "2"/"02", même porté par sa ligne de niveau inférieur.
+                # Deux fiches au même pseudo ne sont en revanche jamais fusionnées.
+                candidate = Declaration(record_key, owner, declared_name, canonical, level)
+                if previous is None:
+                    rows[key] = candidate
+                elif level > previous.level:
+                    rows[key] = replace(candidate, name=declared_name or previous.name)
+                elif not previous.name and declared_name:
+                    rows[key] = replace(previous, name=declared_name)
+        return [row for row in rows.values() if row.level >= minimum], invalid
 
     @staticmethod
     def _member(member, guild_id: int, owner: int) -> Membership:
@@ -206,28 +227,39 @@ class JobDirectory:
             owners = list(dict.fromkeys(row.owner_id for row in rows if row.owner_id is not None))
             await self._resolve(ctx, owners)
             await self.guard(ctx)
-            verified, unresolved = {}, 0
+            verified, pending = {}, {}
             for row in rows:
                 membership = self._members.get(row.owner_id, Membership("unknown"))
-                if membership.state == "unknown":
-                    unresolved += 1
-                elif membership.state == "present":
-                    key = (row.owner_id, search_key(row.job))
-                    old = verified.get(key)
-                    if old is None or row.level > old["niveau"]:
-                        verified[key] = {"membre": membership.name, "metier": clean(row.job, 100),
-                                         "niveau": row.level}
+                key = (row.record_key, search_key(row.job))
+                if membership.state == "present":
+                    verified[key] = {"membre": membership.name, "metier": clean(row.job, 100),
+                                     "niveau": row.level}
+                elif membership.state == "unknown":
+                    # Une lecture du registre public reste utile même sans compte
+                    # Discord confirmé. Le schéma distinct interdit de présenter
+                    # ce libellé comme un membre identifié ou d'en déduire une mention.
+                    pending[key] = {
+                        "nom_declare": row.name, "metier": clean(row.job, 100),
+                        "niveau": row.level,
+                        "raison": ("identifiant_discord_absent" if row.owner_id is None
+                                   else "appartenance_discord_non_confirmee"),
+                    }
+                # Les bots et les départs confirmés restent exclus ; rien n'est
+                # supprimé du stockage par cette consultation.
+            unresolved = len(pending)
             complete = unresolved == 0 and invalid == 0
             log.info(
                 "evo jobs read trigger_id=%s verified=%s unresolved=%s invalid=%s fetches=%s",
                 ctx.trigger_id, len(verified), unresolved, invalid, self._fetches,
             )
-            return verified, {
+            return verified, pending, {
                 "verification_complete": complete,
                 "declarations_non_verifiees": unresolved,
+                "declarations_sans_nom": sum(row["nom_declare"] is None for row in pending.values()),
                 "lignes_invalides": invalid,
                 "limites": ("Métiers déclarés via /job ; disponibilité en jeu non vérifiée. "
-                            "Une vérification incomplète interdit d'affirmer qu'aucun artisan n'existe."),
+                            "Les noms déclarés non vérifiés ne prouvent ni l'identité ni la présence Discord. "
+                            "Une vérification incomplète interdit de conclure à l'absence d'artisans."),
             }
 
 
@@ -242,22 +274,40 @@ def render_artisans(result: dict) -> str:
         return re.sub(r"([\\`*_{}\[\]()#+.!|~<>])", r"\\\1", text).replace("@", "@\u200b")
 
     rows = result.get("artisans", [])
+    pending = result.get("declarations_a_verifier", [])
     total = result["total"]
+    total_declarations = result["total_declarations"]
     heading = f"**{label(result['metier'])} — niveau minimum {result['niveau_min']}**"
+    lines = [heading]
     if rows:
-        lines = [heading, f"{total} artisan(s) vérifié(s) dans l'annuaire :"]
+        lines.append(f"{total} artisan(s) identifié(s) sur Discord :")
         lines.extend(f"• **{label(row['membre'])}** : {row['niveau']}" for row in rows)
-        if total > len(rows):
-            lines.append(f"{len(rows)} sur {total} affichés ; la suite est consultable avec /job rechercher.")
-    elif result.get("absence_confirmee"):
-        lines = [heading, "Aucun artisan correspondant parmi les membres vérifiés de cet annuaire."]
-    else:
-        lines = [heading, "La vérification est incomplète : je ne peux pas affirmer qu'il n'y a aucun artisan."]
-    if not result.get("verification_complete"):
+    if pending:
+        lines.append("Déclaration(s) enregistrée(s), compte Discord non vérifié :")
+        lines.extend(
+            f"• **{label(row['nom_declare']) if row['nom_declare'] else 'Nom non renseigné'}**"
+            f" : {row['niveau']}"
+            for row in pending
+        )
+    if not rows and not pending:
+        if result.get("absence_confirmee"):
+            lines.append("Aucun artisan correspondant parmi les membres vérifiés de cet annuaire.")
+        else:
+            lines.append("La lecture est incomplète ; aucune absence d'artisan ne peut être confirmée.")
+    displayed = len(rows) + len(pending)
+    if total_declarations > displayed:
         lines.append(
-            f"{result.get('declarations_non_verifiees', 0)} déclaration(s) sans appartenance Discord vérifiée ; "
-            f"{result.get('lignes_invalides', 0)} ligne(s) invalide(s). "
-            "Consulte /job rechercher ou demande au Staff de vérifier l'annuaire."
+            f"{displayed} sur {total_declarations} déclaration(s) affichée(s) ; "
+            "la suite est consultable avec /job rechercher."
+        )
+    if result.get("declarations_non_verifiees"):
+        lines.append(
+            "Les noms déclarés ne prouvent pas l'identité ni la présence actuelle sur Discord."
+        )
+    if result.get("lignes_invalides"):
+        lines.append(
+            f"{result['lignes_invalides']} ligne(s) invalide(s) : recherche incomplète, "
+            "à faire vérifier par le Staff."
         )
     lines.append("Métiers déclarés via /job. Disponibilité en jeu non vérifiée.")
     return "\n".join(lines)

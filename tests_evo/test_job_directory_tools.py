@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import discord
 import pytest
 
 from tests_evo.helpers import jobs_cog, config, context
@@ -30,8 +31,10 @@ async def test_job_directory_aggregates_actual_jobs_without_names_profiles_or_wr
     result = await EvoTools().execute("liste_metiers", '{"page":1}', ctx, {"liste_metiers"})
 
     assert result["metiers"] == [
-        {"metier": "Bûcheron", "nombre_artisans": 1, "niveau_max": 100},
-        {"metier": "Tailleur", "nombre_artisans": 2, "niveau_max": 100},
+        {"metier": "Bûcheron", "nombre_artisans": 1, "nombre_declarations": 1,
+         "declarations_non_verifiees": 0, "niveau_max": 100},
+        {"metier": "Tailleur", "nombre_artisans": 2, "nombre_declarations": 2,
+         "declarations_non_verifiees": 0, "niveau_max": 100},
     ]
     assert (result["total"], result["page"], result["pages"], result["page_suivante"]) == (2, 1, 1, None)
     assert "PRIVE" not in json.dumps(result)
@@ -83,8 +86,20 @@ async def test_job_directory_excludes_departed_members_bots_and_invalid_levels()
         "²": {"jobs": {"Identifiant invalide": 100}},
     }
     ctx.guild.members.remove(ctx.guild.get_member(3))
+    # Un cache vide ne démontre pas un départ : le transport doit le confirmer.
+    ctx.guild.fetch_member = AsyncMock(side_effect=discord.NotFound(
+        SimpleNamespace(status=404, reason="Not Found"), {"code": 10007, "message": "Unknown Member"},
+    ))
     result = await EvoTools().do_liste_metiers(ctx)
-    assert result["metiers"] == [{"metier": "Tailleur", "nombre_artisans": 1, "niveau_max": 90}]
+    assert result["metiers"] == [
+        {"metier": "Identifiant invalide", "nombre_artisans": 0, "nombre_declarations": 1,
+         "declarations_non_verifiees": 1, "niveau_max": 100},
+        {"metier": "Métier ancien", "nombre_artisans": 0, "nombre_declarations": 1,
+         "declarations_non_verifiees": 1, "niveau_max": 100},
+        {"metier": "Tailleur", "nombre_artisans": 1, "nombre_declarations": 1,
+         "declarations_non_verifiees": 0, "niveau_max": 90},
+    ]
+    assert result["declarations_non_verifiees"] == 2
 
 
 @pytest.mark.asyncio

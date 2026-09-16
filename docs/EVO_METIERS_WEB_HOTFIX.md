@@ -1,6 +1,8 @@
 # Correctif Evo : métiers et disponibilité du Web
 
 Date : 16 septembre 2026.
+Complété par `evolution-evo-declarations-fix.patch` : affichage des noms déclarés
+même lorsque leur appartenance Discord reste inconnue.
 
 ## Base et portée
 
@@ -51,10 +53,22 @@ attendues à la sortie ; aucun travail réseau ne continue volontairement après
 la demande. Les accès sont revérifiés après les attentes.
 
 Les résultats exposent `verification_complete`, `declarations_non_verifiees`,
-`lignes_invalides` et, pour les artisans, `absence_confirmee`. Le total compte
-les résultats vérifiés, pas les déclarations dont l'appartenance reste inconnue.
+`lignes_invalides` et, pour les artisans, `absence_confirmee`. `artisans` et
+`total` comptent les membres identifiés sur Discord. `declarations_a_verifier`
+contient les noms et niveaux du registre sans compte confirmé ; ces noms sont
+affichés dans une catégorie distincte. `total_declarations` compte les fiches
+retenues, pas un nombre garanti de personnes distinctes. Dix fiches au maximum
+sont affichées, avec priorité aux membres identifiés et indication du total.
+
+`liste_metiers` conserve également les métiers des fiches non vérifiées.
+Son `total` compte les métiers ; chaque métier expose `nombre_artisans`
+(membres identifiés), `nombre_declarations`, `declarations_non_verifiees` et
+`niveau_max` (maximum déclaré, même sur une fiche non vérifiée). Cette liste
+agrégée n'expose aucun pseudo.
+
 Les alias sont rapprochés du catalogue métier et les doublons d'un même
-membre/métier sont éliminés. Le niveau minimal est inclusif.
+identifiant/métier sont éliminés avant le filtre de niveau inclusif. Deux fiches
+anciennes au même pseudo ne sont jamais fusionnées par ressemblance.
 
 Pour des consultations simples telles que « Y a-t-il des mineurs 100 ? »,
 le rendu copie directement les résultats de l'outil : aucune rédaction ni
@@ -67,15 +81,23 @@ du modèle sur toutes les formulations libres.
 ### Données anciennes et limites
 
 Les fiches sans identifiant Discord fiable ne sont pas attribuées à quelqu'un
-sur la seule ressemblance d'un pseudo. Les niveaux mal typés ou hors limites
-ne sont pas corrigés silencieusement. Ces déclarations sont signalées : faire
-vérifier et rattacher les fiches par les commandes métiers habituelles, sous
-contrôle du Staff et du propriétaire. Ce patch ne réécrit pas le registre.
+sur la seule ressemblance d'un pseudo. Leur libellé `name` reste affichable en
+tant que nom **déclaré**, pas en tant que compte Discord confirmé. S'il manque,
+la réponse indique « Nom non renseigné » sans inventer de nom ni publier la
+clé brute du registre. Les niveaux mal typés ou hors limites restent signalés,
+sans correction silencieuse. La consultation Evo ne réécrit pas les fiches.
 
-La commande native reste une consultation des déclarations enregistrées ;
-Evo exige en plus une appartenance vérifiable. Une différence reste donc
-légitime pour d'anciens membres ou des fiches non rattachées, mais elle doit
-être expliquée, et non transformée en « personne n'a déclaré ce métier ».
+Le défaut du premier correctif était de perdre le libellé au stade de lecture :
+une déclaration inconnue n'augmentait qu'un compteur. Le rendu déterministe
+affichait alors la réserve, mais pas le nom pourtant disponible dans `/job`.
+Le correctif complémentaire transporte ces données jusqu'au rendu et à l'outil
+fourni au modèle, en maintenant leur statut distinct. Les erreurs de source
+ne deviennent toujours pas un registre vide, et les refus d'accès empêchent
+également l'affichage des noms déclarés.
+
+Les bots et les départs explicitement confirmés restent exclus d'Evo, même
+si une ancienne déclaration apparaît encore dans la commande native. La
+présence Discord et la disponibilité en jeu ne sont jamais déduites d'un nom.
 
 La restriction à un seul serveur est conservée pour l'annuaire historique,
 dont le format n'est pas cloisonné par serveur. Le consentement à l'annuaire
@@ -210,3 +232,23 @@ consultée le 16 septembre 2026 :
 
 Les seuils financiers mentionnés ici sont des règles applicatives du bot,
 pas une affirmation du tarif courant du fournisseur.
+
+
+## Régression : noms déclarés sans compte confirmé
+
+Les tests de `tests_evo/test_job_declarations_visibility.py` couvrent la demande
+« qui est tailleur level 100 », le libellé du registre avec clé ancienne ou
+échec HTTP, les homonymes, les fiches sans nom, les erreurs d'accès et la
+pagination. Ils testent le rendu direct sans génération et la transmission
+des données au chemin IA avec transports simulés.
+
+Dans l'environnement du projet avec ses dépendances installées :
+
+```bash
+python -m pytest -q tests_evo/test_job_declarations_visibility.py tests_evo/test_jobs_consistency_hotfix.py tests_evo/test_job_directory_tools.py tests/test_job_command.py
+```
+
+Sur le serveur de test, comparer `/job rechercher Tailleur` avec
+`@Evolution BOT qui est tailleur level 100`. Un nom déclaré disponible doit
+apparaître, sous sa réserve si le compte n'est pas confirmé. Aucun changement
+de budget, de modèle, de dépendance ou de fichier de données n'est requis.

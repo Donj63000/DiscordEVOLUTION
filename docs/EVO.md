@@ -394,6 +394,12 @@ globales pouvant agréger des salons privés.
 `EVO_PUBLIC_JOB_DATA=1` permet uniquement l'annuaire des métiers déjà déclarés,
 comme « Qui est tailleur niveau 100 ? » ou « Liste les métiers de la guilde »,
 sans activer la lecture des autres profils.
+Ce réglage autorise aussi l'affichage des noms **déclarés dans /job** lorsque
+leur compte Discord n'est pas confirmé. Ces fiches sont présentées séparément,
+avec la réserve « compte Discord non vérifié » ; elles ne servent jamais à
+retrouver un compte par pseudo, à créer une mention ou à modifier un tiers.
+Les bots et départs confirmés restent exclus des résultats Evo. Une panne
+de vérification Discord ne supprime ni le nom ni le niveau déclaré.
 Ce réglage peut rester à 0 si `EVO_PUBLIC_MEMBER_DATA=1` autorise déjà cet annuaire.
 La protection des données historiques lorsque le bot rejoint plusieurs serveurs
 reste applicable aux deux réglages.

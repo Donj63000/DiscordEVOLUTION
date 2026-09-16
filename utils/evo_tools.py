@@ -100,9 +100,13 @@ TOOLS = [
     tool("membre", "Identifie un membre et son profil Dofus déclaré, jamais une biographie inventée.",
          {"nom": text()}, "guild"),
     tool("artisans", "Métiers déclarés via /job, niveau minimal inclusif. "
+         "artisans contient les membres identifiés ; declarations_a_verifier contient les noms déclarés "
+         "à afficher avec leur réserve, jamais comme comptes Discord confirmés. "
          "verification_complete=false interdit de conclure à l'absence d'artisans. Aucun changement.",
          {"metier": text(), "niveau_min": number(1, 100)}, "guild"),
-    tool("liste_metiers", "Liste les métiers réellement déclarés, avec nombre d'artisans et niveau maximal. 10 métiers par page, page 1 au début.",
+    tool("liste_metiers", "Métiers déclarés, nombre de déclarations, nombre d'artisans identifiés "
+         "sur Discord et niveau maximal déclaré. Les fiches non vérifiées restent comptées séparément. "
+         "10 métiers par page, page 1 au début.",
          {"page": number(1, 1000)}, "guild"),
     tool("activites", "Sorties publiées et accessibles à l'audience de ce salon, places et dates réelles.",
          {"recherche": text(), "jours": number(1, 60)}, "guild"),
@@ -432,6 +436,13 @@ class EvoTools:
         """Je préserve chaque ligne de la page avant de réduire les détails annexes."""
         if name == "sources_drop" and isinstance(value.get("variantes"), list):
             return self.encode_family(value)
+        if name in {"artisans", "liste_metiers"}:
+            # Ne pas tronquer silencieusement une des deux catégories de résultats
+            # ni sauter des métiers entre deux pages. Les pages sont bornées à dix.
+            result = compact(value, max_list=10)
+            if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12000:
+                raise EvoError("Annuaire trop volumineux : précise le métier ou consulte /job rechercher.")
+            return result
         if name in {"proposer_stuff", "analyser_stuff"}:
             result = compact(value, max_list=16)
             if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 11000:
@@ -852,30 +863,39 @@ class EvoTools:
         name = canonical_job(metier)
         if len(search_key(name)) < 3:
             raise EvoError("Précise le métier recherché.")
-        verified, coverage = await self.job_directory(ctx).read(ctx, job=name, minimum=niveau_min)
+        verified, pending, coverage = await self.job_directory(ctx).read(ctx, job=name, minimum=niveau_min)
         results = sorted(verified.values(), key=lambda row: (-row["niveau"], search_key(row["membre"])))
+        declared = sorted(pending.values(), key=lambda row: (
+            -row["niveau"], row["nom_declare"] is None, search_key(row["nom_declare"] or ""),
+        ))
+        # Les noms vérifiés sont prioritaires, mais une fiche ancienne n'est plus
+        # perdue : elle possède sa propre catégorie et son total, même hors page.
+        visible = results[:10]
         return {
             "metier": clean(name, 100), "niveau_min": niveau_min,
-            "artisans": results[:10], "total": len(results), "limite_affichage": 10,
+            "artisans": visible, "total": len(results),
+            "declarations_a_verifier": declared[:10 - len(visible)],
+            "total_declarations": len(results) + len(declared), "limite_affichage": 10,
             **coverage, "absence_confirmee": not results and coverage["verification_complete"],
             "disponibilite": "Métiers déclarés ; disponibilité en jeu non vérifiée.",
-            "source": "Annuaire /job synchronisé ; appartenance Discord vérifiée, hors bots.",
+            "source": "Annuaire /job synchronisé ; vérification Discord distincte des déclarations.",
         }
 
     async def do_liste_metiers(self, ctx, page=1):
-        """Même snapshot et mêmes vérifications que la recherche d'artisans."""
-        verified, coverage = await self.job_directory(ctx).read(ctx)
+        """Même registre ; une appartenance inconnue n'efface pas le métier déclaré."""
+        verified, pending, coverage = await self.job_directory(ctx).read(ctx)
         declared = {}
-        for (owner, key), row in verified.items():
-            job = declared.setdefault(key, {
-                "metier": row["metier"], "membres": set(), "niveau_max": row["niveau"],
-            })
-            job["membres"].add(owner)
-            job["niveau_max"] = max(job["niveau_max"], row["niveau"])
-        rows = [
-            {"metier": row["metier"], "nombre_artisans": len(row["membres"]), "niveau_max": row["niveau_max"]}
-            for _, row in sorted(declared.items())
-        ]
+        for records, confirmed in ((verified, True), (pending, False)):
+            for (_, key), row in records.items():
+                job = declared.setdefault(key, {
+                    "metier": row["metier"], "nombre_artisans": 0, "nombre_declarations": 0,
+                    "declarations_non_verifiees": 0, "niveau_max": row["niveau"],
+                })
+                job["nombre_artisans"] += int(confirmed)
+                job["nombre_declarations"] += 1
+                job["declarations_non_verifiees"] += int(not confirmed)
+                job["niveau_max"] = max(job["niveau_max"], row["niveau"])
+        rows = [row for _, row in sorted(declared.items())]
         pages = max(1, (len(rows) + 9) // 10)
         if type(page) is not int or not 1 <= page <= pages:
             raise EvoError(f"L'annuaire des métiers contient {pages} page(s).")
@@ -883,7 +903,8 @@ class EvoTools:
             "metiers": rows[(page - 1) * 10:page * 10], "total": len(rows),
             "page": page, "pages": pages, "page_suivante": page + 1 if page < pages else None,
             **coverage,
-            "source": "Annuaire /job synchronisé ; appartenance Discord vérifiée, hors bots.",
+            "source": "Annuaire /job synchronisé ; nombres de déclarations et niveaux déclaratifs. "
+                      "nombre_artisans compte seulement les membres identifiés sur Discord.",
         }
 
     async def do_activites(self, ctx, recherche, jours):

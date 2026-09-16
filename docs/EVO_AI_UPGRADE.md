@@ -68,8 +68,10 @@ charge. Les contrôles d'identité, de métier nommé et de niveau exact subsist
 « Ne le fais pas », les citations, les conditions et les demandes visant autrui
 ne donnent pas d'autorisation.
 
-Les métiers des membres encore présents sont recherchés par identité de métier,
-avec résolution canonique et pluriels simples, et filtrés sur le niveau.
+Les déclarations sont recherchées par identité de métier, avec résolution
+canonique et pluriels simples, et filtrées sur le niveau. Les noms sans compte
+Discord confirmé sont affichés séparément comme déclarations non vérifiées ;
+les bots et départs confirmés restent exclus.
 **Un métier déclaré ne prouve pas une disponibilité en jeu.** Les données
 d'annuaire restent soumises à l'option d'administration déjà existante.
 
@@ -282,7 +284,7 @@ bibliothèques habituelles. Aucun de ces tests ne doit recevoir de secret réel.
 
 | Demande ou situation | Vérification attendue |
 |---|---|
-| « Y a-t-il des tailleurs 100 ? » | Annuaire activé, seulement membres présents et niveau ≥ 100, pas de disponibilité inventée. |
+| « Y a-t-il des tailleurs 100 ? » | Annuaire activé, niveau ≥ 100 ; comptes identifiés et noms déclarés non vérifiés séparés, sans disponibilité inventée. |
 | « Peux-tu m'ajouter Tailleur 100 ? » | Son propre profil est sauvegardé ; `/job` confirme le changement. |
 | « Peux-tu me retirer mon métier Tailleur ? » | Seul le métier demandé du demandeur est supprimé. |
 | « Ne m'ajoute pas Tailleur 100 » | Aucune mutation. |

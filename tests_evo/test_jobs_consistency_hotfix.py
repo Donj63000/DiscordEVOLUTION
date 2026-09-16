@@ -151,7 +151,12 @@ async def test_unverified_members_are_not_declared_absent(error):
     assert result["total"] == 0
     assert result["verification_complete"] is False and result["absence_confirmee"] is False
     assert result["declarations_non_verifiees"] == 2
-    assert "vérification est incomplète" in render_artisans(result)
+    assert result["total_declarations"] == 2
+    assert {row["nom_declare"] for row in result["declarations_a_verifier"]} == {
+        "Ancien nom A", "Ancien nom B",
+    }
+    assert all("membre" not in row for row in result["declarations_a_verifier"])
+    assert "compte Discord non vérifié" in render_artisans(result)
 
 
 @pytest.mark.asyncio
@@ -183,7 +188,10 @@ async def test_legacy_names_and_bad_levels_are_signaled_not_attributed_or_rewrit
     result = await EvoTools().do_artisans(ctx, "Mineur", 100)
     assert result["verification_complete"] is False and result["absence_confirmee"] is False
     assert result["lignes_invalides"] == 2 and result["declarations_non_verifiees"] == 3
-    assert "NOM_NON_VERIFIE" not in json.dumps(result)
+    assert result["total"] == 0 and result["total_declarations"] == 3
+    assert result["declarations_sans_nom"] == 2
+    assert result["declarations_a_verifier"][0]["nom_declare"] == "NOM_NON_VERIFIE"
+    assert "membre" not in result["declarations_a_verifier"][0]
     assert cog.jobs_data == before
     ctx.guild.fetch_member.assert_not_awaited()
 
