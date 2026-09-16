@@ -867,3 +867,35 @@ async def test_actual_components_have_revision_stamps_and_modal_goals_fit(panel)
     await panel.dispatch(interaction(), "one")
     assert all(child.custom_id.endswith(":1") for child in panel.children)
     limits(panel)
+
+
+
+@pytest.mark.asyncio
+async def test_explicit_pa_goal_is_checked_against_the_requested_item_not_demo(panel):
+    entry = WikiEntry("item", "321", "Anneau test", "Anneau", 50, "/items/test", "anneau test")
+    panel.cog.entries = AsyncMock(return_value=(entry,))
+    item = Item("Anneau test", "item:321", {"fo": (1, 50)}, "fixture")
+    panel.cog.load_item = AsyncMock(return_value=(item, None))
+    request = interaction(user_id=43)  # No replacement/timeout of the fixture's existing workshop.
+    await ExoCog.exo.callback(panel.cog, request, objet="item:321", objectif="pa")
+    opened = panel.cog.views.get((100, 43))
+    assert opened is not None
+    assert opened.session.item == item
+    assert opened.session.requirements == {"pa": 1, "fo": 1}
+    assert opened.session.goal_stat == "pa"
+
+
+@pytest.mark.asyncio
+async def test_explicit_goal_survives_ambiguous_item_selection(panel):
+    first = WikiEntry("item", "321", "Anneau test A", "Anneau", 50, "/items/a", "anneau test a")
+    second = WikiEntry("item", "322", "Anneau test B", "Anneau", 50, "/items/b", "anneau test b")
+    panel.cog.entries = AsyncMock(return_value=(first, second))
+    item = Item("Anneau test A", "item:321", {"fo": (1, 50)}, "fixture")
+    panel.cog.load_item = AsyncMock(return_value=(item, None))
+    await ExoCog.exo.callback(panel.cog, interaction(user_id=43), objet="anneau test", objectif="pa")
+    opened = panel.cog.views[(100, 43)]
+    assert len(opened.search_entries) == 2
+    assert opened.search_objective == "pa"
+    await opened.dispatch(interaction(user_id=43), "item", "0")
+    assert opened.session.goal_stat == "pa"
+    assert opened.search_objective is None

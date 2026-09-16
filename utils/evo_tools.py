@@ -29,7 +29,8 @@ from utils.evo_memory import has_stat_unit_nearby
 from utils.evo_safety import ToolContext, bounded_json, clean, compact, parse_arguments
 from utils.evo_web import EvoWeb
 from utils.exo_data import parse_effects
-from utils.exo_engine import DISCLAIMER, STATS
+from utils.exo_advice import fm_guide, requested_rune
+from utils.exo_engine import STATS
 from utils.xixou_api import monster_drop_sources, monster_record
 
 log = logging.getLogger(__name__)
@@ -149,7 +150,7 @@ MUTATING_TOOLS = frozenset({
 })
 
 
-def schemas_for(question: str) -> list[dict]:
+def schemas_for(question: str, *, current_request: str | None = None) -> list[dict]:
     """Je fournis les outils du sujet courant et garde un repli lorsque le sujet est inconnu."""
     key = search_key(question)
     topics = (
@@ -178,6 +179,8 @@ def schemas_for(question: str) -> list[dict]:
         (r"salon|resume|resumer|conversation_salon", {"conversation_salon", "guilde"}),
     )
     selected = set()
+    if requested_rune(question if current_request is None else current_request) is not None:
+        selected.update({"guide_fm", "ma_session_fm", "poser_rune", "fiche_objet"})
     for pattern, names in topics:
         if re.search(r"\b(?:" + pattern + r")\b", key):
             selected.update(names)
@@ -194,6 +197,8 @@ def schemas_for(question: str) -> list[dict]:
 
 def requires_evidence(question):
     """Conservative routing for operational/game/current facts, not general writing."""
+    if requested_rune(question) is not None:
+        return True
     key = search_key(question)
     return bool(re.search(
         r"\b(?:dofus|retro|guilde|evolution|discord|membres?|profils?|metiers?|artisans?|"
@@ -724,25 +729,7 @@ class EvoTools:
         return await apply_shared_rune(ctx, rune)
 
     async def do_guide_fm(self, ctx, sujet):
-        key = search_key(sujet)
-        selected = [
-            stat for stat in STATS.values()
-            if search_key(stat.name) in key or re.search(r"\b" + re.escape(stat.key) + r"\b", key)
-        ][:6]
-        if not selected:
-            selected = [STATS[k] for k in ("pa", "pm", "po", "fo", "vi")]
-        return {
-            "poids_nominaux": {stat.name: str(stat.weight) for stat in selected},
-            "source": "utils/exo_engine.py du bot, profil nominal Rétro",
-            "principes": [
-                "Un bonus déjà natif n'est pas un exo de ce même bonus.",
-                "Facilité de remontage, coût en kamas et probabilité de passage sont trois questions distinctes.",
-                "Le puits exact demande un état initial connu et un journal complet ; sinon il est inconnu.",
-                "Les pertes du simulateur sont heuristiques, pas une preuve des mécanismes internes d'Ankama.",
-                "Ne pas promettre qu'une rune va passer ni inventer les prix.",
-            ],
-            "avertissement": DISCLAIMER,
-        }
+        return fm_guide(sujet)
 
     async def do_guilde(self, ctx):
         channels = [

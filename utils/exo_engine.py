@@ -193,7 +193,37 @@ def surplus(item: Item, jets: dict[str, int]) -> Decimal:
                 for key, value in jets.items()), D(0))
 
 
+def validate_item_jets(item: Item, jets: dict[str, int], *, label: str = "Jet") -> None:
+    """Controle toutes les lignes selon le profil local, pas seulement la rune cible.
+
+    Les maxima naturels restent autorises, meme au-dessus de 101 de poids.
+    Les malus sont valides techniquement ; simulation_blocker les reserve au suivi.
+    Ce controle n'est pas une certification d'admissibilite sur le serveur.
+    """
+    State(jets).validate()
+    for key, value in jets.items():
+        if value > max(0, item.maximum(key)) and value * STATS[key].weight > 101:
+            raise ValueError(f"{label} {STATS[key].name}={value} : plafond de ligne 101 dépassé.")
+    if surplus(item, jets) > 101:
+        raise ValueError(f"{label} : plafond nominal cumulé over/exo de 101 dépassé.")
+
+
+def validate_goals(item: Item, goals: dict[str, int]) -> None:
+    """Validation commune des objectifs UI, importes et utilises par les lots."""
+    if not isinstance(goals, dict) or not goals:
+        raise ValueError("Indiquez au moins un objectif : pm=1 ; pa=1.")
+    for value in goals.values():
+        integer(value, 0, 10000, "Objectif")
+    if not any(goals.values()):
+        raise ValueError("Indiquez au moins un objectif positif.")
+    validate_item_jets(item, goals, label="Objectif")
+
+
 def eligibility(item: Item, state: State, rune: Rune) -> tuple[bool, str]:
+    try:
+        validate_item_jets(item, state.jets)
+    except ValueError as exc:
+        return False, str(exc)
     current = state.jets.get(rune.stat, 0)
     target = current + rune.gain
     if target > 10000:
@@ -293,6 +323,11 @@ def rates_for(item: Item, state: State, rune: Rune, custom: Rates | None) -> Rat
 
 
 def simulation_blocker(item: Item, state: State, rune: Rune) -> str:
+    try:
+        state.validate()
+        validate_item_jets(item, state.jets)
+    except ValueError as exc:
+        return str(exc)
     if not item.automatic or any(value < 0 for value in state.jets.values()):
         return "Effet non interprété ou malus : simulation bloquée, suivi manuel disponible."
     if state.sink is None:
@@ -407,6 +442,7 @@ def attempt(
         jets[rune.stat] = jets.get(rune.stat, 0) + rune.gain
     candidate = State(jets, sink)
     candidate.validate()
+    validate_item_jets(item, candidate.jets)
     state.jets, state.sink = jets, sink
     return _record(
         state, rune, outcome, before, losses, price, "simulation", deficit, jets_before, rates,

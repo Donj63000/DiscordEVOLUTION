@@ -159,10 +159,9 @@ def test_gelano_pm_without_pa_is_not_finished_and_pa_can_be_restored():
     assert "Tous les objectifs" in result.stop_reason
 
 
-def test_native_heavy_objective_is_not_already_complete():
-    session = Session.create(demo_item(), "pa")
-    assert session.goal_value == 2
-    assert not session.goal_met
+def test_native_heavy_objective_is_rejected_instead_of_creating_an_impossible_session():
+    with pytest.raises(ValueError, match="Objectif PA=2.*plafond"):
+        Session.create(demo_item(), "pa")
 
 
 def test_batch_stops_on_selected_natural_line_without_free_rebuild():
@@ -204,6 +203,8 @@ def test_batch_reports_why_it_stopped_after_a_valid_attempt():
 def test_batch_feedback_reports_all_losses_and_cost_not_only_last_rune():
     session = workshop()
     session.item = Item("Force", "test", {"fo": (1, 20)}, "fixture")
+    # Changer la fiche exige des objectifs compatibles : PA+PM seraient deux exos.
+    set_goals(session, "pm=1;fo=10")
     session.sim = State({"fo": 10})
     session.custom["fo:0"] = Rates(0, 0)
     session.prices["fo:0"] = 25
@@ -394,10 +395,11 @@ def test_default_objective_on_native_pm_boots_is_an_exo_pa():
     assert session.rune == Rune("pa")
 
 
-def test_explicit_objective_is_never_silently_changed():
-    session = Session.create(demo_item(), "pa")
-    assert session.goal_stat == "pa"
-    assert session.goal_value == 2
+@pytest.mark.parametrize("objective", ["pm", "po", "fo"])
+def test_explicit_admissible_objective_is_never_silently_changed(objective):
+    session = Session.create(demo_item(), objective)
+    assert session.goal_stat == objective
+    assert session.goal_value == 1
 
 
 def test_import_rejects_ambiguous_duplicate_primary_goal():

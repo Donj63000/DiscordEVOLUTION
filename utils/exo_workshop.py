@@ -7,7 +7,7 @@ from decimal import Decimal
 import random
 
 from utils.exo_engine import (
-    PROFILE, STATS, State, attempt, integer, parse_jets, surplus,
+    PROFILE, State, attempt, integer, parse_jets, validate_goals,
 )
 from utils.exo_session import Session
 
@@ -43,11 +43,7 @@ def set_goals(session: Session, text: str) -> None:
         raise ValueError("Indiquez au moins un objectif : pm=1 ; pa=1.")
     for value in goals.values():
         integer(value, 1, 10000, "Objectif")
-    for key, value in goals.items():
-        if value > max(0, session.item.maximum(key)) and value * STATS[key].weight > 101:
-            raise ValueError(f"Objectif {STATS[key].name}={value} : plafond de ligne 101 dépassé.")
-    if surplus(session.item, goals) > 101:
-        raise ValueError("Ces objectifs cumulent plus de 101 de poids over/exo.")
+    validate_goals(session.item, goals)
     session.goal_stat, session.goal_value = next(iter(goals.items()))
     session.quality = {key: value for key, value in goals.items() if key != session.goal_stat}
 
@@ -78,6 +74,7 @@ def simulate_batch(session: Session, count: int) -> BatchResult:
     integer(count, 1, 100, "Taille du lot")
     if session.mode != "simulation":
         raise ValueError("Les tirages sont désactivés dans le suivi réel.")
+    validate_goals(session.item, session.requirements)
     target = session.rune_target
     if count > 1 and session.sim.jets.get(session.rune.stat, 0) >= target:
         raise ValueError(

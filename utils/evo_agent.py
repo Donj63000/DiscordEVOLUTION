@@ -63,6 +63,10 @@ une mécanique inconnue ne se déduit pas de ses seuls PV. Utilise monstre puis 
 recherche ciblée si nécessaire. Ne transforme pas taux de drop en rendement horaire.
 Une heuristique FM ne prédit ni succès PA/PM ni prix ; les taux du simulateur ne
 sont pas les probabilités officielles. Une donnée absente reste inconnue.
+Pour la FM, distingue poids_par_point et poids_total de la rune. Respecte le blocage
+de simulation et cite les taux_prochaine_pose seulement comme paramètres du modèle.
+Après une pose, décris la lecture de plus haute révision ; une lecture « avant »
+reste un état passé et ne contredit pas le reçu d'action. Ne relance pas la pose.
 Tu peux ajouter/retirer le métier du demandeur, l'inscrire/désinscrire d'une activité,
 créer une activité à sa demande directe et utiliser son atelier partagé, UNIQUEMENT
 avec les outils dédiés et leurs contrôles. Pour créer : titre et date/heure tirés
@@ -496,7 +500,9 @@ class EvoAgent:
         cache = state.setdefault("tool_results", {})
         cache_guards = state.setdefault("tool_guards", {})
         remembered = state.setdefault("tool_evidence", set())
+        state.setdefault("tool_generation", 0)
         prepared = []
+        resolved = []
 
         for call in calls:
             if not isinstance(call, dict) or not all(
@@ -554,34 +560,47 @@ class EvoAgent:
 
         try:
             for call, signature, error in prepared:
-                if error is not None or signature in results:
+                # Une signature de lecture identique n'identifie plus le meme etat
+                # apres une mutation. La cle est fixee au moment de l'execution,
+                # pas lors du preflight, et chaque appel garde son resultat propre.
+                mutating = call["name"] in MUTATING_TOOLS
+                cache_key = None if signature is None else (
+                    *signature, None if mutating else state["tool_generation"],
+                )
+                resolved.append((call, cache_key, error))
+                if error is not None or cache_key in results:
                     continue
-                if signature in cache:
-                    await validate(cache_guards.get(signature))
-                    results[signature] = cache[signature]
+                if cache_key in cache:
+                    await validate(cache_guards.get(cache_key))
+                    results[cache_key] = cache[cache_key]
                     log.debug("evo tool cache reused tool=%s readonly=%s", call["name"], readonly)
                     continue
                 if state["tools"] >= self.config.max_tools:
-                    results[signature] = {"erreur": "Limite d'outils atteinte. Utilise les résultats disponibles."}
+                    results[cache_key] = {"erreur": "Limite d'outils atteinte. Utilise les résultats disponibles."}
                     continue
                 state["tools"] += 1
-                if call["name"] in MUTATING_TOOLS:
+                if mutating:
                     if pending:
                         await drain()
                     if state["mutation"]:
-                        results[signature] = {"erreur": "Une seule modification personnelle par demande."}
+                        results[cache_key] = {"erreur": "Une seule modification personnelle par demande."}
                         continue
                     state["mutation"] = True
-                    results[signature] = await execute(call, signature)
+                    try:
+                        results[cache_key] = await execute(call, cache_key)
+                    finally:
+                        # Invalidation conservatrice, meme en cas d'erreur apres
+                        # sauvegarde. Ni rejeu de mutation ni retrait des gardes.
+                        state["tool_generation"] += 1
                 else:
-                    task = asyncio.create_task(execute(call, signature))
-                    results[signature] = task
+                    task = asyncio.create_task(execute(call, cache_key))
+                    results[cache_key] = task
                     pending.append(task)
             if pending:
                 await drain()
             await validate()
             outputs = []
-            for call, signature, error in prepared:
+            for call, signature, error in resolved:
                 result = error if error is not None else results[signature]
                 if isinstance(result, asyncio.Task):
                     result = result.result()
@@ -754,7 +773,7 @@ class EvoAgent:
                     return rendered
             elif not small_talk(question):
                 routing = question + " " + json_text(memory.brief)
-                catalogue = [tool for tool in schemas_for(routing)
+                catalogue = [tool for tool in schemas_for(routing, current_request=question)
                              if (web_reason is None and limit - state["generations"] >= 3)
                               or tool["name"] != "rechercher_web"]
                 required = requires_evidence(question)

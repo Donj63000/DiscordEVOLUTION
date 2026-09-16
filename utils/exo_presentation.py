@@ -7,8 +7,10 @@ from html import unescape
 import math
 import re
 
+from utils.exo_advice import REFERENCE_VERSION
 from utils.exo_engine import (
     DISCLAIMER, PROFILE, STATS, rates_for, recommended_rune, simulation_blocker, surplus,
+    validate_item_jets,
 )
 from utils.exo_feedback import amount, result_lines, signed
 from utils.exo_math import geometric_quantile, no_success, success_within
@@ -105,7 +107,12 @@ def sections(embed: EmbedPayload, title: str, lines: list[str]) -> None:
 def guidance(session) -> str:
     s = session
     if s.mode == "observation":
-        return (
+        warning = ""
+        try:
+            validate_item_jets(s.item, s.state.jets)
+        except ValueError:
+            warning = "⚠ Jet déclaré hors profil local, sans validation en simulation. "
+        return warning + (
             "Déclarez le jet réel avec « Modifier le jet », puis « Noter un résultat »."
             if not s.observation_ready else
             "Saisissez SC, SN ou EC et toutes les pertes constatées. Aucun tirage n'est effectué."
@@ -259,7 +266,9 @@ def build_payload(session) -> dict:
         )
         field(
             embed, "Moteur et limites",
-            f"**{PROFILE}** : référentiel nominal Rétro (Vi 0,25 ; So 20), pas Dofus Unity/Touch. "
+            f"**{PROFILE}** · référentiel **{REFERENCE_VERSION}**. "
+            "Profil pédagogique visant Rétro, non validé sur le serveur. "
+            "Poids hérités conservés (Vi 0,25 ; So 20), à vérifier avant calibration. "
             "Hors preset lourd, les taux automatiques sont une formule pédagogique non calibrée. "
             "Les pertes retirent les surplus tiers, puis le puits, puis des lignes positives tirées au sort ; "
             "la ligne travaillée peut perdre ses points existants.\n"

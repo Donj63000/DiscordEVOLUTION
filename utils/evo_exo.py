@@ -5,12 +5,12 @@ import asyncio
 import copy
 from dataclasses import dataclass
 import logging
-import re
 import time
 
 from utils.evo_config import EvoError
 from utils.evo_safety import clean
-from utils.exo_engine import DISCLAIMER, Rune, STATS, normalized, weight_text
+from utils.exo_advice import RUNE_NAMES, requested_rune, session_advice
+from utils.exo_engine import DISCLAIMER, STATS, normalized, weight_text
 from utils.exo_feedback import batch_text
 from utils.exo_workshop import simulate_batch
 
@@ -143,6 +143,7 @@ def _snapshot(session) -> dict:
         "puits": None if state.sink is None else weight_text(state.sink),
         "rune_selectionnee": session.rune.name,
         "objectifs": {STATS[key].name: value for key, value in session.requirements.items()},
+        **session_advice(session),
         "avertissement": DISCLAIMER,
     }
 
@@ -158,35 +159,6 @@ async def read_shared_session(ctx) -> dict:
         _protect_publication(ctx, cog, view, grant)
         log.debug("evo_exo: read owner=%s revision=%s", ctx.member.id, view.session.revision)
         return result
-
-
-def _runes() -> dict[str, Rune]:
-    values = {}
-    for key, stat in STATS.items():
-        for tier in range(len(stat.gains)):
-            rune = Rune(key, tier)
-            values[normalized(rune.name)] = rune
-            values[normalized(("", "Pa ", "Ra ")[tier] + stat.name)] = rune
-    values.update({"pa": Rune("pa"), "pm": Rune("pm"), "ga pm": Rune("pm")})
-    return values
-
-
-RUNE_NAMES = _runes()
-_ACTION = re.compile(
-    r"(?:evo )?(?:(?:peux tu|pourrais tu|veux tu) )?"
-    r"(?:pose|poser|applique|appliquer|tente|tenter|passe|passer|mets|mettre) "
-    r"(?:moi )?(?:(?:une(?: seule)?|1|la) )?(?:rune )?(.+?)"
-    r"(?: (?:dans|sur) (?:ma simulation|mon atelier|ma session|mon objet))?"
-    r"(?: (?:stp|s il te plait|s il vous plait))?"
-)
-
-
-def requested_rune(text: str) -> Rune | None:
-    """Reconnaît une demande unique explicite, sans conseil, condition ni citation."""
-    if not isinstance(text, str) or any(mark in text for mark in ('"', "«", "»", "\n", ";")):
-        return None
-    match = _ACTION.fullmatch(normalized(text))
-    return RUNE_NAMES.get(match[1]) if match else None
 
 
 async def apply_shared_rune(ctx, rune: str) -> dict:

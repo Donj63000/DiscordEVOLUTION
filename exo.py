@@ -18,7 +18,7 @@ from utils.exo_data import demo_item, from_detail, is_mageable
 from utils.exo_embeds import build_embed, number, percent
 from utils.exo_engine import (
     D, Rates, Rune, STATS, State, attempt, decimal_value, observe,
-    parse_jets, recommended_rune, risk, simulation_blocker, stat_key,
+    parse_jets, recommended_rune, risk, simulation_blocker, stat_key, validate_item_jets,
 )
 from utils.exo_feedback import batch_text, result_lines
 from utils.exo_workshop import reset_simulation, set_goals, simulate_batch
@@ -192,6 +192,8 @@ class ExoModal(discord.ui.Modal):
                 None if values["sink"] == "?" else decimal_value(values["sink"]),
             )
             state.validate()
+            if session.mode == "simulation":
+                validate_item_jets(session.item, state.jets)
             seed = whole(values["seed"], 0, 2**64 - 1, "Graine")
             set_goals(session, values["goal"])
             changed = state.sink != session.state.sink or any(
@@ -214,6 +216,11 @@ class ExoModal(discord.ui.Modal):
                 if changed else
                 "Paramètres enregistrés. Jet, puits, compteurs et historique conservés."
             )
+            if session.mode == "observation":
+                try:
+                    validate_item_jets(session.item, state.jets)
+                except ValueError:
+                    session.notice += " Jet hors profil local, conservé uniquement comme déclaration."
             log.debug("exo: jet_form_applied mode=%s state_reset=%s", session.mode, changed)
         elif self.kind == "rates":
             if self.rune_key != session.rune_key:
@@ -263,10 +270,12 @@ class ExoModal(discord.ui.Modal):
 
 
 class ExoView(discord.ui.View):
-    def __init__(self, cog, owner_id: int, guild_id: int, session: Session, image=None):
+    def __init__(self, cog, owner_id: int, guild_id: int, session: Session, image=None,
+                 *, search_objective: str | None = None):
         super().__init__(timeout=600)
         self.cog, self.owner_id, self.guild_id = cog, owner_id, guild_id
         self.session, self.image = session, image
+        self.search_objective = search_objective
         self.lock = asyncio.Lock()
         self.message = None
         self.published_image = None
@@ -703,6 +712,10 @@ class ExoView(discord.ui.View):
         if action == "item":
             index = whole(value, 0, max(0, len(self.search_entries) - 1), "Objet")
             item, image = await self.cog.load_item(self.search_entries[index])
+            objective = self.search_objective
+            if objective is None and self.session.goal_stat not in item.bounds:
+                objective = self.session.goal_stat
+            candidate = Session.create(item, objective)
             if s.sim.attempts or s.observed.attempts or s.observation_ready or s.sim.jets != State.initial(s.item).jets:
                 await self.send_export(interaction, "Ancien atelier sauvegardé avant le changement d'objet.")
             old_image, old_entries = self.image, self.search_entries
@@ -711,9 +724,8 @@ class ExoView(discord.ui.View):
             previous_undo = self.undo_session
             self.undo_session = None
             try:
-                await self.commit(interaction, Session.create(
-                    item, self.session.goal_stat if self.session.goal_stat not in item.bounds else None,
-                ))
+                await self.commit(interaction, candidate)
+                self.search_objective = None
             except (Exception, asyncio.CancelledError):
                 self.image, self.search_entries, self.page = old_image, old_entries, old_page
                 self.undo_session = previous_undo
@@ -731,6 +743,8 @@ class ExoView(discord.ui.View):
                 ))
             try:
                 await self.commit(interaction, s)
+                if action == "cancel_search":
+                    self.search_objective = None
             except (Exception, asyncio.CancelledError):
                 self.search_page, self.search_entries = old_page, old_entries
                 self.rebuild()
@@ -744,6 +758,7 @@ class ExoView(discord.ui.View):
             s.tab, s.notice = value, ""
             try:
                 await self.commit(interaction, s)
+                self.search_objective = None
             except (Exception, asyncio.CancelledError):
                 self.search_entries = old_entries
                 self.rebuild()
@@ -956,7 +971,8 @@ class ExoCog(commands.Cog):
                     raw = await reprise.read()
                 session = import_session(raw)
             else:
-                session = Session.create(demo_item(), objectif)
+                # L'objectif explicite concerne l'objet recherche, pas le Gelano provisoire.
+                session = Session.create(demo_item(), objectif if not objet else None)
                 session.notice = (
                     "Prêt à jouer : Gelano théorique PA=1, puits 0. Choisissez une rune puis « Poser ×1 ». "
                     "L'objet est terminé seulement lorsque tous les seuils affichés sont atteints. "
@@ -979,7 +995,10 @@ class ExoCog(commands.Cog):
                         entries, label = found, ("Suggestions approchantes" if fuzzy else "Résultats") + f" pour « {objet} »"
             if self.closed:
                 raise ValueError("Module en cours de rechargement. Réessayez /exo.")
-            new_view = ExoView(self, interaction.user.id, interaction.guild_id, session, image)
+            new_view = ExoView(
+                self, interaction.user.id, interaction.guild_id, session, image,
+                search_objective=objectif if entries else None,
+            )
             new_view.search_entries, new_view.search_label = entries, label
             new_view.rebuild()
             await new_view.publish(interaction, initial=True)
