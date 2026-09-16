@@ -20,6 +20,7 @@ from utils.drop_calculator import (
     personal_rate, rate_bounds, source_count, threshold_met,
 )
 from utils.evo_config import EvoError
+from utils.evo_jobs import JobDirectory, artisan_question, canonical_job
 from utils.evo_builds import suggest as suggest_build, summarize as summarize_build
 from utils.evo_equipment import (
     EquipmentIndex, STAT_NAMES, compare_equipment, equipment_search, exo_candidates,
@@ -98,7 +99,8 @@ TOOLS = [
          {"question": text(maximum=180)}, "guild"),
     tool("membre", "Identifie un membre et son profil Dofus déclaré, jamais une biographie inventée.",
          {"nom": text()}, "guild"),
-    tool("artisans", "Métiers déclarés des membres actuels. Aucun changement de profil.",
+    tool("artisans", "Métiers déclarés via /job, niveau minimal inclusif. "
+         "verification_complete=false interdit de conclure à l'absence d'artisans. Aucun changement.",
          {"metier": text(), "niveau_min": number(1, 100)}, "guild"),
     tool("liste_metiers", "Liste les métiers réellement déclarés, avec nombre d'artisans et niveau maximal. 10 métiers par page, page 1 au début.",
          {"page": number(1, 1000)}, "guild"),
@@ -248,7 +250,10 @@ def equipment_constraints(ctx, minimum, maximum, name):
 
 
 def prepared_tools(question):
-    """Je prépare les lectures simples certaines pour garder une seule rédaction IA."""
+    """Lectures simples certaines : rendu direct ou faits préparés pour la rédaction."""
+    artisan = artisan_question(question)
+    if artisan is not None:
+        return [("artisans", artisan)]
     key = search_key(question)
     if re.fullmatch(
         r"(?:combien de|quel est le nombre(?: actuel| total)? de) "
@@ -834,70 +839,39 @@ class EvoTools:
         result["source"] = "Profils et métiers déclarés dans les modules du bot ; pas des observations en jeu."
         return result
 
+    @staticmethod
+    def job_directory(ctx):
+        # L'affectation précède tout await : deux lectures parallèles partagent le même verrou.
+        if ctx.job_directory is None:
+            ctx.job_directory = JobDirectory()
+        return ctx.job_directory
+
     async def do_artisans(self, ctx, metier, niveau_min):
-        if not (ctx.config.public_member_data or ctx.config.public_job_data) or not self.legacy_available(ctx):
-            raise EvoError("L'annuaire des métiers n'est pas autorisé pour Evo dans cette configuration.")
-        jobs = ctx.bot.get_cog("JobCog")
-        if not getattr(jobs, "initialized", False):
-            raise EvoError("L'annuaire des métiers n'est pas encore chargé.")
-        key = search_key(metier)
-        resolver = getattr(jobs, "resolve_job_name", None)
-        canonical = resolver(metier) if resolver else None
-        if canonical is None and resolver and key.endswith("s"):
-            canonical = resolver(key[:-1])
-        if canonical:
-            key = search_key(canonical)
-        elif key.endswith("s"):
-            key = key[:-1]
-        if len(key) < 3:
+        if type(niveau_min) is not int or not 1 <= niveau_min <= 100:
+            raise EvoError("Le niveau minimal doit être compris entre 1 et 100.")
+        name = canonical_job(metier)
+        if len(search_key(name)) < 3:
             raise EvoError("Précise le métier recherché.")
-        results = []
-        for uid, row in jobs.jobs_data.items():
-            if not str(uid).isdigit():
-                continue
-            member = ctx.guild.get_member(int(uid))
-            if member is None or member.bot:
-                continue
-            if not isinstance(row, dict) or not isinstance(row.get("jobs"), dict):
-                continue
-            for job, level in row["jobs"].items():
-                if isinstance(job, str) and search_key(job) == key and type(level) is int and niveau_min <= level <= 100:
-                    results.append({"membre": member.display_name,
-                                    "metier": job, "niveau": level})
-        results.sort(key=lambda row: (-row["niveau"], row["membre"]))
-        return {"artisans": results[:10], "total": len(results), "limite_affichage": 10,
-                "disponibilite": "Métiers déclarés ; disponibilité en jeu non vérifiée.",
-                "source": "Métiers déclarés via /job."}
+        verified, coverage = await self.job_directory(ctx).read(ctx, job=name, minimum=niveau_min)
+        results = sorted(verified.values(), key=lambda row: (-row["niveau"], search_key(row["membre"])))
+        return {
+            "metier": clean(name, 100), "niveau_min": niveau_min,
+            "artisans": results[:10], "total": len(results), "limite_affichage": 10,
+            **coverage, "absence_confirmee": not results and coverage["verification_complete"],
+            "disponibilite": "Métiers déclarés ; disponibilité en jeu non vérifiée.",
+            "source": "Annuaire /job synchronisé ; appartenance Discord vérifiée, hors bots.",
+        }
 
     async def do_liste_metiers(self, ctx, page=1):
-        """Je pagine les métiers déclarés sans exposer les profils ou les noms des membres."""
-        if not (ctx.config.public_member_data or ctx.config.public_job_data) or not self.legacy_available(ctx):
-            raise EvoError("L'annuaire des métiers n'est pas autorisé pour Evo dans cette configuration.")
-        jobs = ctx.bot.get_cog("JobCog")
-        if not getattr(jobs, "initialized", False):
-            raise EvoError("L'annuaire des métiers n'est pas encore chargé.")
-        data = getattr(jobs, "jobs_data", None)
-        if not isinstance(data, dict):
-            raise EvoError("L'annuaire des métiers est indisponible.")
+        """Même snapshot et mêmes vérifications que la recherche d'artisans."""
+        verified, coverage = await self.job_directory(ctx).read(ctx)
         declared = {}
-        for uid, row in data.items():
-            identifier = str(uid)
-            if not identifier.isascii() or not identifier.isdigit() or not isinstance(row, dict):
-                continue
-            member = ctx.guild.get_member(int(identifier))
-            if member is None or member.bot or not isinstance(row.get("jobs"), dict):
-                continue
-            for name, level in row["jobs"].items():
-                if not isinstance(name, str) or type(level) is not int or not 1 <= level <= 100:
-                    continue
-                key = search_key(name)
-                if not key:
-                    continue
-                job = declared.setdefault(key, {
-                    "metier": clean(name.strip(), 100), "membres": set(), "niveau_max": level,
-                })
-                job["membres"].add(member.id)
-                job["niveau_max"] = max(job["niveau_max"], level)
+        for (owner, key), row in verified.items():
+            job = declared.setdefault(key, {
+                "metier": row["metier"], "membres": set(), "niveau_max": row["niveau"],
+            })
+            job["membres"].add(owner)
+            job["niveau_max"] = max(job["niveau_max"], row["niveau"])
         rows = [
             {"metier": row["metier"], "nombre_artisans": len(row["membres"]), "niveau_max": row["niveau_max"]}
             for _, row in sorted(declared.items())
@@ -905,11 +879,11 @@ class EvoTools:
         pages = max(1, (len(rows) + 9) // 10)
         if type(page) is not int or not 1 <= page <= pages:
             raise EvoError(f"L'annuaire des métiers contient {pages} page(s).")
-        log.debug("evo job directory listed total=%s page=%s pages=%s", len(rows), page, pages)
         return {
             "metiers": rows[(page - 1) * 10:page * 10], "total": len(rows),
             "page": page, "pages": pages, "page_suivante": page + 1 if page < pages else None,
-            "source": "Métiers déclarés via /job par les membres actuels du serveur, hors bots.",
+            **coverage,
+            "source": "Annuaire /job synchronisé ; appartenance Discord vérifiée, hors bots.",
         }
 
     async def do_activites(self, ctx, recherche, jours):
@@ -1016,8 +990,10 @@ class EvoTools:
         }
 
     async def do_rechercher_web(self, ctx, requete, perimetre):
-        if not ctx.config.web_search_enabled or ctx.web_search is None:
+        if not ctx.config.web_search_enabled:
             raise EvoError("La recherche Internet n'est pas activée. Le Staff peut activer EVO_WEB_SEARCH_ENABLED.")
+        if ctx.web_search is None:
+            raise EvoError("La recherche Internet est indisponible pour cette demande ; les autres outils restent utilisables.")
         if (clean(requete, 220) != requete or re.search(r"<[@#]|\b\d{15,20}\b", requete)):
             raise EvoError("La recherche Web ne doit contenir ni identifiant Discord ni secret.")
         return await ctx.web_search(requete, perimetre)

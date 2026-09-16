@@ -417,6 +417,8 @@ class EvoCog(commands.Cog):
             data = await self.budget.status()
             wiki = self.bot.get_cog("DofusWikiCog")
             xixou = bool(wiki and wiki.enrichment_client and wiki.enrichment_client.enabled)
+            web_normal = config.web_search_unavailable_reason()
+            web_deep = config.web_search_unavailable_reason(call_limit=config.deep_max_calls)
             content = (
                 f"Evo · {config.model}\n"
                 f"Mois UTC {data['month']} : {data['used_nano']/NANO:.4f} / "
@@ -429,8 +431,9 @@ class EvoCog(commands.Cog):
                 f"réponse limitée à {config.max_output} tokens\n"
                 f"Blocage anomalie : {'oui' if data['blocked'] else 'non'} · "
                 f"Enrichissement Xixou : {'activé' if xixou else 'absent'}\n"
-                f"Recherche Web : {'activée' if config.web_search_enabled else 'désactivée'} "
-                f"· Taille réponse : {config.response_chars} unités UTF-16\n"
+                f"Web normal : {web_normal or 'configurée, sous réserve du budget disponible'}\n"
+                f"Web approfondi : {web_deep or 'configurée, sous réserve du budget disponible'}\n"
+                f"Taille réponse : {config.response_chars} unités UTF-16\n"
                 "Compteur prudent (marge de 15 %), pas facture réelle ni montant en euros. "
                 "Il couvre /evo et les échanges avec Evo. "
                 "Aucun compteur ne peut être remis à zéro via Discord."

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from tests_evo.budget_helpers import create_budget
-from tests_evo.helpers import config, context, entry, Transport, response, function, answer
+from tests_evo.helpers import jobs_cog, config, context, entry, Transport, response, function, answer
 from utils.evo_agent import EvoAgent, MeteredModel
 from utils.evo_budget import quote, validate_snapshot, WEB_SEARCH_NANO_PER_CALL
 from utils.evo_builds import suggest, summarize
@@ -193,15 +193,16 @@ def test_suggestion_preserves_all_eight_slots():
 
 
 @pytest.mark.asyncio
-async def test_plural_artisan_query_is_exact_and_ignores_departed_members():
-    from types import SimpleNamespace
+async def test_plural_artisan_query_is_exact_and_reports_unverified_members():
     ctx = context(config(public_job_data=True))
-    ctx.bot.cogs["JobCog"] = SimpleNamespace(initialized=True, jobs_data={
+    ctx.bot.cogs["JobCog"] = jobs_cog({
         "2": {"jobs": {"Tailleur": 100}}, "3": {"jobs": {"Tailleur": 80}},
         "777": {"jobs": {"Tailleur": 100}},
     })
     result = await EvoTools().do_artisans(ctx, "tailleurs", 100)
     assert result["total"] == 1
+    assert result["verification_complete"] is False
+    assert result["declarations_non_verifiees"] == 1
 
 
 @pytest.mark.asyncio
@@ -242,5 +243,6 @@ def test_environment_accepts_explicit_web_budget_and_longer_answers(monkeypatch)
     assert settings.web_search_enabled and settings.max_output == 1000
     assert settings.max_calls == 5 and settings.max_tools == 10
     monkeypatch.setenv("EVO_REQUEST_USD", "0.015")
-    with pytest.raises(EvoError, match="Web"):
-        EvoConfig.from_env(guilds=[context().guild])
+    settings = EvoConfig.from_env(guilds=[context().guild])
+    assert settings.request_nano == 15_000_000  # Aucun consentement budgétaire implicite.
+    assert "EVO_REQUEST_USD" in settings.web_search_unavailable_reason()

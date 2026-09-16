@@ -10,7 +10,7 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from tests_evo.helpers import config, context, entry, Guild, Channel, Member
+from tests_evo.helpers import jobs_cog, config, context, entry, Guild, Channel, Member
 from utils.dofus_wiki import WikiDetail
 from utils.evo_config import EvoError
 from utils.evo_equipment import build_index, category_name, equipment_search, exo_candidates
@@ -248,7 +248,7 @@ class DomainTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_only_current_members_and_no_crossguild_legacy(self):
         ctx = context(config(public_member_data=True))
-        ctx.bot.cogs["JobCog"] = NS(initialized=True, jobs_data={
+        ctx.bot.cogs["JobCog"] = jobs_cog({
             "3": {"jobs": {"Tailleur": 100}}, "555": {"jobs": {"Tailleur": 100}}})
         result = await self.tools.do_artisans(ctx, "tailleur", 1)
         self.assertEqual(len(result["artisans"]), 1)

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from tests_evo.budget_helpers import create_budget
-from tests_evo.helpers import Transport, answer, config, context, entry, function, response
+from tests_evo.helpers import jobs_cog, Transport, answer, config, context, entry, function, response
 from utils.dofus_wiki import WikiDetail
 from utils.evo_agent import EvoAgent, MeteredModel
 from utils.evo_config import EvoConfig, EvoError
@@ -61,7 +61,7 @@ async def test_human_and_bot_counts_require_a_complete_member_cache():
 @pytest.mark.asyncio
 async def test_job_directory_can_be_enabled_without_other_members_private_profiles():
     ctx = context(config(public_job_data=True))
-    ctx.bot.cogs["JobCog"] = NS(initialized=True, jobs_data={
+    ctx.bot.cogs["JobCog"] = jobs_cog({
         "2": {"jobs": {"Tailleur": 99}}, "3": {"jobs": {"Tailleur": 100}},
         "987": {"jobs": {"Tailleur": 100}},
     })

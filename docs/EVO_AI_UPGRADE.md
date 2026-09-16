@@ -4,6 +4,10 @@ Date : 15 septembre 2026. Base : archive `DiscordEVOLUTION-main (11)(1).zip`.
 Modèle conservé : `gpt-5.6-luna`. Aucune nouvelle dépendance de production.
 Aucun appel réel à Discord, OpenAI ou Xixou effectué pendant cette intervention.
 
+**Correctif complémentaire du 16 septembre 2026 :** voir
+`EVO_METIERS_WEB_HOTFIX.md` pour la lecture synchronisée des métiers, le
+cache Discord incomplet et la désactivation du seul Web en cas de plafond insuffisant.
+
 ## 1. Diagnostic de l'intégration existante
 
 La base est sérieuse : API Responses, paramètres d'outils stricts, règles de

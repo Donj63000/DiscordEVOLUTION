@@ -99,6 +99,22 @@ class EvoConfig:
     web_search_enabled: bool = False
     response_chars: int = 6000
 
+    def web_search_unavailable_reason(self, *, call_limit: int | None = None) -> str | None:
+        """Une option Web inutilisable ne doit pas arrêter les outils locaux.
+
+        Ce contrôle statique n'autorise aucune dépense : les réservations réelles
+        restent obligatoires à chaque appel. Aucun plafond n'est augmenté ici.
+        """
+        if not self.web_search_enabled:
+            return "désactivée par le Staff (EVO_WEB_SEARCH_ENABLED=0)"
+        reasons = []
+        if self.request_nano < 30_000_000:
+            reasons.append("EVO_REQUEST_USD doit être au moins 0.03")
+        limit = self.max_calls if call_limit is None else call_limit
+        if limit < 3:
+            reasons.append("au moins 3 générations sont nécessaires dans ce mode")
+        return " ; ".join(reasons) or None
+
     def output_limit(self, role: str) -> int:
         """Je borne ensemble les tokens de raisonnement et de texte de chaque rôle."""
         if self.reasoning_effort not in {"none", "low", "medium", "high"}:
@@ -160,12 +176,13 @@ class EvoConfig:
             web_search_enabled=flag("EVO_WEB_SEARCH_ENABLED"),
             response_chars=integer("EVO_MAX_RESPONSE_CHARS", 6000, 1800, 7000),
         )
-        if settings.web_search_enabled and (settings.request_nano < 30_000_000 or settings.max_calls < 3):
-            raise EvoError("La recherche Web nécessite EVO_REQUEST_USD >= 0.03 et EVO_MAX_MODEL_CALLS >= 3.")
         for role in ("analysis", "writer", "specialist"):
             settings.output_limit(role)
         if settings.request_nano > settings.daily_nano or settings.daily_nano > settings.monthly_nano:
             raise EvoError("Les plafonds doivent respecter requête ≤ jour ≤ mois.")
         if settings.channel_ids and not settings.history_channels <= settings.channel_ids:
             raise EvoError("EVO_HISTORY_CHANNEL_IDS doit être inclus dans EVO_CHANNEL_IDS.")
+        web_reason = settings.web_search_unavailable_reason()
+        if settings.web_search_enabled and web_reason:
+            log.warning("evo web search unavailable mode=normal: %s ; autres fonctions conservées", web_reason)
         return settings

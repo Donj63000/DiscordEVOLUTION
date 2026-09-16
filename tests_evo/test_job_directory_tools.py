@@ -6,14 +6,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests_evo.helpers import config, context
+from tests_evo.helpers import jobs_cog, config, context
 from utils.evo_config import EvoError
 from utils.evo_tools import BY_NAME, EvoTools, schemas_for
 
 
 def directory_context(**settings):
     ctx = context(config(**settings))
-    ctx.bot.cogs["JobCog"] = SimpleNamespace(initialized=True, jobs_data={
+    ctx.bot.cogs["JobCog"] = jobs_cog({
         "2": {"name": "NOM_PRIVE", "jobs": {"Tailleur": 75, "Bûcheron": 100}},
         "3": {"name": "AUTRE_NOM_PRIVE", "jobs": {"Tailleur": 100}},
     })

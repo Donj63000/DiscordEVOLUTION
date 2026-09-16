@@ -147,6 +147,7 @@ class ToolContext:
     web_links: set[str] = field(default_factory=set)
     web_search: object | None = None
     web_sources: set[str] = field(default_factory=set)
+    job_directory: object | None = None
 
     def check(self) -> None:
         if self.guild is None or self.guild.id != self.config.guild_id:

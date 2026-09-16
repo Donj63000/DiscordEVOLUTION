@@ -1,4 +1,5 @@
 """Fixtures synthétiques, sans secret ni serveur Discord réel."""
+import copy
 from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace as NS
@@ -68,6 +69,17 @@ class Bot:
 
     def get_cog(self, name):
         return self.cogs.get(name)
+
+
+def jobs_cog(data):
+    """Contrat de lecture du JobCog, avec snapshot indépendant à chaque requête."""
+    cog = NS(initialized=True, jobs_data=data)
+
+    async def read_snapshot(guild):
+        return copy.deepcopy(cog.jobs_data)
+
+    cog.read_jobs_snapshot = AsyncMock(side_effect=read_snapshot)
+    return cog
 
 
 def context(settings=None, *, cogs=None, member_id=2):

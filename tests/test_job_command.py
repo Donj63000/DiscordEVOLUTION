@@ -72,6 +72,7 @@ def job_cog():
         return True
 
     cog.load_from_console = fake_load_from_console
+    cog._load_from_console = fake_load_from_console
     cog.dump_data_to_console = fake_dump_data
     cog.save_data_local = lambda: None
     cog._restore_jobs_for_mutation = AsyncMock()

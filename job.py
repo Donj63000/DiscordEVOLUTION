@@ -308,12 +308,29 @@ class JobCog(commands.Cog):
         else:
             await ctx.send(embed=embed)
 
+    async def _refresh_jobs_locked(self, guild: discord.Guild):
+        """Le verrou de mutation doit être détenu pendant toute la relecture."""
+        if self._remote_uncertain:
+            await self._restore_jobs_for_mutation(guild)
+            return True
+        return await self._load_from_console(guild)
+
     async def load_from_console(self, guild: discord.Guild):
         async with self._mutation_lock:
-            if self._remote_uncertain:
-                await self._restore_jobs_for_mutation(guild)
-                return True
-            return await self._load_from_console(guild)
+            return await self._refresh_jobs_locked(guild)
+
+    async def read_jobs_snapshot(self, guild: discord.Guild) -> dict:
+        """Lecture commune à /job rechercher et Evo, sans exposer un état mutable.
+
+        Le TTL de synchronisation existant est conservé. Une source inaccessible
+        n'est jamais remplacée par un annuaire vide ou une ancienne copie locale.
+        """
+        async with self._mutation_lock:
+            if not await self._refresh_jobs_locked(guild):
+                raise JobPersistenceError("L'annuaire des métiers ne peut pas être synchronisé avec #console.")
+            if not isinstance(self.jobs_data, dict):
+                raise JobPersistenceError("Le format de l'annuaire des métiers est invalide.")
+            return copy.deepcopy(self.jobs_data)
 
     async def _load_from_console(self, guild: discord.Guild):
         async with self._console_sync_lock:
@@ -596,9 +613,11 @@ class JobCog(commands.Cog):
         for canon in CANONICAL_JOBS_ORDERED:
             if n == normalize_string(canon):
                 return canon
-        for uid, data in self.jobs_data.items():
-            for jn in data.get("jobs", {}).keys():
-                if n == normalize_string(jn):
+        for data in self.jobs_data.values():
+            if not isinstance(data, dict) or not isinstance(data.get("jobs"), dict):
+                continue
+            for jn in data["jobs"]:
+                if isinstance(jn, str) and n == normalize_string(jn):
                     return jn
         return None
 
@@ -1008,15 +1027,21 @@ class JobCog(commands.Cog):
                 return
 
         if len(args) == 1:
-            await self.load_from_console(ctx.guild)
+            try:
+                snapshot = await self.read_jobs_snapshot(ctx.guild)
+            except JobPersistenceError as exc:
+                await self.send_logo_embed(ctx, discord.Embed(
+                    title="Annuaire indisponible", description=str(exc), color=discord.Color.orange(),
+                ))
+                return
             query = args[0]
             mention_id = None
             m = re.fullmatch(r"<@!?(\d+)>", query)
             if m:
                 mention_id = m.group(1)
-            if mention_id and mention_id in self.jobs_data:
-                user_jobs = self.get_user_jobs(mention_id)
-                disp = self.jobs_data[mention_id].get("name", f"ID {mention_id}")
+            if mention_id and mention_id in snapshot:
+                user_jobs = snapshot[mention_id].get("jobs", {})
+                disp = snapshot[mention_id].get("name", f"ID {mention_id}")
                 if not user_jobs:
                     e = discord.Embed(title="Aucun métier", description=f"{disp} n'a aucun métier enregistré.", color=discord.Color.orange())
                     await self.send_logo_embed(ctx, e)
@@ -1029,13 +1054,13 @@ class JobCog(commands.Cog):
 
             found_user_id = None
             found_user_name = None
-            for uid, data in self.jobs_data.items():
+            for uid, data in snapshot.items():
                 if data.get("name", "").lower() == query.lower():
                     found_user_id = uid
                     found_user_name = data["name"]
                     break
             if found_user_id:
-                user_jobs = self.get_user_jobs(found_user_id)
+                user_jobs = snapshot[found_user_id].get("jobs", {})
                 if not user_jobs:
                     e = discord.Embed(title="Aucun métier", description=f"{found_user_name} n'a aucun métier enregistré.", color=discord.Color.orange())
                     await self.send_logo_embed(ctx, e)
@@ -1047,7 +1072,7 @@ class JobCog(commands.Cog):
                 return
 
             job_map = defaultdict(list)
-            for uid, data in self.jobs_data.items():
+            for uid, data in snapshot.items():
                 display_name = data.get("name", f"ID {uid}")
                 for jn, lv in data.get("jobs", {}).items():
                     job_map[jn].append((display_name, lv))
