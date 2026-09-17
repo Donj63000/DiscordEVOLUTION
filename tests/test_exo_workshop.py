@@ -292,26 +292,20 @@ def test_zero_with_huge_exponent_cannot_poison_arithmetic():
     assert decimal_value("0E+999999") == 0
 
 
-def test_legacy_snapshot_is_migrated_without_discarding_its_history():
-    session = workshop()
-    session.custom["fo:0"] = Rates(1, 0)
-    simulate_batch(session, 1)
-    data = json.loads(export_session(session))
-    data["schema"], data["profile"] = 1, LEGACY_PROFILE
-    data.pop("quality")
-    for row in data["simulation"]["journal"]:
-        for key in ("applied_gain", "changes", "rates", "profile"):
-            row.pop(key)
-    migrated = import_session(json.dumps(data).encode())
-    assert migrated.sim.jets == session.sim.jets
-    assert migrated.sim.journal[0]["outcome"] == "SC"
-    assert migrated.quality == {}
-    assert "Migration v1" in migrated.notice
-    assert "futurs tirages" in migrated.notice
-    assert json.loads(export_session(migrated))["schema"] == 2
+def test_legacy_snapshot_is_preserved_without_reinterpreting_its_sink():
+    from pathlib import Path
+    fixture = Path(__file__).parent / "fixtures/fm_retro/legacy-v2.json"
+    migrated = import_session(fixture.read_bytes())
+    assert migrated.sim.jets == {"fo": 30}
+    assert migrated.sim.sink == D(997)
+    assert len(migrated.sim.journal) == 3
+    assert "lecture seule" in migrated.notice
+    assert json.loads(export_session(migrated))["schema"] == 3
+    with pytest.raises(ValueError, match="Ancien modèle"):
+        simulate_batch(migrated, 1)
 
 
-def test_v2_round_trip_preserves_goals_settings_and_next_event():
+def test_v3_round_trip_preserves_goals_settings_and_next_event():
     session = workshop()
     session.custom["fo:0"] = Rates(.3, .4)
     session.prices["fo:0"] = 23
@@ -348,7 +342,7 @@ def test_import_rejects_inconsistent_event_or_goals(mutation):
 
 
 def test_import_rejects_duplicate_json_keys():
-    raw = export_session(workshop()).replace(b'"schema": 2', b'"schema": 2, "schema": 2', 1)
+    raw = export_session(workshop()).replace(b'"schema": 3', b'"schema": 3, "schema": 3', 1)
     with pytest.raises(ValueError, match="répété"):
         import_session(raw)
 

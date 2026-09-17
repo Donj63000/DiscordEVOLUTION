@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import json
 import secrets
+import re
 
 from utils.exo_engine import (
     D, Item, LEGACY_PROFILE, PROFILE, Rates, Rune, STATS, State, decimal_value,
@@ -12,7 +13,10 @@ from utils.exo_engine import (
 )
 from utils.exo_math import Budget, integer, probability
 
-EXPORT_LIMIT = 512 * 1024
+from utils.fm_retro_reference import RETRO, OLD_PROFILES, MAX_HISTORY, MAX_HISTORY_BYTES
+from utils.fm_retro_observations import active_model_signature
+
+EXPORT_LIMIT = 8 * 1024 * 1024
 
 
 @dataclass
@@ -39,6 +43,11 @@ class Session:
     quality: dict[str, int] = field(default_factory=dict)
     journal_page: int = 0
     last_changes: dict[str, list[int]] = field(default_factory=dict)
+    model_signature: str = field(default_factory=active_model_signature)
+
+    def ensure_model(self) -> None:
+        if self.model_signature != active_model_signature():
+            raise ValueError("Le référentiel ou le corpus a changé : reprenez avec sa version archivée.")
 
     @classmethod
     def create(cls, item: Item, objective: str | None = None) -> Session:
@@ -113,14 +122,14 @@ def _state_data(state: State) -> dict:
     return {
         "jets": state.jets, "sink": None if state.sink is None else str(state.sink),
         "sequence": state.sequence, "spent": state.spent, "attempts": state.attempts,
-        "successes": state.successes, "journal": state.journal,
+        "successes": state.successes, "journal": state.journal, "profile": state.profile,
     }
 
 
 def export_session(session: Session) -> bytes:
     payload = {
-        "schema": 2, "profile": PROFILE,
-        "warning": "Bac à sable nominal ; ni preuve de jet ni résultat serveur. Journal déclaratif.",
+        "schema": 3, "profile": PROFILE, "model_signature": session.model_signature,
+        "warning": "FM Rétro sourcée, modèle non certifié ; aucun résultat simulé ne prouve un résultat serveur.",
         "item": {
             "name": session.item.name, "token": session.item.token,
             "bounds": session.item.bounds, "source": session.item.source,
@@ -146,7 +155,7 @@ def export_session(session: Session) -> bytes:
     if len(data) > EXPORT_LIMIT:
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
     if len(data) > EXPORT_LIMIT:
-        raise ValueError("Export trop volumineux (limite : 512 Kio).")
+        raise ValueError("Export trop volumineux (limite : 8 Mio).")
     return data
 
 
@@ -216,6 +225,8 @@ def _validate_journal_tail(state: State) -> None:
         if after_sink != sink:
             raise ValueError("Puits du journal incompatible avec l'état courant ou l'essai suivant.")
         sink = None if row["sink_before"] is None else decimal_value(row["sink_before"])
+        if "after" in row and _nonzero(row["after"]) != _nonzero(jets):
+            raise ValueError("Jets du journal : snapshot final incompatible avec l'état courant.")
         gained = row["gain"] if row["outcome"] != "EC" else 0
         for key in {row["stat"], *row["losses"]}:
             after = jets.get(key, 0)
@@ -224,10 +235,92 @@ def _validate_journal_tail(state: State) -> None:
             if "changes" in row and row["changes"][key] != [before, after]:
                 raise ValueError("Jets du journal incompatibles avec l'état courant ou l'essai suivant.")
             jets[key] = before
+        if "before" in row and _nonzero(row["before"]) != _nonzero(jets):
+            raise ValueError("Snapshot initial d'événement incompatible avec le journal.")
 
 
-def _load_state(payload: object) -> State:
-    data = _object(payload, {"jets", "sink", "sequence", "spent", "attempts", "successes", "journal"})
+def _nonzero(jets: dict) -> dict:
+    return {key: value for key, value in jets.items() if value}
+
+
+def _validate_v3_event(row: dict) -> None:
+    """Vérifie le contrat nouveau sans réinterpréter les anciens poids v1/v2."""
+    required = {"tier", "nominal_weight", "before", "after", "reference", "evidence",
+                "ledger", "applied_gain", "changes", "rates"}
+    if not required <= row.keys():
+        raise ValueError("Événement v3 incomplet.")
+    rune = Rune(row["stat"], row["tier"])
+    if (row["gain"] != rune.gain or row["rune"] != rune.name
+            or decimal_value(row["weight"]) != rune.weight
+            or decimal_value(row["nominal_weight"]) != rune.nominal_weight
+            or row["reference"] != RETRO.digest):
+        raise ValueError("Rune ou référentiel d'événement incompatible.")
+    row["nominal_weight"] = weight_text(decimal_value(row["nominal_weight"]))
+    before, after = dict(_object(row["before"])), dict(_object(row["after"]))
+    State(before).validate()
+    State(after).validate()
+    expected = dict(before)
+    if row["outcome"] != "EC":
+        expected[rune.stat] = expected.get(rune.stat, 0) + rune.gain
+    for key, amount in row["losses"].items():
+        expected[key] = expected.get(key, 0) - amount
+    if _nonzero(expected) != _nonzero(after):
+        raise ValueError("Transition de jet v3 incohérente.")
+    evidence = _object(row["evidence"], {"kind", "corpus", "observation", "count", "loss_model"})
+    kind = evidence.get("kind")
+    if kind not in {"declaration_non_verifiee", "empirical_joint", "custom_scenario",
+                    "community_prior", "historical_envelope"}:
+        raise ValueError("Origine d'événement inconnue.")
+    if row["mode"] == "observation":
+        if set(evidence) != {"kind"} or kind != "declaration_non_verifiee":
+            raise ValueError("Un suivi déclaré n'est pas un résultat simulé.")
+    else:
+        if kind == "declaration_non_verifiee":
+            raise ValueError("Origine de simulation incohérente.")
+        if not isinstance(evidence.get("corpus"), str) or re.fullmatch(r"[0-9a-f]{64}", evidence["corpus"]) is None:
+            raise ValueError("Empreinte de corpus invalide.")
+        if kind == "empirical_joint":
+            if set(evidence) != {"kind", "corpus", "observation", "count"}:
+                raise ValueError("Provenance empirique incomplète.")
+            if not isinstance(evidence["observation"], str) or not 1 <= len(evidence["observation"]) <= 160:
+                raise ValueError("Identifiant d'observation invalide.")
+            integer(evidence["count"], 100, 100000, "Effectif")
+        elif set(evidence) != {"kind", "corpus", "loss_model"} or (
+            evidence["loss_model"] != "surplus_sink_power_weighted_hypothesis"
+        ):
+            raise ValueError("Modèle de pertes inconnu.")
+    ledger = _object(row["ledger"], {"charged", "lost", "residual"})
+    if set(ledger) != {"charged", "lost", "residual"}:
+        raise ValueError("Bilan de poids incomplet.")
+    charged = D(0) if row["outcome"] == "SC" else rune.weight
+    lost = sum((STATS[key].weight * amount for key, amount in row["losses"].items()), D(0))
+    if decimal_value(ledger["charged"]) != charged or decimal_value(ledger["lost"], maximum="100000000") != lost:
+        raise ValueError("Bilan de poids incohérent.")
+    ledger["charged"], ledger["lost"] = weight_text(charged), weight_text(lost)
+    known = row["sink_before"] is not None and row["sink_after"] is not None
+    if known:
+        before_sink, after_sink = decimal_value(row["sink_before"]), decimal_value(row["sink_after"])
+        if row["outcome"] == "SC" and before_sink != after_sink:
+            raise ValueError("Un SC ne consomme pas le puits.")
+        # Résidu signé : calculer la valeur attendue évite d'accepter NaN ou Inf.
+        expected_residual = after_sink - before_sink - lost + charged - decimal_value(row["unexplained_weight"])
+        if not isinstance(ledger["residual"], str):
+            raise ValueError("Résidu de bilan absent.")
+        try:
+            residual = D(ledger["residual"].replace(",", "."))
+        except ArithmeticError:
+            raise ValueError("Résidu de bilan invalide.") from None
+        if not residual.is_finite() or residual != expected_residual:
+            raise ValueError("Résidu de bilan incohérent.")
+        ledger["residual"] = weight_text(residual)
+        if row["mode"] == "simulation" and kind != "empirical_joint" and residual:
+            raise ValueError("Le modèle comptable ne peut pas masquer un résidu.")
+    elif ledger["residual"] is not None:
+        raise ValueError("Résidu inconnaissable sans puits connu.")
+
+
+def _load_state(payload: object, profile: str = PROFILE) -> State:
+    data = _object(payload, {"jets", "sink", "sequence", "spent", "attempts", "successes", "journal", "profile"})
     state = State(
         dict(_object(data["jets"])),
         None if data["sink"] is None else decimal_value(data["sink"]),
@@ -236,15 +329,17 @@ def _load_state(payload: object) -> State:
         integer(data["attempts"], 0, 10**9, "Tentatives"),
         integer(data["successes"], 0, data["attempts"], "Réussites"),
     )
+    state.profile = data.get("profile", profile)
     state.validate()
     journal = data.get("journal", [])
-    if not isinstance(journal, list) or len(journal) > 100:
+    if not isinstance(journal, list) or len(journal) > MAX_HISTORY:
         raise ValueError("Journal invalide.")
     for raw in journal:
         row = dict(_object(raw, {
             "n", "mode", "rune", "stat", "gain", "weight", "outcome", "losses",
             "sink_before", "sink_after", "price", "unexplained_weight",
-            "applied_gain", "changes", "rates", "profile",
+            "applied_gain", "changes", "rates", "profile", "tier", "nominal_weight",
+            "before", "after", "reference", "evidence", "ledger",
         }))
         if row.get("mode") not in {"simulation", "observation"} or row.get("outcome") not in {"SC", "SN", "EC"}:
             raise ValueError("Événement de journal invalide.")
@@ -270,7 +365,7 @@ def _load_state(payload: object) -> State:
             integer(row["applied_gain"], 0, 100, "Gain appliqué")
             if row["applied_gain"] != gain:
                 raise ValueError("Gain du journal incohérent.")
-        if "profile" in row and row["profile"] not in {PROFILE, LEGACY_PROFILE}:
+        if "profile" in row and row["profile"] not in {PROFILE, *OLD_PROFILES}:
             raise ValueError("Profil de journal inconnu.")
         if "changes" in row:
             changes = _object(row["changes"])
@@ -288,6 +383,10 @@ def _load_state(payload: object) -> State:
             if not isinstance(rates_data.get("source"), str) or len(rates_data["source"]) > 160:
                 raise ValueError("Source des taux invalide.")
             Rates(**rates_data)
+        if row.get("profile") == PROFILE:
+            _validate_v3_event(row)
+        elif set(row) & {"tier", "nominal_weight", "before", "after", "reference", "evidence", "ledger"}:
+            raise ValueError("Événement v3 présenté sous un ancien profil.")
         if row["n"] > state.sequence or (state.journal and row["n"] <= state.journal[-1]["n"]):
             raise ValueError("Ordre du journal incohérent.")
         state.journal.append(dict(row))
@@ -297,7 +396,22 @@ def _load_state(payload: object) -> State:
         raise ValueError("Compteurs du journal incohérents.")
     if sum(row["outcome"] == "EC" for row in state.journal) > state.attempts - state.successes:
         raise ValueError("Compteurs d'échecs du journal incohérents.")
+    if state.profile == PROFILE:
+        # Une séance v3 commence à zéro et conserve chaque événement ; les anciens
+        # snapshots tronqués ne sont acceptés que sous leur profil historique.
+        if (state.sequence != state.attempts or len(state.journal) != state.attempts
+                or any(row["n"] != index or row.get("profile") != PROFILE
+                       for index, row in enumerate(state.journal, 1))
+                or sum(row["price"] for row in state.journal) != state.spent
+                or sum(row["outcome"] != "EC" for row in state.journal) != state.successes):
+            raise ValueError("Historique v3 incomplet ou compteurs incompatibles.")
     _validate_journal_tail(state)
+    state.journal_bytes = sum(
+        len(json.dumps(row, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+        for row in state.journal
+    )
+    if state.journal_bytes > MAX_HISTORY_BYTES:
+        raise ValueError("Historique trop volumineux : 3 Mio par mode maximum.")
     return state
 
 
@@ -316,7 +430,7 @@ def _reject_constant(value: str):
 
 def import_session(raw: bytes) -> Session:
     if not isinstance(raw, bytes) or len(raw) > EXPORT_LIMIT:
-        raise ValueError("Fichier JSON limité à 512 Kio.")
+        raise ValueError("Fichier JSON limité à 8 Mio.")
     try:
         data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object,
                           parse_constant=_reject_constant)
@@ -324,13 +438,17 @@ def import_session(raw: bytes) -> Session:
         data = _object(data, {
             "schema", "profile", "warning", "item", "simulation", "observations",
             "rune", "goal", "mode", "seed", "rates", "prices", "budget", "math",
-            "observation_ready", "quality",
+            "observation_ready", "quality", "model_signature",
         })
-        legacy = data["schema"] == 1 and data["profile"] == LEGACY_PROFILE
+        legacy = (data["schema"], data["profile"]) in {
+            (1, LEGACY_PROFILE), (2, "retro-workshop-v2"),
+        }
         if type(data["schema"]) is not int or not (
-            legacy or (data["schema"] == 2 and data["profile"] == PROFILE)
+            legacy or (data["schema"] == 3 and data["profile"] == PROFILE)
         ):
             raise ValueError("Version de sauvegarde non prise en charge.")
+        if not legacy and data.get("model_signature") != active_model_signature():
+            raise ValueError("Référentiel ou corpus différent : utilisez la version archivée pour reprendre ce snapshot.")
         item_data = _object(data["item"], {
             "name", "token", "bounds", "source", "unsupported", "immutable",
         })
@@ -347,9 +465,10 @@ def import_session(raw: bytes) -> Session:
             _strings(item_data.get("unsupported", [])), _strings(item_data.get("immutable", [])),
         )
         session = Session.create(item)
-        session.sim = _load_state(data["simulation"])
-        validate_item_jets(item, session.sim.jets)
-        session.observed = _load_state(data["observations"])
+        session.sim = _load_state(data["simulation"], data["profile"])
+        if session.sim.profile == PROFILE:
+            validate_item_jets(item, session.sim.jets)
+        session.observed = _load_state(data["observations"], data["profile"])
         if any(row["mode"] != "simulation" for row in session.sim.journal):
             raise ValueError("Journal simulé mélangé avec des observations.")
         if any(row["mode"] != "observation" for row in session.observed.journal):
@@ -368,7 +487,8 @@ def import_session(raw: bytes) -> Session:
             if key == session.goal_stat:
                 raise ValueError("L'objectif principal ne doit pas être répété dans les seuils.")
             session.quality[key] = integer(value, 0, 10000, "Seuil de qualité")
-        validate_goals(item, session.requirements)
+        if session.sim.profile == PROFILE:
+            validate_goals(item, session.requirements)
         session.seed = integer(data["seed"], 0, 2**64 - 1, "Graine")
         for key, value in _object(data["rates"]).items():
             session.custom[_rune_key(key)] = Rates(**_object(value, {"sc", "sn"}))
@@ -395,8 +515,8 @@ def import_session(raw: bytes) -> Session:
             session.notice += " Le suivi contient un jet hors profil local : conservé comme déclaration, non validé en simulation."
         if legacy:
             session.notice += (
-                " Migration v1 → v2 : jets et journaux conservés ; les futurs tirages changent de moteur. "
-                "Ancien objectif simple conservé : ajoutez vos seuils dans « Objectifs »."
+                " Ancien profil conservé en lecture seule, sans conversion fictive du puits. "
+                "Exportez-le puis redéclarez un jet/puits ou choisissez un nouveau départ pour utiliser la v3."
             )
         return session
     except (KeyError, TypeError, UnicodeError, OverflowError, RecursionError, json.JSONDecodeError) as exc:

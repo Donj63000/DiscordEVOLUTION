@@ -1,0 +1,636 @@
+{
+  "schema": 1,
+  "id": "retro-documented-v3",
+  "version": "3.0.0",
+  "audited_on": "2026-09-17",
+  "scope": "Dofus Rétro, héritage 1.29 ; maître forgemage (niveau 100), runes de caractéristiques.",
+  "certified_by_ankama": false,
+  "sources": {
+    "ankama127-relay": {
+      "title": "Message attribué à Oopah, devblog du 18 mai 2009, section Quelques probabilités",
+      "url": "https://ponzadivizion.wordpress.com/aide-forgemagie/",
+      "kind": "primary_statement_reproduced",
+      "access": "Texte reproduit lu ; original du devblog non récupéré.",
+      "scope": "Bornes historiques 1.27, pas mesures des serveurs Rétro actuels."
+    },
+    "alterya129": {
+      "title": "Tout sur la Forgemagie en 1.29 — Alterya, 16 novembre 2017",
+      "url": "https://alterya.over-blog.com/2017/11/tout-sur-la-forgemagie-en-1.29.html",
+      "kind": "community_first_hand_guide",
+      "access": "Extraits indexés vérifiés ; page complète inaccessible.",
+      "scope": "Arrondi de Ra Vi à 8 ; exemple PA perdu : 100 - 8 = 92 ; règle de confort 20 fois le gain."
+    },
+    "jol129": {
+      "title": "La forgemagie 1.29 — discussion de joueurs",
+      "url": "https://forums.jeuxonline.info/sujet/1343510/la-forgemagie-1-29",
+      "kind": "community_observations",
+      "access": "Extraits indexés ; page complète non récupérée.",
+      "scope": "Coûts Vi / Pa Vi / Ra Vi annoncés à 1 / 3 / 8."
+    },
+    "retro-lab": {
+      "title": "Dofus Fashionista — Smithmagic Lab, version Rétro",
+      "url": "https://dofusfashionista.gg/retro/forgemagie/",
+      "kind": "community_model",
+      "access": "Page complète lue.",
+      "scope": "Catalogue et poids Rétro ; ce simulateur indique lui-même que ses distributions sont estimatives."
+    },
+    "retro-sink-observations": {
+      "title": "Question : fonctionnement du puits Dofus Rétro — témoignages du 3 février 2020",
+      "url": "https://www.dofus.com/fr/forum/1747-actualite/2319341-question-fonctionnement-puit-dofus-retro",
+      "kind": "community_observations",
+      "access": "Extraits indexés ; accès direct bloqué.",
+      "scope": "Signalements de pertes malgré un reliquat ; aucun taux exploitable retrouvé."
+    },
+    "excluded-modern": {
+      "title": "JeuxOnLine, Forgemagie, mise à jour 2016",
+      "url": "https://dofus.jeuxonline.info/article/235/forgemagie",
+      "kind": "excluded_mixed_version",
+      "access": "Page complète lue.",
+      "scope": "Vi 5/15/50 : ne pas importer ce catalogue dans Rétro."
+    }
+  },
+  "rules": {
+    "line_cap": {
+      "value": "101",
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Poids TOTAL de la ligne lorsqu'elle dépasse son maximum naturel."
+    },
+    "extra_cap": {
+      "value": "101",
+      "evidence": "community_convention",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Surplus cumulé, interprétation conservatrice ; maxima naturels exclus."
+    },
+    "rounding": {
+      "value": "ceil_rune_cost",
+      "evidence": "community",
+      "sources": [
+        "alterya129",
+        "jol129"
+      ],
+      "scope": "Arrondi supérieur du coût de la rune ; poids nominal des points distinct."
+    },
+    "critical": {
+      "value": "gain_without_loss_or_sink_consumption",
+      "evidence": "published_relay",
+      "sources": [
+        "ankama127-relay"
+      ]
+    },
+    "loss_balance": {
+      "value": "sink_after = sink_before + lost_power - rune_cost",
+      "evidence": "community",
+      "sources": [
+        "alterya129"
+      ],
+      "scope": "SN/EC ; dette non absorbable sur objet vide signalée, jamais puits négatif."
+    },
+    "loss_sampling": {
+      "value": "surplus_then_sink_then_power_weighted",
+      "evidence": "hypothesis",
+      "sources": [
+        "ankama127-relay"
+      ],
+      "scope": "Priorité des gros jets rapportée ; pondération exacte inventée comme repli explicite, non mesurée. Les relevés de contexte exact remplacent le modèle complet.",
+      "counter_evidence_sources": [
+        "retro-sink-observations"
+      ]
+    },
+    "heavy_exo": {
+      "value": [
+        "pa",
+        "pm",
+        "po"
+      ],
+      "sc": 0.01,
+      "sn": 0.0,
+      "evidence": "community",
+      "sources": [
+        "ankama127-relay"
+      ],
+      "scope": "Bonus absent de la fiche naturelle. Pas un taux de remontage."
+    },
+    "malus": {
+      "value": "empirical_only",
+      "evidence": "unresolved",
+      "sources": [
+        "ankama127-relay",
+        "retro-lab"
+      ],
+      "scope": "Guides contradictoires sur le passage au positif et le calcul du puits. Aucun coefficient de malus supposé certain."
+    },
+    "comfort_multiplier": {
+      "value": 20,
+      "evidence": "community_rule_of_thumb",
+      "sources": [
+        "alterya129"
+      ]
+    },
+    "natural_difficulty_start": {
+      "value": 0.8,
+      "evidence": "community_rule_of_thumb",
+      "sources": [
+        "ankama127-relay"
+      ],
+      "scope": "Seuil communautaire, hors lignes à jet naturel fixe ; interpolation non mesurée."
+    }
+  },
+  "anchors": {
+    "easy_rebuild": {
+      "sc": 0.66,
+      "sn": 0.34,
+      "evidence": "published_relay",
+      "source": "ankama127-relay"
+    },
+    "simple_perfect": {
+      "sc": 0.43,
+      "sn": 0.5,
+      "evidence": "published_relay",
+      "source": "ankama127-relay"
+    },
+    "complex_perfect": {
+      "sc": 0.15,
+      "sn": 0.5,
+      "evidence": "published_relay",
+      "source": "ankama127-relay"
+    },
+    "creation_best": {
+      "sc": 0.32,
+      "sn": 0.5,
+      "evidence": "published_relay",
+      "source": "ankama127-relay"
+    },
+    "creation_worst": {
+      "sc": 0.01,
+      "sn": 0.0,
+      "evidence": "published_relay",
+      "source": "ankama127-relay"
+    }
+  },
+  "model": {
+    "id": "historical-envelope-v1",
+    "evidence": "hypothesis",
+    "description": "Interpolation monotone des bornes historiques, non formule Ankama. Aucun ajustement sur observations du jeu.",
+    "measured_training_rows": 0,
+    "out_of_scope": [
+      "Potions élémentaires",
+      "Signature",
+      "Rune de chasse",
+      "Armes éthérées sans bornes vérifiées",
+      "Niveau métier inférieur à 100"
+    ]
+  },
+  "stats": {
+    "pa": {
+      "weight_per_point": "100",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "100"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "pm": {
+      "weight_per_point": "90",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "90"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "po": {
+      "weight_per_point": "51",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "51"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "vi": {
+      "weight_per_point": "0.25",
+      "gains": [
+        3,
+        10,
+        30
+      ],
+      "rune_costs": [
+        "1",
+        "3",
+        "8"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab",
+        "alterya129"
+      ]
+    },
+    "fo": {
+      "weight_per_point": "1",
+      "gains": [
+        1,
+        3,
+        10
+      ],
+      "rune_costs": [
+        "1",
+        "3",
+        "10"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "ine": {
+      "weight_per_point": "1",
+      "gains": [
+        1,
+        3,
+        10
+      ],
+      "rune_costs": [
+        "1",
+        "3",
+        "10"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "age": {
+      "weight_per_point": "1",
+      "gains": [
+        1,
+        3,
+        10
+      ],
+      "rune_costs": [
+        "1",
+        "3",
+        "10"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "cha": {
+      "weight_per_point": "1",
+      "gains": [
+        1,
+        3,
+        10
+      ],
+      "rune_costs": [
+        "1",
+        "3",
+        "10"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "sa": {
+      "weight_per_point": "3",
+      "gains": [
+        1,
+        3,
+        10
+      ],
+      "rune_costs": [
+        "3",
+        "9",
+        "30"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "pp": {
+      "weight_per_point": "3",
+      "gains": [
+        1,
+        3
+      ],
+      "rune_costs": [
+        "3",
+        "9"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "ini": {
+      "weight_per_point": "0.1",
+      "gains": [
+        10,
+        30,
+        100
+      ],
+      "rune_costs": [
+        "1",
+        "3",
+        "10"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "pod": {
+      "weight_per_point": "0.25",
+      "gains": [
+        10,
+        30,
+        100
+      ],
+      "rune_costs": [
+        "3",
+        "8",
+        "25"
+      ],
+      "evidence": "community_rounding_extrapolation",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Arrondi général extrapolé des observations Vi ; à vérifier par relevé Pods."
+    },
+    "do": {
+      "weight_per_point": "20",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "20"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "so": {
+      "weight_per_point": "20",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "20"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "cc": {
+      "weight_per_point": "30",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "30"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "invo": {
+      "weight_per_point": "30",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "30"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "pui": {
+      "weight_per_point": "2",
+      "gains": [
+        1,
+        3,
+        10
+      ],
+      "rune_costs": [
+        "2",
+        "6",
+        "20"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "r_ne": {
+      "weight_per_point": "2",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "2"
+      ],
+      "evidence": "unresolved_retained_baseline",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Valeur v2 conservée faute de corroboration indépendante ; le catalogue retro-lab affiche 5 (fixe) / 4 (%), divergence non tranchée."
+    },
+    "r_te": {
+      "weight_per_point": "2",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "2"
+      ],
+      "evidence": "unresolved_retained_baseline",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Valeur v2 conservée faute de corroboration indépendante ; le catalogue retro-lab affiche 5 (fixe) / 4 (%), divergence non tranchée."
+    },
+    "r_fe": {
+      "weight_per_point": "2",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "2"
+      ],
+      "evidence": "unresolved_retained_baseline",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Valeur v2 conservée faute de corroboration indépendante ; le catalogue retro-lab affiche 5 (fixe) / 4 (%), divergence non tranchée."
+    },
+    "r_ea": {
+      "weight_per_point": "2",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "2"
+      ],
+      "evidence": "unresolved_retained_baseline",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Valeur v2 conservée faute de corroboration indépendante ; le catalogue retro-lab affiche 5 (fixe) / 4 (%), divergence non tranchée."
+    },
+    "r_ai": {
+      "weight_per_point": "2",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "2"
+      ],
+      "evidence": "unresolved_retained_baseline",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Valeur v2 conservée faute de corroboration indépendante ; le catalogue retro-lab affiche 5 (fixe) / 4 (%), divergence non tranchée."
+    },
+    "rp_ne": {
+      "weight_per_point": "6",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "6"
+      ],
+      "evidence": "unresolved_retained_baseline",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Valeur v2 conservée faute de corroboration indépendante ; le catalogue retro-lab affiche 5 (fixe) / 4 (%), divergence non tranchée."
+    },
+    "rp_te": {
+      "weight_per_point": "6",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "6"
+      ],
+      "evidence": "unresolved_retained_baseline",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Valeur v2 conservée faute de corroboration indépendante ; le catalogue retro-lab affiche 5 (fixe) / 4 (%), divergence non tranchée."
+    },
+    "rp_fe": {
+      "weight_per_point": "6",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "6"
+      ],
+      "evidence": "unresolved_retained_baseline",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Valeur v2 conservée faute de corroboration indépendante ; le catalogue retro-lab affiche 5 (fixe) / 4 (%), divergence non tranchée."
+    },
+    "rp_ea": {
+      "weight_per_point": "6",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "6"
+      ],
+      "evidence": "unresolved_retained_baseline",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Valeur v2 conservée faute de corroboration indépendante ; le catalogue retro-lab affiche 5 (fixe) / 4 (%), divergence non tranchée."
+    },
+    "rp_ai": {
+      "weight_per_point": "6",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "6"
+      ],
+      "evidence": "unresolved_retained_baseline",
+      "sources": [
+        "retro-lab"
+      ],
+      "scope": "Valeur v2 conservée faute de corroboration indépendante ; le catalogue retro-lab affiche 5 (fixe) / 4 (%), divergence non tranchée."
+    },
+    "pi": {
+      "weight_per_point": "15",
+      "gains": [
+        1,
+        3
+      ],
+      "rune_costs": [
+        "15",
+        "45"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "pi_per": {
+      "weight_per_point": "2",
+      "gains": [
+        1,
+        3,
+        10
+      ],
+      "rune_costs": [
+        "2",
+        "6",
+        "20"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    },
+    "ren": {
+      "weight_per_point": "30",
+      "gains": [
+        1
+      ],
+      "rune_costs": [
+        "30"
+      ],
+      "evidence": "community",
+      "sources": [
+        "retro-lab"
+      ]
+    }
+  }
+}

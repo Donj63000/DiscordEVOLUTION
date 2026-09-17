@@ -71,6 +71,12 @@ def parse_effects(lines: tuple[str, ...] | list[str]) -> tuple[dict, tuple, tupl
         )
         if damage_percent:
             text = damage_percent.group(1) + " % de dommages"
+        reflect = re.fullmatch(
+            r"Renvoie?\s+(\d+(?:\s*(?:à|a|-)\s*\d+)?)\s+(?:dommages?|de dommages)",
+            text, re.IGNORECASE,
+        )
+        if reflect:
+            text = reflect.group(1) + " renvoi de dommages"
         match = RANGE.fullmatch(text.replace("−", "-"))
         if match is None:
             unsupported.append(text[:300])
@@ -115,6 +121,8 @@ def from_detail(detail, enrichment=None) -> Item:
     if not effects or len(effects) > 100:
         raise ValueError("Fiche sans effets exploitables. Le calculateur reste disponible sans objet.")
     bounds, unsupported, immutable = parse_effects(effects)
+    if "etheree" in normalized(detail.entry.name):
+        unsupported += ("Arme éthérée : bornes naturelles non vérifiées pour ce profil.",)
     return Item(
         detail.entry.name[:200], detail.entry.token, bounds, source, unsupported, immutable,
     )

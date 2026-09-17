@@ -227,7 +227,7 @@ async def test_export_is_private_and_stream_is_closed(panel):
     event.followup.send.side_effect=capture
     await panel.dispatch(event,"export")
     file,raw,ephemeral=captures[0]
-    assert b'"schema": 2' in raw
+    assert b'"schema": 3' in raw
     assert ephemeral
     assert file.fp.closed
 
@@ -775,7 +775,7 @@ async def test_expiration_attaches_reusable_snapshot_and_closes_stream(panel):
     panel.message = SimpleNamespace(edit=AsyncMock(side_effect=capture))
     await panel.on_timeout()
     file, raw = captures[0]
-    assert json.loads(raw)["schema"] == 2
+    assert json.loads(raw)["schema"] == 3
     assert import_session(raw).sim == panel.session.sim
     assert file.fp.closed
     assert panel.retired
@@ -899,3 +899,17 @@ async def test_explicit_goal_survives_ambiguous_item_selection(panel):
     await opened.dispatch(interaction(user_id=43), "item", "0")
     assert opened.session.goal_stat == "pa"
     assert opened.search_objective is None
+
+@pytest.mark.asyncio
+async def test_full_history_budget_is_released_when_panel_stops(panel):
+    from utils.fm_retro_limits import history_size
+    candidate = copy.deepcopy(panel.session)
+    candidate.rune = Rune("pa")
+    candidate.sim = State({"pa": 0}, D(1000))
+    attempt(candidate.item, candidate.sim, candidate.rune, Rates(1, 0), 1)
+    await panel.commit(interaction(), candidate, undo=True)
+    assert panel.cog.history_budget.allocations[id(panel)] == (
+        history_size(panel.session) + history_size(panel.undo_session)
+    )
+    panel.stop()
+    assert id(panel) not in panel.cog.history_budget.allocations

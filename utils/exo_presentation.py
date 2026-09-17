@@ -117,8 +117,9 @@ def guidance(session) -> str:
             if not s.observation_ready else
             "Saisissez SC, SN ou EC et toutes les pertes constatées. Aucun tirage n'est effectué."
         )
-    blocker = simulation_blocker(s.item, s.state, s.rune)
-    if not s.item.automatic or s.state.sink is None or any(value < 0 for value in s.state.jets.values()):
+    blocker = simulation_blocker(s.item, s.state, s.rune, s.rates)
+    if blocker and (not s.item.automatic or s.state.sink is None or s.state.profile != PROFILE
+                    or any(value < 0 for value in s.state.jets.values())):
         return "⛔ " + blocker + " Ajustez le scénario dans « Réglages » ou utilisez le suivi manuel."
     missing = [(key, value) for key, value in s.requirements.items()
                if s.state.jets.get(key, 0) < value]
@@ -267,22 +268,21 @@ def build_payload(session) -> dict:
         field(
             embed, "Moteur et limites",
             f"**{PROFILE}** · référentiel **{REFERENCE_VERSION}**. "
-            "Profil pédagogique visant Rétro, non validé sur le serveur. "
-            "Poids hérités conservés (Vi 0,25 ; So 20), à vérifier avant calibration. "
-            "Hors preset lourd, les taux automatiques sont une formule pédagogique non calibrée. "
-            "Les pertes retirent les surplus tiers, puis le puits, puis des lignes positives tirées au sort ; "
-            "la ligne travaillée peut perdre ses points existants.\n"
-            "Plafonds nominaux over/exo 101. Malus, effets inconnus, magie élémentaire d'arme, "
-            "arrondis et exceptions du serveur ne sont pas fidèlement simulés. "
-            "Une fiche non couverte bloque la simulation, pas le carnet manuel.",
+            "Profil Rétro : Vi 0,25, So 20 ; résistances 2/6 conservées, sources contradictoires. "
+            "Coût des Vi/Pa Vi/Ra Vi : 1/3/8 après arrondi.\n"
+            "Contexte observé couvert : tirage joint résultat, pertes et puits. Sinon : "
+            "interpolation hypothétique de bornes historiques, convention exo lourd 1 %, "
+            "pertes de secours pondérées par la puissance disponible. Aucune calibration serveur livrée.\n"
+            "Plafonds over/exo 101. Malus : corpus de contexte exact requis. Effets inconnus "
+            "et magie élémentaire d'arme bloqués. Les règles débattues restent identifiées comme telles.",
         )
         field(
             embed, "Sources et reprise",
-            "[Guide Xixou](https://xixou.io/guides/poids-des-runes/) · "
-            "[Guide communautaire Rétro](https://www.dofus-retro.com/fr/forum/11-aide-communautaire/1516-guide-forgemagie-retro)\n"
-            "Ces guides ne sont pas une spécification du serveur Ankama. "
-            "Export JSON v2 : /exo reprise:<fichier.json>, 512 Kio maximum. "
-            "La v1 est migrée avec avertissement ; les futurs tirages utilisent la v2.",
+            "[Repères historiques](https://ponzadivizion.wordpress.com/aide-forgemagie/) · "
+            "[Guide 1.29](https://alterya.over-blog.com/2017/11/tout-sur-la-forgemagie-en-1.29.html)\n"
+            "Provenances et limites : docs/FM-RETRO-V3.md. Pas de certification Ankama. "
+            "Export JSON v3 : /exo reprise:<fichier.json>, 8 Mio maximum. "
+            "v1/v2 : lecture seule jusqu’à redéclaration du jet et du puits. Même corpus requis pour rejouer la v3.",
         )
     else:
         field(embed, "Prochaine action", guidance(session))
@@ -301,14 +301,19 @@ def build_payload(session) -> dict:
                 f"{marker} **{STATS[key].name} : {current}**{delta} · naturel {natural}{nature}"
             )
         sections(embed, "Jet actuel · variations de la dernière action", lines)
-        rates = rates_for(item, state, rune, session.rates)
+        blocker = simulation_blocker(item, state, rune, session.rates)
+        rates = rates_for(item, state, rune, session.rates) if not blocker else None
+        rate_text = (
+            f"SC **{percent(rates.sc)}** · SN **{percent(rates.sn)}** · EC **{percent(rates.ec)}**\n"
+            f"{display_text(rates.source, 160)} · taux non certifiés Ankama\n"
+            if rates is not None else "Taux non affichés : cette pose est bloquée.\n"
+        )
         recommended = recommended_rune(item, state, rune.stat, session.rune_target)
         field(
             embed, f"Rune {rune.name} · +{rune.gain} {STATS[rune.stat].name}",
             f"Poids **{amount(rune.weight)}** · puits **{amount(state.sink)}** · "
             f"over/exo **{amount(surplus(item, state.jets))}/101**\n"
-            f"SC **{percent(rates.sc)}** · SN **{percent(rates.sn)}** · EC **{percent(rates.ec)}**\n"
-            f"{display_text(rates.source, 160)}\n"
+            f"{rate_text}"
             f"Conseil : {recommended.name} · seuil des lots : {session.rune_target}.",
         )
         requirements = [
@@ -326,7 +331,7 @@ def build_payload(session) -> dict:
         if item.immutable:
             field(embed, "Effets d'arme inchangés",
                   "\n".join(display_text(line, 120) for line in item.immutable[:4]))
-        if item.unsupported or not item.automatic:
+        if blocker and (item.unsupported or not item.automatic):
             field(
                 embed, "Fiche partiellement couverte : simulation bloquée",
                 "\n".join(display_text(line, 140) for line in item.unsupported[:4])

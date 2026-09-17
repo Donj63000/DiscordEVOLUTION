@@ -112,6 +112,13 @@ Les données absentes restent signalées. Les taux personnalisés excluent les c
 <a id="forgemagie"></a>
 ### 🔨 Atelier exo et runes
 
+Le moteur FM Rétro v3 distingue règles sourcées, hypothèses et observations.
+L'historique complet et les outils de validation sont décrits dans
+[FM-RETRO-V3.md](docs/FM-RETRO-V3.md). Les distributions livrées restent non
+calibrées sur un corpus de jeu ; les tests Monte-Carlo ne constituent pas une
+certification serveur.
+
+
 Travaille le jet d’un objet **d’une tentative à l’autre** : pose de runes, gains et
 pertes, suivi du puits, objectifs et historique. Exporte ton atelier pour le reprendre
 plus tard avec l’option `reprise` de `/exo`.

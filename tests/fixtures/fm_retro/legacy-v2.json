@@ -1,0 +1,151 @@
+{
+  "schema": 2,
+  "profile": "retro-workshop-v2",
+  "warning": "Bac à sable nominal ; ni preuve de jet ni résultat serveur. Journal déclaratif.",
+  "item": {
+    "name": "Anneau test",
+    "token": "legacy-fixture",
+    "bounds": {
+      "fo": [
+        1,
+        50
+      ]
+    },
+    "source": "fixture v2 originale",
+    "unsupported": [],
+    "immutable": []
+  },
+  "simulation": {
+    "jets": {
+      "fo": 30
+    },
+    "sink": "997",
+    "sequence": 3,
+    "spent": 75,
+    "attempts": 3,
+    "successes": 0,
+    "journal": [
+      {
+        "n": 1,
+        "mode": "simulation",
+        "rune": "Fo",
+        "stat": "fo",
+        "gain": 1,
+        "weight": "1",
+        "outcome": "EC",
+        "losses": {},
+        "sink_before": "1000",
+        "sink_after": "999",
+        "price": 25,
+        "unexplained_weight": "0",
+        "applied_gain": 0,
+        "changes": {
+          "fo": [
+            30,
+            30
+          ]
+        },
+        "rates": {
+          "sc": 0,
+          "sn": 0,
+          "source": "personnalisé"
+        },
+        "profile": "retro-workshop-v2"
+      },
+      {
+        "n": 2,
+        "mode": "simulation",
+        "rune": "Fo",
+        "stat": "fo",
+        "gain": 1,
+        "weight": "1",
+        "outcome": "EC",
+        "losses": {},
+        "sink_before": "999",
+        "sink_after": "998",
+        "price": 25,
+        "unexplained_weight": "0",
+        "applied_gain": 0,
+        "changes": {
+          "fo": [
+            30,
+            30
+          ]
+        },
+        "rates": {
+          "sc": 0,
+          "sn": 0,
+          "source": "personnalisé"
+        },
+        "profile": "retro-workshop-v2"
+      },
+      {
+        "n": 3,
+        "mode": "simulation",
+        "rune": "Fo",
+        "stat": "fo",
+        "gain": 1,
+        "weight": "1",
+        "outcome": "EC",
+        "losses": {},
+        "sink_before": "998",
+        "sink_after": "997",
+        "price": 25,
+        "unexplained_weight": "0",
+        "applied_gain": 0,
+        "changes": {
+          "fo": [
+            30,
+            30
+          ]
+        },
+        "rates": {
+          "sc": 0,
+          "sn": 0,
+          "source": "personnalisé"
+        },
+        "profile": "retro-workshop-v2"
+      }
+    ]
+  },
+  "observations": {
+    "jets": {
+      "fo": 50
+    },
+    "sink": null,
+    "sequence": 0,
+    "spent": 0,
+    "attempts": 0,
+    "successes": 0,
+    "journal": []
+  },
+  "rune": {
+    "stat": "fo",
+    "tier": 0
+  },
+  "goal": {
+    "stat": "pm",
+    "value": 1
+  },
+  "quality": {
+    "fo": 1
+  },
+  "mode": "simulation",
+  "seed": 1263694461228453972,
+  "rates": {},
+  "prices": {},
+  "budget": {
+    "rune": 0,
+    "rebuild": 0,
+    "item": 0,
+    "preparation": 0,
+    "limit": 0
+  },
+  "math": {
+    "p": 0.01,
+    "cap": 100,
+    "experiments": 10000,
+    "confidence": 0.95
+  },
+  "observation_ready": false
+}

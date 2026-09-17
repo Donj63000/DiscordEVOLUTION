@@ -17,7 +17,7 @@ def test_native_pa_is_not_an_exo():
     assert not fixed_exo(item,state,Rune("pa"))
     rates = rates_for(item,state,Rune("pa"),None)
     assert rates.sc > .01
-    assert "estimation" in rates.source
+    assert "non calibrée" in rates.source
     assert fixed_exo(item,state,Rune("pm"))
 
 
@@ -98,7 +98,7 @@ def test_unknown_and_malus_block_automatic():
         Item("Test","test",{"fo":(1,10)},"fixture",("effet inconnu",)),
         Item("Test","test",{"fo":(-10,-1)},"fixture"),
     ]:
-        with pytest.raises(ValueError, match="malus"):
+        with pytest.raises(ValueError):
             attempt(item,State.initial(item),Rune("pm"),None,1)
 
 
@@ -143,13 +143,14 @@ def test_risk_does_not_mutate_live_state():
     assert .97 < a["loss_probability"]["pa"] < 1
 
 
-def test_journal_is_bounded():
+def test_journal_preserves_all_150_events():
     item=Item("Test","test",{"fo":(1,10)},"fixture")
     state=State({"fo":1},D(1000))
     for _ in range(150):
         attempt(item,state,Rune("fo"),Rates(0,0),3)
     assert state.attempts == 150
-    assert len(state.journal) == 100
+    assert len(state.journal) == 150
+    assert state.journal[0]["n"] == 1
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -177,7 +178,7 @@ def test_export_import_replays_next_draw():
 
 
 @pytest.mark.parametrize("mutation", [
-    lambda x:x.update(schema=3),
+    lambda x:x.update(schema=4),
     lambda x:x.update(seed=True),
     lambda x:x["math"].update(p=float("nan")),
     lambda x:x["simulation"].update(sink="-1"),

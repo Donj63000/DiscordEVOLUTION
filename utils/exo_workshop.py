@@ -10,6 +10,7 @@ from utils.exo_engine import (
     PROFILE, State, attempt, integer, parse_jets, validate_goals,
 )
 from utils.exo_session import Session
+from utils.fm_retro_observations import active_model_signature
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ def reset_simulation(session: Session, kind: str, seed: int) -> None:
         for key, (low, high) in sorted(session.item.bounds.items())
     }
     session.sim = State(jets)
+    session.model_signature = active_model_signature()
     session.seed = seed
     session.journal_page = 0
     session.last_changes = {}
@@ -74,6 +76,7 @@ def simulate_batch(session: Session, count: int) -> BatchResult:
     integer(count, 1, 100, "Taille du lot")
     if session.mode != "simulation":
         raise ValueError("Les tirages sont désactivés dans le suivi réel.")
+    session.ensure_model()
     validate_goals(session.item, session.requirements)
     target = session.rune_target
     if count > 1 and session.sim.jets.get(session.rune.stat, 0) >= target:

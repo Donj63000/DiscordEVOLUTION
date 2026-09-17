@@ -17,13 +17,14 @@ from utils.dofus_wiki import INDEX_PATHS, WikiError, find_entries
 from utils.exo_data import demo_item, from_detail, is_mageable
 from utils.exo_embeds import build_embed, number, percent
 from utils.exo_engine import (
-    D, Rates, Rune, STATS, State, attempt, decimal_value, observe,
+    D, PROFILE, Rates, Rune, STATS, State, attempt, decimal_value, observe,
     parse_jets, recommended_rune, risk, simulation_blocker, stat_key, validate_item_jets,
 )
 from utils.exo_feedback import batch_text, result_lines
 from utils.exo_workshop import reset_simulation, set_goals, simulate_batch
 from utils.exo_math import Budget, integer, run_campaigns, success_within
 from utils.exo_session import EXPORT_LIMIT, Session, export_session, import_session
+from utils.fm_retro_limits import HistoryBudget, history_size
 from utils.wiki_embeds import display_text, truncate_text
 from utils.xixou_api import XixouError
 
@@ -196,7 +197,7 @@ class ExoModal(discord.ui.Modal):
                 validate_item_jets(session.item, state.jets)
             seed = whole(values["seed"], 0, 2**64 - 1, "Graine")
             set_goals(session, values["goal"])
-            changed = state.sink != session.state.sink or any(
+            changed = session.state.profile != PROFILE or state.sink != session.state.sink or any(
                 state.jets.get(stat, 0) != session.state.jets.get(stat, 0) for stat in STATS
             )
             if changed:
@@ -298,6 +299,7 @@ class ExoView(discord.ui.View):
 
     def stop(self):
         self.retired = True
+        self.cog.history_budget.release(id(self))
         for key, grant in list(self.cog.evo_shares.items()):
             if grant.view is self:
                 self.cog.evo_shares.pop(key, None)
@@ -486,7 +488,7 @@ class ExoView(discord.ui.View):
                 "Choisir la rune à poser", 2,
             ))
             active = s.mode == "simulation"
-            blocked = bool(simulation_blocker(s.item, s.state, s.rune)) if active else True
+            blocked = bool(simulation_blocker(s.item, s.state, s.rune, s.rates)) if active else True
             unsafe_batch = s.state.jets.get(s.rune.stat, 0) + s.rune.gain > s.rune_target
             if active:
                 self.add_button("Poser ×1", "one", style=discord.ButtonStyle.success, disabled=blocked)
@@ -597,17 +599,28 @@ class ExoView(discord.ui.View):
 
     async def _commit(self, interaction, candidate: Session, *, undo=False):
         previous, old_undo = self.session, self.undo_session
+        old_size = history_size(previous) + (history_size(old_undo) if old_undo else 0)
+        next_undo = previous if undo else old_undo
+        self.cog.history_budget.reserve(
+            id(self), max(old_size, history_size(candidate) + (history_size(next_undo) if next_undo else 0)),
+        )
         candidate.revision = previous.revision + 1
         self.session = candidate
-        if undo:
-            self.undo_session = copy.deepcopy(previous)
         try:
+            if undo:
+                self.undo_session = copy.deepcopy(previous)
             self.rebuild()
             await self.publish(interaction)
         except (Exception, asyncio.CancelledError):
             self.session, self.undo_session = previous, old_undo
+            if not self.retired:
+                self.cog.history_budget.reserve(id(self), old_size)
             self.rebuild()
             raise
+        if not self.retired:
+            self.cog.history_budget.reserve(
+                id(self), history_size(self.session) + (history_size(self.undo_session) if self.undo_session else 0),
+            )
         self.evo_uncertain = False
         log.debug("exo: committed owner=%s revision=%s mode=%s", self.owner_id, candidate.revision, candidate.mode)
 
@@ -877,6 +890,7 @@ class ExoCog(commands.Cog):
         self.evo_shares: dict[tuple[int, int, int], object] = {}
         self.open_locks: dict[tuple[int, int], asyncio.Lock] = {}
         self.compute_slots = asyncio.Semaphore(2)
+        self.history_budget = HistoryBudget()
         self.closed = False
 
     def wiki(self):
@@ -939,7 +953,7 @@ class ExoCog(commands.Cog):
     @app_commands.describe(
         objet="Objet mageable, sinon démonstration Gelano sans réseau.",
         objectif="Exo visé, sinon choix automatique d'un bonus absent de l'objet.",
-        reprise="Reprendre un export JSON personnel /exo (512 Kio maximum).",
+        reprise="Reprendre un export JSON personnel /exo (8 Mio maximum).",
     )
     @app_commands.choices(objectif=[
         app_commands.Choice(name="Exo PM", value="pm"),
@@ -966,7 +980,7 @@ class ExoCog(commands.Cog):
             entries, label, image = [], "", None
             if reprise is not None:
                 if reprise.size > EXPORT_LIMIT or not reprise.filename.lower().endswith(".json"):
-                    raise ValueError("La reprise attend un fichier .json de 512 Kio maximum.")
+                    raise ValueError("La reprise attend un fichier .json de 8 Mio maximum.")
                 async with asyncio.timeout(10):
                     raw = await reprise.read()
                 session = import_session(raw)
@@ -1000,6 +1014,7 @@ class ExoCog(commands.Cog):
                 search_objective=objectif if entries else None,
             )
             new_view.search_entries, new_view.search_label = entries, label
+            self.history_budget.reserve(id(new_view), history_size(session))
             new_view.rebuild()
             await new_view.publish(interaction, initial=True)
             if self.closed:
@@ -1019,6 +1034,10 @@ class ExoCog(commands.Cog):
                 content=message, allowed_mentions=discord.AllowedMentions.none(),
             )
             log.debug("exo: opening_rejected reason=%s", message)
+        except asyncio.CancelledError:
+            if new_view is not None:
+                new_view.stop()
+            raise
         except Exception:
             if new_view is not None:
                 new_view.stop()

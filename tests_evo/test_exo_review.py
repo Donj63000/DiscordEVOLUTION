@@ -110,6 +110,7 @@ async def test_native_guide_and_session_expose_total_rune_weight_without_private
     snapshot = await tools.do_ma_session_fm(ctx)
     assert snapshot["rune"]["poids_total"] == "10"
     assert snapshot["taux_prochaine_pose"]["source"]
-    assert snapshot["referentiel"]["statut"] == "pedagogique_non_calibre"
+    assert snapshot["referentiel"]["statut"] == "reference_documentee_modele_non_calibre"
+    assert snapshot["referentiel"]["certifie_ankama"] is False
     assert {"seed", "prices", "budget", "journal", "observations", "export"}.isdisjoint(snapshot)
     assert "987654" not in str(snapshot)

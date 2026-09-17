@@ -1,0 +1,230 @@
+{
+  "schema": 1,
+  "reference": "retro-documented-v3",
+  "kind": "synthetic_conditional_examples",
+  "warning": "Ces exemples conditionnent le résultat et les pertes ; ils ne mesurent aucune probabilité serveur.",
+  "cases": [
+    {
+      "id": "pa-falls-ra-vi",
+      "bounds": {
+        "pa": [
+          1,
+          1
+        ],
+        "vi": [
+          0,
+          100
+        ]
+      },
+      "before": {
+        "jets": {
+          "pa": 1,
+          "vi": 0
+        },
+        "sink": "0"
+      },
+      "rune": {
+        "stat": "vi",
+        "tier": 2
+      },
+      "outcome": "SN",
+      "losses": {
+        "pa": 1
+      },
+      "after": {
+        "jets": {
+          "pa": 0,
+          "vi": 30
+        },
+        "sink": "92"
+      },
+      "source": "alterya129"
+    },
+    {
+      "id": "pa-falls-pa-sa",
+      "bounds": {
+        "pa": [
+          1,
+          1
+        ],
+        "sa": [
+          0,
+          50
+        ]
+      },
+      "before": {
+        "jets": {
+          "pa": 1,
+          "sa": 0
+        },
+        "sink": "0"
+      },
+      "rune": {
+        "stat": "sa",
+        "tier": 1
+      },
+      "outcome": "SN",
+      "losses": {
+        "pa": 1
+      },
+      "after": {
+        "jets": {
+          "pa": 0,
+          "sa": 3
+        },
+        "sink": "91"
+      },
+      "source": "conditional_ledger"
+    },
+    {
+      "id": "pm-exo-failure-pa-loss",
+      "bounds": {
+        "pa": [
+          1,
+          1
+        ]
+      },
+      "before": {
+        "jets": {
+          "pa": 1
+        },
+        "sink": "0"
+      },
+      "rune": {
+        "stat": "pm",
+        "tier": 0
+      },
+      "outcome": "EC",
+      "losses": {
+        "pa": 1
+      },
+      "after": {
+        "jets": {
+          "pa": 0
+        },
+        "sink": "10"
+      },
+      "source": "conditional_ledger"
+    },
+    {
+      "id": "critical-preserves-sink",
+      "bounds": {
+        "fo": [
+          1,
+          50
+        ]
+      },
+      "before": {
+        "jets": {
+          "fo": 20
+        },
+        "sink": "12.5"
+      },
+      "rune": {
+        "stat": "fo",
+        "tier": 1
+      },
+      "outcome": "SC",
+      "losses": {},
+      "after": {
+        "jets": {
+          "fo": 23
+        },
+        "sink": "12.5"
+      },
+      "source": "ankama127-relay"
+    },
+    {
+      "id": "neutral-consumes-sink",
+      "bounds": {
+        "fo": [
+          1,
+          50
+        ]
+      },
+      "before": {
+        "jets": {
+          "fo": 20
+        },
+        "sink": "12.5"
+      },
+      "rune": {
+        "stat": "fo",
+        "tier": 1
+      },
+      "outcome": "SN",
+      "losses": {},
+      "after": {
+        "jets": {
+          "fo": 23
+        },
+        "sink": "9.5"
+      },
+      "source": "conditional_ledger"
+    },
+    {
+      "id": "empty-item-deficit",
+      "bounds": {
+        "pa": [
+          1,
+          1
+        ]
+      },
+      "before": {
+        "jets": {
+          "pa": 0
+        },
+        "sink": "0"
+      },
+      "rune": {
+        "stat": "pm",
+        "tier": 0
+      },
+      "outcome": "EC",
+      "losses": {},
+      "after": {
+        "jets": {
+          "pa": 0
+        },
+        "sink": null
+      },
+      "source": "insufficient_observation"
+    },
+    {
+      "id": "decimal-loss-ledger",
+      "bounds": {
+        "vi": [
+          1,
+          100
+        ],
+        "fo": [
+          1,
+          50
+        ]
+      },
+      "before": {
+        "jets": {
+          "vi": 20,
+          "fo": 10
+        },
+        "sink": "0"
+      },
+      "rune": {
+        "stat": "fo",
+        "tier": 0
+      },
+      "outcome": "EC",
+      "losses": {
+        "vi": 5
+      },
+      "after": {
+        "jets": {
+          "vi": 15,
+          "fo": 10
+        },
+        "sink": "0.25"
+      },
+      "source": "model_nominal_loss"
+    }
+  ]
+}

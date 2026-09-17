@@ -127,7 +127,7 @@ def test_malus_remains_trackable_but_not_simulatable():
     observe(session.item, session.observed, Rune("fo"), "EC", {"fo": 1})
     other = import_session(export_session(session))
     assert other.observed == session.observed
-    assert "malus" in simulation_blocker(other.item, other.sim, other.rune)
+    assert "malus" in simulation_blocker(other.item, other.sim, other.rune).lower()
 
 
 @pytest.mark.parametrize("field", ["weight", "sink_before", "sink_after", "unexplained_weight"])
@@ -227,26 +227,25 @@ def test_journal_tail_requires_a_coherent_chain(change):
         load(data)
 
 
-def test_last_one_hundred_rows_of_a_long_session_round_trip():
+def test_complete_long_session_round_trip():
     session = recorded_session(150)
     imported = import_session(export_session(session))
     assert imported.sim == session.sim
-    assert len(imported.sim.journal) == 100
-    assert imported.sim.journal[0]["n"] == 51
+    assert len(imported.sim.journal) == 150
+    assert imported.sim.journal[0]["n"] == 1
 
 
-def test_legacy_history_without_changes_still_migrates_and_accepts_future_events():
-    session = recorded_session(3)
-    data = payload(session)
-    data.update(schema=1, profile=LEGACY_PROFILE)
-    data.pop("quality")
-    for row in data["simulation"]["journal"]:
-        for field in ("changes", "applied_gain", "rates", "profile"):
-            row.pop(field, None)
-    imported = load(data)
-    attempt(imported.item, imported.sim, imported.rune, Rates(0, 0), 1)
+def test_legacy_history_is_readable_and_requires_an_explicit_new_start():
+    from pathlib import Path
+    fixture = Path(__file__).parent / "fixtures/fm_retro/legacy-v1.json"
+    imported = import_session(fixture.read_bytes())
+    with pytest.raises(ValueError, match="Ancien modèle"):
+        attempt(imported.item, imported.sim, imported.rune, Rates(0, 0), 1)
     assert import_session(export_session(imported)).sim == imported.sim
-    assert "Migration v1" in imported.notice
+    assert "lecture seule" in imported.notice
+    reset_simulation(imported, "minimum", 1)
+    attempt(imported.item, imported.sim, imported.rune, Rates(0, 0), 1)
+    assert imported.sim.sequence == 1
 
 
 def test_reset_starts_a_new_journal_chain_without_touching_observations():
@@ -279,7 +278,8 @@ def test_guide_distinguishes_unit_weight_from_full_weight_for_every_tier(key):
         guide = fm_guide(f"Quel poids pour une {rune.name} ?")
         assert guide["runes"] == [rune_details(rune)]
         details = guide["runes"][0]
-        assert D(details["poids_total"]) == rune.gain * STATS[key].weight
+        assert D(details["poids_total"]) == rune.weight
+        assert D(details["poids_nominal"]) == rune.gain * STATS[key].weight
         assert D(details["poids_par_point"]) == STATS[key].weight
 
 
@@ -288,11 +288,11 @@ def test_pa_prefix_never_selects_an_ap_rune_by_accident():
     assert [rune["nom"] for rune in guide["runes"]] == ["Pa Fo", "Ra Fo"]
 
 
-def test_reference_does_not_claim_server_calibration_or_change_seed_profile():
+def test_reference_does_not_claim_server_calibration_and_versions_its_seed_profile():
     assert model_reference()["version"] == REFERENCE_VERSION
-    assert model_reference()["statut"] == "pedagogique_non_calibre"
+    assert model_reference()["statut"] == "reference_documentee_modele_non_calibre"
     assert not model_reference()["certifie_ankama"]
-    assert PROFILE == "retro-workshop-v2"
+    assert PROFILE == "retro-documented-v3"
     assert STATS["vi"].weight == D(".25")
     assert STATS["so"].weight == D(20)
 

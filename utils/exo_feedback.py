@@ -61,6 +61,12 @@ def result_lines(row: dict, *, detailed: bool = True) -> list[str]:
                 f"⚠ Poids non compensé : {amount(row['unexplained_weight'])}. "
                 "Plus assez de caractéristiques disponibles ; aucun poids négatif n'est inventé."
             )
+    if row.get("ledger", {}).get("residual") not in {None, "0"}:
+        lines.append(f"⚠ Écart du relevé à la comptabilité du modèle : {amount(row['ledger']['residual'])}.")
+    if detailed and "nominal_weight" in row:
+        lines.append(
+            f"Puissance nominale : {amount(row['nominal_weight'])} ; coût SN/EC arrondi : {amount(row['weight'])}."
+        )
     if detailed and row.get("rates"):
         rates = row["rates"]
         lines.append(

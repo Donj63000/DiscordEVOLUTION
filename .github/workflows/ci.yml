@@ -58,6 +58,12 @@ jobs:
             --cov-report=term-missing:skip-covered \
             --cov-report=xml:artifacts/coverage-${{ matrix.python-version }}.xml
 
+      - name: Validate FM model invariants with Monte Carlo
+        run: |
+          python tools/fm_retro_validate.py monte-carlo \
+            --draws 100000 --seed 129 \
+            --output artifacts/fm-model-${{ matrix.python-version }}.json
+
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4

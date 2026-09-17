@@ -1,7 +1,7 @@
 """Contrat FM partage par le moteur, le guide IA et le routage, sans Discord.
 
-Les valeurs de jeu ci-dessous decrivent uniquement le modele local existant.
-Aucune calibration serveur ni modification des tirages n'est introduite ici.
+Chaque poids, taux et transition conserve son origine et son degré de preuve.
+Le guide ne calcule jamais de résultat à la place du moteur.
 """
 from __future__ import annotations
 
@@ -16,21 +16,17 @@ from utils.exo_engine import (
 if TYPE_CHECKING:
     from utils.exo_session import Session
 
-REFERENCE_VERSION = "retro-workshop-v2-audit-1"
+from utils.fm_retro_reference import RETRO
+from utils.fm_retro_observations import default_corpus
+
+REFERENCE_VERSION = RETRO.version
 
 
 def model_reference() -> dict:
-    """Metadata versionnee ; le profil de tirage reste v2 pour la reproductibilite."""
-    return {
-        "version": REFERENCE_VERSION,
-        "profil_tirage": PROFILE,
-        "statut": "pedagogique_non_calibre",
-        "certifie_ankama": False,
-        "poids": "conventions du moteur local ; version serveur non vérifiée",
-        "taux_ordinaires": "formules heuristiques, non mesurées sur le serveur",
-        "exo_pa_pm_po": "hypothèse communautaire : 1 % SC, 0 % SN si bonus absent",
-        "pertes": "heuristique locale : surplus tiers, puits, puis lignes au hasard",
-    }
+    result = RETRO.summary()
+    result["profil_tirage"] = PROFILE
+    result["corpus"] = default_corpus().summary()
+    return result
 
 
 def rune_details(rune: Rune) -> dict:
@@ -42,6 +38,11 @@ def rune_details(rune: Rune) -> dict:
         "gain": rune.gain,
         "poids_par_point": weight_text(STATS[rune.stat].weight),
         "poids_total": weight_text(rune.weight),
+        "poids_nominal": weight_text(rune.nominal_weight),
+        "arrondi_cout": "plafond entier du poids nominal, convention Rétro documentée",
+        "sources": list(RETRO.stats[rune.stat].sources),
+        "niveau_preuve": RETRO.metadata["stats"][rune.stat]["evidence"],
+        "limites": RETRO.metadata["stats"][rune.stat].get("scope", ""),
     }
 
 
@@ -96,9 +97,9 @@ def fm_guide(subject: str) -> dict:
         "unite_poids_nominaux": "poids d'un point, pas poids de la rune entière",
         "runes": [rune_details(rune) for rune in selected],
         "referentiel": model_reference(),
-        "source": "utils/exo_engine.py et docs/EXO-FM-PATCH.md ; modèle local du bot",
+        "source": "data/fm_retro/reference-v3.json ; docs/FM-RETRO-V3.md",
         "principes": [
-            "Poids total de la rune = gain × poids par point. Utiliser poids_total pour le coût en poids.",
+            "Poids nominal = gain × poids par point ; coût de pose = plafond entier. Ra Vi : 7,5 nominal, coût 8.",
             "Un bonus déjà natif n'est pas un exo de ce même bonus.",
             "Facilité de remontage, coût en kamas et probabilité de passage sont distincts.",
             "Le puits exact demande un état initial connu et un journal complet ; sinon il est inconnu.",
@@ -112,7 +113,7 @@ def session_advice(session: Session) -> dict:
     """Données minimales de conseil ; ni graine, prix, budget, ni historique."""
     state = session.state
     allowed, reason = eligibility(session.item, state, session.rune)
-    blocker = simulation_blocker(session.item, state, session.rune)
+    blocker = simulation_blocker(session.item, state, session.rune, session.rates)
     if session.mode != "simulation":
         blocker = "Suivi déclaratif : aucun tirage autorisé."
     try:
@@ -137,4 +138,10 @@ def session_advice(session: Session) -> dict:
             "certifie_ankama": False,
         },
         "referentiel": model_reference(),
+        "observations_contexte": (
+            sample.summary() if (sample := (
+                default_corpus().match(session.item, state, session.rune)
+                if session.rates is None and not blocker else None
+            )) is not None else None
+        ),
     }

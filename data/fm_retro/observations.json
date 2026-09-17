@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "reference": "retro-documented-v3",
+  "id": "no-observations-v1",
+  "description": "Aucun relevé brut de serveur vérifié livré. Les cas synthétiques restent dans les tests.",
+  "observations": []
+}
