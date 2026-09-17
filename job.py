@@ -8,16 +8,21 @@ import json
 import re
 import unicodedata
 import tempfile
-import hashlib, io
+import hashlib
+import io
+import inspect
 import logging
 import time
 from contextlib import suppress
+import aiohttp
 import discord
 from discord.ext import commands, tasks
 from collections import defaultdict
 from utils.channel_resolver import resolve_text_channel
-from utils.discord_history import fetch_channel_history, fetch_channel_message
-from utils.console_json_store import ConsoleJSONSnapshotStore
+from utils.discord_history import fetch_channel_history
+from utils.job_snapshot import (
+    InvalidJobSnapshot, JobSnapshotReader, MAX_SNAPSHOT_BYTES, validate_jobs_payload,
+)
 
 CONSOLE_CHANNEL_NAME = os.getenv("CHANNEL_CONSOLE", "console")
 DATA_FILE = os.path.join(os.path.dirname(__file__), "jobs_data.json")
@@ -174,12 +179,11 @@ class JobCog(commands.Cog):
         self.initialized = False
         self.console_message_id = None
         self._console_last_sync = 0.0
-        self._console_sync_lock = asyncio.Lock()
         self._mutation_lock = asyncio.Lock()
         self._remote_uncertain = False
-        self._snapshot_reader = ConsoleJSONSnapshotStore(
-            bot, marker="===BOTJOBS===", filename="jobs_data.json", pin_messages=True,
-        )
+        self._snapshot_reader = JobSnapshotReader(bot)
+        self._console_guild_id = None
+        self._last_sync_error = None
         self._job_submissions: dict[tuple[int | None, int, int], asyncio.Event] = {}
         self._console_sync_ttl = max(float(os.getenv("JOB_CONSOLE_SYNC_TTL", "30")), 0.0)
         self._console_history_limit = max(
@@ -191,7 +195,6 @@ class JobCog(commands.Cog):
         await self.initialize_data()
         if not self.auto_prune.is_running():
             self.auto_prune.start()
-        await self.prune_jobs()
 
     def cog_unload(self):
         """Je ferme les confirmations en cours quand le module est déchargé."""
@@ -212,90 +215,16 @@ class JobCog(commands.Cog):
     async def _ensure_pinned(self, msg: discord.Message) -> None:
         try:
             if not msg.pinned:
-                await msg.pin(reason="Jobs data snapshot")
-        except discord.HTTPException as exc:
-            log.debug(
+                async with asyncio.timeout(5):
+                    await msg.pin(reason="Jobs data snapshot")
+        except (discord.HTTPException, aiohttp.ClientError, OSError, TimeoutError) as exc:
+            log.warning(
                 "Jobs: pin snapshot failed subcommand=job.pin guild_id=%s channel_id=%s message_id=%s action=pin error=%s",
-                getattr(msg.guild, "id", None),
-                getattr(msg.channel, "id", None),
+                getattr(getattr(msg, "guild", None), "id", None),
+                getattr(getattr(msg, "channel", None), "id", None),
                 msg.id,
                 exc,
             )
-
-    async def _parse_jobs_message(self, msg: discord.Message) -> bool:
-        if msg.author != self.bot.user:
-            return False
-        content = msg.content or ""
-        if "===BOTJOBS===" not in content:
-            return False
-        if "fichier" in content and msg.attachments:
-            att = discord.utils.find(lambda a: a.filename == "jobs_data.json", msg.attachments)
-            if att:
-                try:
-                    data_bytes = await att.read()
-                    self.jobs_data = json.loads(data_bytes.decode("utf-8"))
-                    self.console_message_id = msg.id
-                    self._console_last_sync = time.monotonic()
-                    return True
-                except (discord.HTTPException, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                    log.debug("Jobs: failed to parse attachment: %s", exc)
-        if "```json" in content:
-            try:
-                start_idx = content.index("```json\n") + len("```json\n")
-                end_idx = content.rindex("\n```")
-                raw_json = content[start_idx:end_idx]
-                self.jobs_data = json.loads(raw_json)
-                self.console_message_id = msg.id
-                self._console_last_sync = time.monotonic()
-                return True
-            except (ValueError, json.JSONDecodeError) as exc:
-                log.debug("Jobs: failed to parse inline json: %s", exc)
-        return False
-
-    async def _find_last_marker(self, ch: discord.TextChannel, marker: str, filename: str | None = None):
-        if self.console_message_id:
-            msg = await fetch_channel_message(ch, self.console_message_id, reason="job.console")
-            if msg and msg.author == self.bot.user and marker in (msg.content or ""):
-                if filename is None:
-                    return msg
-                if any(att.filename == filename for att in msg.attachments):
-                    return msg
-                return msg
-        try:
-            pinned = await ch.pins()
-        except discord.HTTPException as exc:
-            log.debug(
-                "Jobs: list pins failed subcommand=job.read_console guild_id=%s channel_id=%s action=read_pins error=%s",
-                getattr(ch.guild, "id", None),
-                ch.id,
-                exc,
-            )
-            pinned = []
-        for msg in pinned:
-            if msg.author == self.bot.user and marker in (msg.content or ""):
-                if filename is None:
-                    self.console_message_id = msg.id
-                    return msg
-                if any(att.filename == filename for att in msg.attachments):
-                    self.console_message_id = msg.id
-                    return msg
-                self.console_message_id = msg.id
-                return msg
-        limit = self._console_history_limit or 300
-        if limit <= 0:
-            return None
-        messages = await fetch_channel_history(ch, limit=limit, reason="job.console")
-        for msg in messages:
-            if msg.author == self.bot.user and marker in (msg.content or ""):
-                if filename is None:
-                    self.console_message_id = msg.id
-                    return msg
-                if any(att.filename == filename for att in msg.attachments):
-                    self.console_message_id = msg.id
-                    return msg
-                self.console_message_id = msg.id
-                return msg
-        return None
 
     def _logo_embed(self, embed: discord.Embed) -> discord.Embed:
         if os.path.exists(LOGO_PATH):
@@ -327,52 +256,53 @@ class JobCog(commands.Cog):
         """
         async with self._mutation_lock:
             if not await self._refresh_jobs_locked(guild):
-                raise JobPersistenceError("L'annuaire des métiers ne peut pas être synchronisé avec #console.")
+                raise JobPersistenceError(
+                    self._last_sync_error
+                    or "L'annuaire des métiers ne peut pas être synchronisé avec #console."
+                )
             if not isinstance(self.jobs_data, dict):
                 raise JobPersistenceError("Le format de l'annuaire des métiers est invalide.")
             return copy.deepcopy(self.jobs_data)
 
     async def _load_from_console(self, guild: discord.Guild):
-        async with self._console_sync_lock:
-            now = time.monotonic()
-            if (
-                self.jobs_data
-                and self._console_sync_ttl > 0
-                and (now - self._console_last_sync) < self._console_sync_ttl
-            ):
-                log.debug("Jobs: console sync skipped (cooldown %.1fs).", self._console_sync_ttl)
-                return True
-            ch = await self.get_console_channel(guild)
-            if not ch:
-                return False
-            if self.console_message_id:
-                msg = await fetch_channel_message(ch, self.console_message_id, reason="job.console")
-                if msg and await self._parse_jobs_message(msg):
-                    return True
-                self.console_message_id = None
-            try:
-                pinned = await ch.pins()
-            except discord.HTTPException as exc:
-                log.debug(
-                    "Jobs: list pins failed subcommand=job.read_console guild_id=%s channel_id=%s action=read_pins error=%s",
-                    guild.id,
-                    ch.id,
-                    exc,
-                )
-                pinned = []
-            for msg in pinned:
-                if await self._parse_jobs_message(msg):
-                    await self._ensure_pinned(msg)
-                    return True
-            limit = self._console_history_limit
-            if limit <= 0:
-                return False
-            messages = await fetch_channel_history(ch, limit=limit, reason="job.console")
-            for msg in messages:
-                if await self._parse_jobs_message(msg):
-                    await self._ensure_pinned(msg)
-                    return True
+        """Lecture sous _mutation_lock ; jamais de remplacement par un état incertain."""
+        now = time.monotonic()
+        if (
+            self.console_message_id is not None
+            and self._console_guild_id == getattr(guild, "id", None)
+            and self._console_sync_ttl > 0
+            and (now - self._console_last_sync) < self._console_sync_ttl
+        ):
+            return True
+        try:
+            _, message, payload = await self._read_jobs_snapshot(guild)
+        except (JobPersistenceError, discord.HTTPException, aiohttp.ClientError, OSError, TimeoutError) as exc:
+            self._remote_uncertain = True
+            self._last_sync_error = (
+                str(exc) if isinstance(exc, JobPersistenceError) else
+                "Lecture de #console impossible. Vérifier l'accès et la lecture de l'historique ; "
+                "aucune donnée métiers n'a été remplacée."
+            )
+            log.warning("Jobs: read unavailable guild_id=%s error=%s",
+                        getattr(guild, "id", None), type(exc).__name__)
             return False
+        if payload is None:
+            self._last_sync_error = (
+                "Aucune sauvegarde ===BOTJOBS=== / jobs_data.json du bot retrouvée dans #console. "
+                "Les données locales ne sont pas écrasées ; une restauration Staff est nécessaire."
+            )
+            log.warning("Jobs: snapshot missing guild_id=%s", getattr(guild, "id", None))
+            return False
+        self.jobs_data = payload
+        self.console_message_id = message.id
+        self._console_guild_id = guild.id
+        self._console_last_sync = time.monotonic()
+        self._last_sync_error = None
+        self._remote_uncertain = False
+        await self._ensure_pinned(message)
+        log.info("Jobs: snapshot loaded guild_id=%s message_id=%s records=%s",
+                 guild.id, message.id, len(payload))
+        return True
 
     async def publish_to_console(self, guild: discord.Guild):
         async with self._mutation_lock:
@@ -384,9 +314,12 @@ class JobCog(commands.Cog):
     async def initialize_data(self):
         console_loaded = False
         for guild in self.bot.guilds:
-            if await self.load_from_console(guild):
-                console_loaded = True
-                break
+            try:
+                if await self.load_from_console(guild):
+                    console_loaded = True
+                    break
+            except JobPersistenceError:
+                log.warning("Jobs: initialization deferred guild_id=%s", guild.id)
         if console_loaded:
             log.debug("Jobs: initialize_data source=console status=loaded")
         elif not self.jobs_data:
@@ -394,13 +327,13 @@ class JobCog(commands.Cog):
                 "Jobs: initialize_data source=console status=empty_or_unavailable local_fallback_allowed=%s",
                 JOB_ALLOW_LOCAL_FALLBACK,
             )
-        if not self.jobs_data and os.path.exists(DATA_FILE):
+        if not console_loaded and not self.jobs_data and os.path.exists(DATA_FILE):
             if JOB_ALLOW_LOCAL_FALLBACK:
                 try:
                     with open(DATA_FILE, "r", encoding="utf-8") as file_obj:
-                        self.jobs_data = json.load(file_obj)
+                        self.jobs_data = validate_jobs_payload(json.load(file_obj))
                     log.debug("Jobs: initialize_data source=local_file status=loaded file=%s", DATA_FILE)
-                except (OSError, json.JSONDecodeError) as exc:
+                except (OSError, ValueError) as exc:
                     log.debug(
                         "Jobs: initialize_data source=local_file status=load_failed file=%s error=%s",
                         DATA_FILE,
@@ -412,58 +345,134 @@ class JobCog(commands.Cog):
                     "Jobs: initialize_data source=local_file status=blocked file=%s reason=fallback_disabled",
                     DATA_FILE,
                 )
-        await self.migrate_legacy_keys()
+        # Lire n'attribue pas une ancienne fiche à un compte sur son seul pseudo.
         self.initialized = True
 
     def save_data_local(self):
+        """Remplacer atomiquement la copie locale après confirmation distante."""
+        temporary = None
         try:
-            with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.jobs_data, f, indent=4, ensure_ascii=False)
-        except:
-            pass
+            body = json.dumps(self.jobs_data, indent=4, ensure_ascii=False)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=os.path.dirname(DATA_FILE),
+                prefix=".jobs-", suffix=".json", delete=False,
+            ) as handle:
+                temporary = handle.name
+                handle.write(body)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, DATA_FILE)
+        except (OSError, ValueError, TypeError) as exc:
+            log.warning("Jobs: local backup failed error=%s", type(exc).__name__)
+        finally:
+            if temporary is not None:
+                with suppress(OSError):
+                    os.unlink(temporary)
 
     async def dump_data_to_console(self, guild: discord.Guild):
         return await self.publish_to_console(guild)
 
     async def _read_jobs_snapshot(self, guild):
+        # Un parcours interrompu n'est jamais interprété comme un annuaire absent.
+        try:
+            async with asyncio.timeout(30):
+                return await self._discover_jobs_snapshot(guild)
+        except TimeoutError as exc:
+            raise JobPersistenceError(
+                "La lecture des sauvegardes métiers a dépassé 30 secondes. "
+                "Réessayer après avoir épinglé la sauvegarde dans #console ; aucune écriture autorisée."
+            ) from exc
+
+    async def _discover_jobs_snapshot(self, guild):
         channel = await self.get_console_channel(guild)
         if channel is None:
             raise JobPersistenceError("Salon #console introuvable : aucune modification confirmée.")
+        member = getattr(guild, "me", None)
+        if member is not None:
+            permissions = channel.permissions_for(member)
+            if not permissions.view_channel or not permissions.read_message_history:
+                raise JobPersistenceError(
+                    "Le bot doit pouvoir voir #console et lire son historique. "
+                    "L'absence de permission ne signifie pas que l'annuaire est vide."
+                )
         candidates = {}
-        if self.console_message_id is not None:
-            current = await channel.fetch_message(self.console_message_id)
-            if not self._snapshot_reader._is_snapshot_message(current):
-                raise JobPersistenceError("Le snapshot métiers a été remplacé : relecture Staff requise.")
-            candidates[current.id] = current
-        pins = await channel.pins()
-        recent = await fetch_channel_history(channel, limit=200, reason="jobs.mutation", raise_errors=True)
-        for message in [*pins, *recent]:
+        if self.console_message_id is not None and self._console_guild_id in (None, guild.id):
+            try:
+                current = await channel.fetch_message(self.console_message_id)
+            except discord.NotFound as exc:
+                if exc.code != 10008:  # Seul « Unknown Message » permet la redécouverte.
+                    raise
+            else:
+                if not self._snapshot_reader._is_snapshot_message(current):
+                    raise JobPersistenceError("Le snapshot métiers a été remplacé : relecture Staff requise.")
+                candidates[current.id] = current
+        # discord.py 2.4/2.5 : coroutine ; 2.6+ : itérateur paginé.
+        # Ne pas utiliser la forme await dépréciée, limitée aux 50 premières épingles.
+        if inspect.iscoroutinefunction(channel.pins):
+            pins = await channel.pins()
+        else:
+            pins = [message async for message in channel.pins(limit=None)]
+        for message in pins:
             if self._snapshot_reader._is_snapshot_message(message):
                 candidates[message.id] = message
-        if not candidates:
-            async for message in channel.history(limit=None):
-                if self._snapshot_reader._is_snapshot_message(message):
-                    candidates[message.id] = message
+        limit = self._console_history_limit
+        if limit <= 0:
+            if not candidates:
+                raise JobPersistenceError(
+                    "Historique métiers désactivé et aucune sauvegarde épinglée retrouvée. "
+                    "Définir JOB_CONSOLE_HISTORY_LIMIT > 0 ou épingler la sauvegarde existante."
+                )
+        else:
+            before = None
+            while True:
+                messages = await fetch_channel_history(
+                    channel, limit=min(limit, 1000), before=before,
+                    reason="jobs.snapshot", raise_errors=True,
+                )
+                if not messages:
                     break
+                for message in messages:
+                    if self._snapshot_reader._is_snapshot_message(message):
+                        candidates[message.id] = message
+                oldest = min(message.id for message in messages)
+                if before is not None and oldest >= before.id:
+                    raise JobPersistenceError("La pagination de #console n'avance plus : lecture interrompue.")
+                # Les sources connues/épinglées évitent de rescanner tout le salon
+                # à chaque lecture. Sans aucune source, poursuivre au-delà de
+                # l'ancienne fenêtre de 200/300 messages jusqu'à une sauvegarde.
+                if candidates:
+                    break
+                before = discord.Object(id=oldest)
         if not candidates:
             return channel, None, None
-        message = max(candidates.values(), key=lambda item: (
-            getattr(item, "edited_at", None) or getattr(item, "created_at", None), item.id,
-        ))
-        payload = await self._snapshot_reader.extract_payload(message)
-        if (not isinstance(payload, dict) or any(
-                not isinstance(row, dict) or not isinstance(row.get("jobs", {}), dict)
-                for row in payload.values())):
-            raise JobPersistenceError("Le snapshot métiers est illisible : aucune écriture autorisée.")
+        # Conserver l'ordre de version utilisé par les écritures historiques :
+        # une édition du message canonique est une nouvelle version des données.
+        message = max(candidates.values(), key=self._snapshot_reader.version_key)
+        try:
+            payload = await self._snapshot_reader.extract_payload(message)
+        except InvalidJobSnapshot as exc:
+            raise JobPersistenceError(
+                f"Sauvegarde métiers {message.id} illisible : {exc} Aucune écriture autorisée."
+            ) from exc
+        if payload is None:
+            raise JobPersistenceError("La sauvegarde métiers sélectionnée n'est plus valide.")
         return channel, message, payload
 
     async def _restore_jobs_for_mutation(self, guild):
         try:
             _, message, payload = await self._read_jobs_snapshot(guild)
-            if payload is None and (self.jobs_data or self._remote_uncertain):
-                raise JobPersistenceError("Le snapshot métiers a disparu : restauration Staff requise.")
+            if payload is None and (
+                self.jobs_data or self._remote_uncertain or self.console_message_id is not None
+                or os.path.exists(DATA_FILE)
+            ):
+                raise JobPersistenceError(
+                    "Le snapshot métiers a disparu ou une copie locale existe : restauration Staff requise."
+                )
             self.jobs_data = payload or {}
             self.console_message_id = message.id if message else None
+            self._console_guild_id = guild.id
+            self._console_last_sync = time.monotonic()
+            self._last_sync_error = None
             self._remote_uncertain = False
             self.initialized = True
         except BaseException as exc:
@@ -471,13 +480,21 @@ class JobCog(commands.Cog):
             if isinstance(exc, asyncio.CancelledError):
                 raise
             log.debug("Jobs: restore uncertain guild_id=%s error=%s", guild.id, type(exc).__name__)
-            raise JobPersistenceError("Lecture du registre métiers impossible : aucune modification autorisée.") from None
+            if isinstance(exc, JobPersistenceError):
+                raise
+            raise JobPersistenceError(
+                "Lecture du registre métiers impossible : vérifier les permissions et l'accès à #console. "
+                "Aucune modification autorisée."
+            ) from exc
 
     async def _persist_jobs_candidate(self, guild, candidate):
+        validate_jobs_payload(candidate)
         channel, existing, current = await self._read_jobs_snapshot(guild)
         if current is not None and current != self.jobs_data:
             raise JobPersistenceError("Les métiers ont changé dans #console : relecture nécessaire.")
-        if current is None and self.jobs_data:
+        if current is None and (
+            self.jobs_data or self.console_message_id is not None or os.path.exists(DATA_FILE)
+        ):
             raise JobPersistenceError("Le snapshot métiers a disparu : aucune écriture confirmée.")
         body = json.dumps(candidate, ensure_ascii=False, indent=2).replace("`", "\\u0060")
         header = f"===BOTJOBS=== etag:{_md5(_canon_json(candidate))}"
@@ -485,10 +502,10 @@ class JobCog(commands.Cog):
         file = None
         if len(content.encode("utf-16-le")) // 2 > 1950:
             raw = body.encode("utf-8")
-            if len(raw) > getattr(guild, "filesize_limit", 8 * 1024 * 1024):
+            if len(raw) > min(getattr(guild, "filesize_limit", MAX_SNAPSHOT_BYTES), MAX_SNAPSHOT_BYTES):
                 raise JobPersistenceError("Le snapshot métiers dépasse la limite Discord.")
             file = discord.File(io.BytesIO(raw), filename="jobs_data.json")
-            content = header
+            content = f"{header} (fichier)"
         try:
             if existing is not None:
                 await existing.edit(content=content, attachments=[file] if file else [],
@@ -498,8 +515,7 @@ class JobCog(commands.Cog):
                 message = await channel.send(content, allowed_mentions=discord.AllowedMentions.none(),
                                              **({"file": file} if file else {}))
             self.console_message_id = message.id
-            if not message.pinned:
-                await message.pin(reason="Source de vérité des métiers")
+            await self._ensure_pinned(message)
             confirmed = await channel.fetch_message(message.id)
             if await self._snapshot_reader.extract_payload(confirmed) != candidate:
                 raise JobPersistenceError("La sauvegarde métiers n'a pas été confirmée dans #console.")
@@ -524,6 +540,9 @@ class JobCog(commands.Cog):
         self.jobs_data = candidate
         self._remote_uncertain = False
         self._console_last_sync = time.monotonic()
+        self._console_guild_id = guild.id
+        self._last_sync_error = None
+        self.initialized = True
         self.save_data_local()
 
     async def update_member_job(self, guild, member_id, display_name, job_name, level, *,
@@ -732,20 +751,32 @@ class JobCog(commands.Cog):
         await self.send_logo_embed(ctx, e)
 
     async def compute_member_union_ids(self):
+        """Une liste partielle de membres n'autorise jamais la suppression de fiches."""
+        if not self.bot.guilds:
+            raise JobPersistenceError("Aucun serveur chargé : nettoyage métiers annulé.")
         union_ids = set()
-        for g in self.bot.guilds:
-            for m in g.members:
-                union_ids.add(m.id)
+        for guild in self.bot.guilds:
+            fetched = set()
             try:
-                async for m in g.fetch_members(limit=None):
-                    union_ids.add(m.id)
-            except (discord.HTTPException, discord.Forbidden) as exc:
-                log.debug(
-                    "Jobs: member fetch failed subcommand=job.prune guild_id=%s channel_id=%s action=fetch_members error=%s",
-                    g.id,
-                    None,
-                    exc,
+                async with asyncio.timeout(30):
+                    async for member in guild.fetch_members(limit=None):
+                        fetched.add(member.id)
+            except (discord.HTTPException, aiohttp.ClientError, OSError, TimeoutError,
+                    discord.ClientException) as exc:
+                log.warning("Jobs: prune cancelled incomplete_members guild_id=%s error=%s",
+                            guild.id, type(exc).__name__)
+                raise JobPersistenceError(
+                    "Liste des membres incomplète : aucun métier supprimé. "
+                    "Vérifier les permissions et l'intent membres avant de relancer le nettoyage."
+                ) from exc
+            expected = getattr(guild, "member_count", None)
+            if type(expected) is not int or expected < 1 or len(fetched) < expected:
+                raise JobPersistenceError(
+                    "Le nombre de membres reçus est incomplet : nettoyage métiers annulé."
                 )
+            union_ids.update(fetched)
+            # Un membre arrivé pendant la pagination doit rester protégé.
+            union_ids.update(member.id for member in guild.members)
         return union_ids
 
     async def prune_jobs(self):
@@ -760,13 +791,13 @@ class JobCog(commands.Cog):
         async with self._mutation_lock:
             await self._restore_jobs_for_mutation(guild)
             candidate = copy.deepcopy(self.jobs_data)
+            union_ids.update(member.id for member in self.bot.get_all_members())
             for key, row in list(candidate.items()):
-                present = int(key) in union_ids if key.isdigit() else any(
-                    m.display_name.lower() == key.lower() or m.name.lower() == key.lower()
-                    for m in self.bot.get_all_members()
-                )
-                if not present:
-                    del candidate[key]
+                # Une ancienne fiche indexée par pseudo n'est pas une preuve
+                # d'identité ni de départ ; elle reste disponible pour le Staff.
+                if key.isascii() and key.isdecimal() and len(key) <= 20 and 0 < int(key) < 2**64:
+                    if int(key) not in union_ids:
+                        del candidate[key]
             removed = len(self.jobs_data) - len(candidate)
             if removed:
                 await self._commit_jobs_candidate(guild, candidate)
@@ -774,21 +805,31 @@ class JobCog(commands.Cog):
 
     @tasks.loop(hours=6)
     async def auto_prune(self):
-        await self.prune_jobs()
+        try:
+            await self.prune_jobs()
+        except JobPersistenceError as exc:
+            # Une panne temporaire ne doit ni supprimer des fiches ni arrêter la boucle.
+            log.warning("Jobs: automatic prune skipped reason=%s", exc)
+
+    @auto_prune.before_loop
+    async def before_auto_prune(self):
+        # cog_load est appelé depuis setup_hook, avant la connexion Discord.
+        await self.bot.wait_until_ready()
+        await self.initialize_data()
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
+        if len(self.bot.guilds) > 1:
+            # Le registre historique est commun : laisser le recensement complet
+            # vérifier qu'un membre n'est plus présent sur aucun serveur.
+            return
         async with self._mutation_lock:
             await self._restore_jobs_for_mutation(member.guild)
             candidate = copy.deepcopy(self.jobs_data)
             user_id = str(member.id)
             if user_id in candidate:
                 del candidate[user_id]
-            else:
-                for key, row in list(candidate.items()):
-                    if not key.isdigit() and row.get("name", "").lower() == member.display_name.lower():
-                        del candidate[key]
-                        break
+            # Ne jamais supprimer une fiche ancienne sur une simple homonymie.
             if candidate != self.jobs_data:
                 await self._commit_jobs_candidate(member.guild, candidate)
 
@@ -830,9 +871,22 @@ class JobCog(commands.Cog):
                 self._job_submissions.pop(key)
 
     async def _execute_job_command(self, ctx, *args, superseded: asyncio.Event | None = None):
+        try:
+            await self._execute_job_command_checked(ctx, *args, superseded=superseded)
+        except JobPersistenceError as exc:
+            if superseded is None or not superseded.is_set():
+                await self.send_logo_embed(ctx, discord.Embed(
+                    title="Annuaire indisponible", description=str(exc), color=discord.Color.orange(),
+                ))
+
+    async def _execute_job_command_checked(self, ctx, *args, superseded: asyncio.Event | None = None):
         if not self.initialized:
             await self.initialize_data()
-        await self.load_from_console(ctx.guild)
+        if args:
+            loaded = await self.load_from_console(ctx.guild)
+            adding = self._is_job_level_submission(args) or args[0].lower() == "add"
+            if not loaded and (not adding or self._remote_uncertain):
+                raise JobPersistenceError(self._last_sync_error or "L'annuaire métiers est indisponible.")
         if superseded is not None and superseded.is_set():
             return
 
@@ -871,7 +925,6 @@ class JobCog(commands.Cog):
             return
 
         if len(args) == 1 and args[0].lower() == "me":
-            await self.load_from_console(ctx.guild)
             user_jobs = self.get_user_jobs(author_id, author_name)
             if not user_jobs:
                 e = discord.Embed(title="Vos métiers", description=f"{author_name}, vous n'avez aucun métier enregistré.", color=discord.Color.orange())
@@ -884,7 +937,6 @@ class JobCog(commands.Cog):
             return
 
         if len(args) == 2 and args[0].lower() == "liste" and args[1].lower() == "metier":
-            await self.load_from_console(ctx.guild)
             known = list(CANONICAL_JOBS_ORDERED)
             extra = set()
             for uid, data in self.jobs_data.items():
@@ -919,7 +971,6 @@ class JobCog(commands.Cog):
             return
 
         if len(args) == 1 and args[0].lower() == "liste":
-            await self.load_from_console(ctx.guild)
             jobs_map = defaultdict(list)
             for uid, data in self.jobs_data.items():
                 disp_name = data.get("name", f"ID {uid}")
@@ -942,7 +993,6 @@ class JobCog(commands.Cog):
             return
 
         if len(args) >= 3 and args[0].lower() == "add":
-            await self.load_from_console(ctx.guild)
             if superseded is not None and superseded.is_set():
                 return
             *job_name_tokens, level_str = args[1:]
@@ -976,7 +1026,6 @@ class JobCog(commands.Cog):
             return
 
         if len(args) >= 2 and args[0].lower() == "del":
-            await self.load_from_console(ctx.guild)
             job_input = " ".join(args[1:])
             canonical = self.resolve_job_name(job_input)
             if canonical is None:
@@ -994,7 +1043,6 @@ class JobCog(commands.Cog):
             return
 
         if len(args) >= 2 and args[0].lower() not in ["liste", "me", "add", "del"]:
-            await self.load_from_console(ctx.guild)
             if superseded is not None and superseded.is_set():
                 return
             *job_name_tokens, level_str = args
@@ -1165,7 +1213,11 @@ class JobCog(commands.Cog):
 
         async for msg in channel.history(limit=None, oldest_first=True):
             content = getattr(msg, "content", "") or ""
-            if getattr(msg, "pinned", False) or any(marker in content for marker in CONSOLE_PRESERVE_MARKERS):
+            if (
+                getattr(msg, "pinned", False)
+                or any(marker in content for marker in CONSOLE_PRESERVE_MARKERS)
+                or self._snapshot_reader._is_snapshot_message(msg)
+            ):
                 preserved_count += 1
                 continue
 

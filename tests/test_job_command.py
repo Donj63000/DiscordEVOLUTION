@@ -576,7 +576,7 @@ async def test_initialize_data_blocks_local_fallback_when_disabled(monkeypatch, 
     await cog.initialize_data()
 
     assert cog.jobs_data == {}
-    cog.migrate_legacy_keys.assert_awaited_once_with()
+    cog.migrate_legacy_keys.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -599,4 +599,4 @@ async def test_initialize_data_uses_local_fallback_when_enabled(monkeypatch, tmp
 
     assert cog.jobs_data["123"]["name"] == "Local"
     assert cog.jobs_data["123"]["jobs"]["Mineur"] == 20
-    cog.migrate_legacy_keys.assert_awaited_once_with()
+    cog.migrate_legacy_keys.assert_not_awaited()
