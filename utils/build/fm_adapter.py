@@ -1,4 +1,4 @@
-"""Copie des jets de /exo ; aucun changement de session, puits ou probabilité."""
+"""Conversion pure des jets entre le builder et l'atelier natif /exo."""
 from .models import Instance, EffectValue, StatValue, BuildError, revised
 
 
@@ -16,7 +16,7 @@ def from_exo(instance, template, session):
 
 
 def to_exo_values(instance, template):
-    """Export de valeurs pour recopie ; ce fichier n’est pas une session native /exo."""
+    """Je prépare les jets ; l'ouverture native exige ensuite un puits et une confirmation."""
     if len({e.stat for e in template.effects if e.kind == "stat"}) != sum(e.kind == "stat" for e in template.effects):
         raise BuildError("Effets multiples non représentables dans une session FM simple.")
     finals = {e.ref: e.value for e in instance.final_values}

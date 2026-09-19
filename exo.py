@@ -1049,6 +1049,59 @@ class ExoCog(commands.Cog):
         finally:
             self.open_locks.pop(key, None)
 
+    async def open_build_session(self, interaction, reference, jets, sink, *, guild_id=None):
+        """J'ouvre les jets confirmés du builder sans détruire un atelier en cas d'échec."""
+        key = (guild_id or interaction.guild_id, interaction.user.id)
+        if self.closed or key in self.open_locks:
+            raise ValueError("Une ouverture est en cours ou le module se recharge.")
+        if key not in self.views and len(self.views) + len(self.open_locks) >= MAX_SESSIONS:
+            raise ValueError("Tous les ateliers sont occupés.")
+        declared_sink = decimal_value(str(sink), "1000000")
+        self.open_locks[key] = asyncio.Lock()
+        new_view = None
+        committed = False
+        try:
+            entries = await self.entries()
+            found = [entry for entry in entries if entry.token == reference]
+            if len(found) != 1:
+                raise ValueError("Objet mageable introuvable ou ambigu dans le catalogue /exo.")
+            item, image = await self.load_item(found[0])
+            validate_item_jets(item, jets)
+            session = Session.create(item)
+            session.sim = State(dict(jets), declared_sink)
+            session.observed = State(dict(jets), None)
+            session.notice = "Jets copiés du builder. Puits déclaré séparément ; aucune déduction des jets."
+            if self.closed:
+                raise ValueError("Module rechargé pendant l'ouverture.")
+            new_view = ExoView(self, interaction.user.id, key[0], session, image)
+            self.history_budget.reserve(id(new_view), history_size(session))
+            new_view.rebuild()
+            await new_view.publish(interaction, initial=True)
+            if self.closed:
+                raise ValueError("Module rechargé pendant l'ouverture.")
+            old_view = self.views.get(key)
+            self.views[key] = new_view
+            new_view.hard_timeout = asyncio.create_task(new_view.hard_expire())
+            committed = True
+            if old_view:
+                try:
+                    await old_view.on_timeout("Atelier remplacé depuis Build · sauvegarde de session")
+                except asyncio.CancelledError:
+                    old_view.stop()
+                    raise
+                except Exception:
+                    old_view.stop()
+                    log.debug("exo: build_previous_archive_failed owner=%s", key[1], exc_info=True)
+            log.debug("exo: build_session_opened owner=%s item=%s", key[1], reference)
+            return new_view
+        except BaseException:
+            if new_view is not None and not committed:
+                new_view.stop()
+            log.debug("exo: build_session_interrupted owner=%s item=%s committed=%s", key[1], reference, committed)
+            raise
+        finally:
+            self.open_locks.pop(key, None)
+
     @exo.autocomplete("objet")
     async def exo_autocomplete(self, interaction: discord.Interaction, current: str):
         return await self.autocomplete(interaction, current)

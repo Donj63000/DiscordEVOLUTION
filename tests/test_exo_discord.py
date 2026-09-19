@@ -913,3 +913,110 @@ async def test_full_history_budget_is_released_when_panel_stops(panel):
     )
     panel.stop()
     assert id(panel) not in panel.cog.history_budget.allocations
+
+
+def configure_build_transfer(panel):
+    entry = WikiEntry("item", "321", "Anneau test", "Anneau", 50, "/items/test", "anneau test")
+    item = Item("Anneau test", "item:321", {"fo": (1, 50)}, "fixture")
+    panel.cog.entries = AsyncMock(return_value=(entry,))
+    panel.cog.load_item = AsyncMock(return_value=(item, None))
+    return item
+
+
+@pytest.mark.asyncio
+async def test_build_transfer_opens_native_session_with_independent_sink_and_jets(panel):
+    item = configure_build_transfer(panel)
+    jets = {"fo": 42, "pm": 1}
+    opened = await panel.cog.open_build_session(interaction(), "item:321", jets, D("7.5"))
+    assert opened is panel.cog.views[(100, 42)]
+    assert opened.session.item == item
+    assert opened.session.sim.jets == jets
+    assert opened.session.sim.sink == D("7.5")
+    assert opened.session.observed.jets == jets
+    assert opened.session.observed.sink is None
+    jets["fo"] = 10
+    assert opened.session.sim.jets["fo"] == 42
+    assert panel.retired
+    assert id(panel) not in panel.cog.history_budget.allocations
+    assert id(opened) in panel.cog.history_budget.allocations
+    assert not panel.cog.open_locks
+    limits(opened)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["entries", "load_item", "publish"])
+async def test_build_transfer_failure_keeps_previous_session_and_history_budget(panel, stage):
+    configure_build_transfer(panel)
+    event = interaction()
+    original = copy.deepcopy(panel.session)
+    panel.cog.history_budget.reserve(id(panel), 23)
+    budget = dict(panel.cog.history_budget.allocations)
+    if stage == "publish":
+        event.edit_original_response.side_effect = RuntimeError("publication failed")
+    else:
+        getattr(panel.cog, stage).side_effect = RuntimeError("loading failed")
+    with pytest.raises(RuntimeError):
+        await panel.cog.open_build_session(event, "item:321", {"fo": 42}, D(0))
+    assert panel.cog.views[(100, 42)] is panel
+    assert panel.session == original
+    assert not panel.retired
+    assert panel.cog.history_budget.allocations == budget
+    assert not panel.cog.open_locks
+
+
+@pytest.mark.asyncio
+async def test_build_transfer_rejects_invalid_sink_before_touching_previous_session(panel):
+    configure_build_transfer(panel)
+    with pytest.raises(ValueError):
+        await panel.cog.open_build_session(interaction(), "item:321", {"fo": 42}, D(-1))
+    panel.cog.entries.assert_not_awaited()
+    assert panel.cog.views[(100, 42)] is panel
+    assert not panel.retired
+    assert not panel.cog.open_locks
+
+
+@pytest.mark.asyncio
+async def test_build_transfer_rejects_invalid_jets_before_publishing(panel):
+    configure_build_transfer(panel)
+    event = interaction()
+    with pytest.raises(ValueError):
+        await panel.cog.open_build_session(event, "item:321", {"fo": 10000, "pm": 10}, D(0))
+    event.edit_original_response.assert_not_awaited()
+    assert panel.cog.views[(100, 42)] is panel
+    assert not panel.retired
+    assert not panel.cog.open_locks
+
+
+@pytest.mark.asyncio
+async def test_build_transfer_cancelled_loading_keeps_previous_session(panel):
+    configure_build_transfer(panel)
+    panel.cog.load_item.side_effect = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await panel.cog.open_build_session(interaction(), "item:321", {"fo": 42}, D(0))
+    assert panel.cog.views[(100, 42)] is panel
+    assert not panel.retired
+    assert not panel.cog.open_locks
+
+
+@pytest.mark.asyncio
+async def test_build_transfer_confirmed_new_session_survives_previous_archive_failure(panel):
+    configure_build_transfer(panel)
+    panel.message = SimpleNamespace(edit=AsyncMock(side_effect=RuntimeError("archive failed")))
+    opened = await panel.cog.open_build_session(interaction(), "item:321", {"fo": 42}, D(0))
+    assert panel.cog.views[(100, 42)] is opened
+    assert not opened.retired
+    assert panel.retired
+    assert id(opened) in panel.cog.history_budget.allocations
+
+
+@pytest.mark.asyncio
+async def test_build_transfer_cancelled_previous_archive_keeps_confirmed_new_session(panel):
+    configure_build_transfer(panel)
+    panel.on_timeout = AsyncMock(side_effect=asyncio.CancelledError())
+    with pytest.raises(asyncio.CancelledError):
+        await panel.cog.open_build_session(interaction(), "item:321", {"fo": 42}, D(0))
+    opened = panel.cog.views[(100, 42)]
+    assert opened is not panel and not opened.retired
+    assert panel.retired
+    assert id(opened) in panel.cog.history_budget.allocations
+    assert not panel.cog.open_locks
