@@ -1,6 +1,6 @@
 # Evolution Build — installation et exploitation
 
-Version livrée : `1.0.0-beta.1`. Module développé contre `DiscordEVOLUTION-main (14)(1).zip`.
+Version livrée : `1.1.0-beta.2`. Mise à jour incrémentale développée contre `DiscordEVOLUTION-main (15).zip`, qui contient déjà la bêta 1.
 
 ## Portée et statut
 
@@ -12,10 +12,10 @@ Cette livraison contient du code exécutable et des tests, pas un plan ni des fi
 |---|---|---|
 | Builder manuel | 16 emplacements, profil, objets, jets, remplacement, retrait, aperçu et confirmation | Les champs non couverts donnent des sommes partielles. |
 | Calculs | Registre des contributions, dérivées couvertes, conditions bornées, panoplies par seuil total | Aucun relevé de référence en jeu fourni. |
-| Panoplies | Moteur, validation et format de tables complets | **Aucune table réelle de bonus n'est embarquée dans les overrides vides.** Un nom de panoplie ne fournit pas ses bonus. |
+| Panoplies | Moteur, validation et format de tables complets | **14 tables publiées (67 seuils) embarquées**, plus enrichissement HTML public borné. Les panoplies non reconnues restent inconnues ; aucun bonus déduit d’un nom seul. |
 | Personnage | 12 classes, 72 règles de paliers transcrites dans le fichier de règles | Bases, interaction parchottage/paliers et restrictions restent non certifiées ; PV de base inconnus. |
 | Sauvegarde | PostgreSQL, révisions, transactions, quotas, reçus idempotents | Base durable à configurer ; intégration PostgreSQL à exécuter dans la CI. |
-| Partage | Révision figée, code de 7 jours, périmètre serveur, copie, révocation | Pas de boutons publics persistants : les codes fonctionnent avec `/build ouvrir` et `/build copier`. |
+| Partage | Révision figée, code de 7 jours, périmètre serveur, copie, révocation | Les nouvelles publications possèdent Voir/Copier via DynamicItem, réenregistrés au démarrage. Les anciens messages gardent leurs codes. |
 | FM | Jets déclarés, exos, copie depuis sa propre session `/exo`, export des valeurs | `vers-exo` exporte des valeurs pour recopie, **pas** une session native à importer automatiquement. |
 | Recettes | Agrégation des recettes actuelles du wiki | Pas de décomposition récursive ni de prix HDV. |
 | Optimiseur | Recherche multi-combinaisons, PA/PM/PO, slots verrouillés, diversité, processus séparé | Les résultats dépendant de données inconnues sont des pistes non certifiées. Aucun optimum global promis. |
@@ -25,14 +25,47 @@ Cette livraison contient du code exécutable et des tests, pas un plan ni des fi
 
 Les anciens `proposer_stuff` et `analyser_stuff` restent disponibles comme outils historiques **explicitement limités aux jets**, sans être présentés comme un second moteur de personnage complet. Les nouveaux `build_*` utilisent le nouveau service.
 
+
+## Nouveautés et limites de la mise à jour (15)
+
+Le manuel s’ouvre depuis `/build mes` : menu de builds, création en trois champs, profil guidé, navigation des emplacements, recherche facultative par nom, tri par caractéristique, niveau minimum, pagination des résultats et éditeur de jets numérique. Les doubles fenêtres restent protégées par les contrôles de révision. `/build comparer` renvoie maintenant une fiche et un TXT lisibles, en plus du JSON avancé.
+
+La fiche montre les seize emplacements (plus de coupure silencieuse des derniers Dofus). Détails permet de parcourir statistiques, résistances, panoplies et réserves ; le TXT indique les valeurs de jets réellement utilisées et les exos. Les images restent produites à partir du même rapport.
+
+Après une erreur initiale de base, `/build actualiser` permet au staff de réessayer sans blocage préalable « non initialisé ». Une initialisation réussie n’ouvre pas une nouvelle pool à chaque actualisation. Une panne de catalogue ne supprime pas la copie archivée.
+
+### Complément de panoplies
+
+`BUILD_SET_ENRICHMENT=true` (défaut) active un chargement public Xixou indépendant de la clé API équipements : index de chemins autorisés, HTTPS, pas de redirection, pas d’URL fournie par un joueur, 2 Mio maximum par page, 20 pages / 25 secondes maximum par actualisation, temporisation entre pages et attente de dix minutes après un échec individuel. L’index est mis en cache pendant 24 heures. Une page tronquée, une identité ambiguë, un effet non compris ou un seuil manquant est refusé intégralement. Les tables déjà importées et les 14 tables locales restent utilisables.
+
+Le chargement est progressif, pas un téléchargement systématique de toutes les panoplies au démarrage. `/build actualiser` poursuit les manquantes (commande limitée en fréquence) ; `/build diagnostic` les compte. Les tables déjà archivées ne sont pas rafraîchies aveuglément : une évolution publiée doit être vérifiée et introduite dans une correction sourcée. Désactiver `BUILD_SET_ENRICHMENT` supprime les accès HTML supplémentaires, pas les accès API équipements existants.
+
+Les sources locales sont fusionnées en priorité avec les tables archivées. **Les builds existants sont figés** : `/build migrer` propose l’intégration des nouvelles données après confirmation. Remplir le catalogue ne réécrit pas silencieusement leurs anciens jets.
+
+### Tests opérateur, sans secrets
+
+```bash
+python tools/build_preflight.py
+# Réseau OPTIONNEL : comparer les 14 tables à leurs pages publiques actuelles.
+python tools/build_preflight.py --public-panoplies
+```
+
+Le premier contrôle est local et ne touche pas aux données du bot. Il liste les versions des bibliothèques, les sources, les seuils et l’état non certifié des règles. Il sort avec le code 1 si une dépendance requise manque. Le second exécute un contrôle HTML en lecture seule ; une divergence ou un changement de structure est affiché, jamais appliqué automatiquement. **Il ne remplace pas un relevé en jeu.**
+
+Le JSON d’export conserve son schéma 1. Les métadonnées de source et l’importeur ont une nouvelle empreinte ; les anciens snapshots restent lisibles. Les commandes existantes restent au nombre de 25, sans ajouter un deuxième groupe concurrent.
+
+### Éléments qui restent hors validation complète
+
+Pas de catalogue de sorts ni de simulation complète certifiée des combats ; `/build degats` reste expérimental. Les bases, paliers/interaction parchottage, dérivées et restrictions conservent leurs indicateurs non certifiés tant qu’il n’existe pas de cas étalons en jeu. Les tests synthétiques ne doivent jamais servir à passer ces indicateurs à vrai. Pas de prix HDV inventés ni d’exos générés automatiquement. La connexion Discord réelle, PostgreSQL réel et l’API équipements authentifiée demandent une recette dans l’environnement du projet.
+
 ## Appliquer le patch
 
-Depuis la racine du dépôt, sauvegarder/committer d'abord les modifications locales. Le patch n'est pas conçu pour être forcé sur une version différente.
+Depuis la racine du dépôt, sauvegarder/committer les modifications locales. Ce nouveau patch est incrémental sur l’archive (15) : **ne pas réappliquer le patch initial**. Ne pas le forcer sur une version différente.
 
 ```bash
 git switch -c feature/evolution-build
-git apply --check EVOLUTION_BUILD_INTEGRATION.patch
-git apply EVOLUTION_BUILD_INTEGRATION.patch
+git apply --check EVOLUTION_BUILD_V15_ROBUSTESSE.patch
+git apply EVOLUTION_BUILD_V15_ROBUSTESSE.patch
 python -m pip install -r requirements.txt
 python -m compileall -q build.py utils/build tests_build
 python -m pytest tests_build -q
@@ -80,7 +113,7 @@ BUILD_OPTIMIZER_ENABLED=false
 
 `BUILD_DATABASE_URL` est indépendant de `DATABASE_URL` : le module ne modifie pas les événements, métiers, activités ou le registre budgétaire de Luna.
 
-La migration initiale est additive, dans `migrations/build/001_initial.sql`. Elle crée uniquement les tables préfixées `evolution_build`. Faire une sauvegarde avant toute migration. Deux méthodes possibles :
+La migration initiale est additive, dans `migrations/build/001_initial.sql`. Elle crée uniquement les tables préfixées `evolution_build`. Faire une sauvegarde avant toute migration. La mise à jour bêta 2 n’ajoute PAS de nouvelle migration : l’historique lit les tables existantes du schéma 1. Deux méthodes possibles :
 
 ```bash
 # Sur une base dédiée, avec les outils PostgreSQL installés :
@@ -91,7 +124,7 @@ Ou activer `BUILD_AUTO_MIGRATE=true` pour **un premier démarrage contrôlé**, 
 
 Si la base est inaccessible, une mutation échoue explicitement. Aucune annonce « sauvegardé » et aucun remplacement silencieux par une sauvegarde RAM. Les transactions utilisent le contrôle de révision et un verrou par serveur/propriétaire, y compris entre deux connexions/processus.
 
-Historique : les 20 dernières révisions par build sont conservées. Reçus d'opérations SQL : 30 jours, nettoyés au fil des nouvelles écritures. La mémoire de démonstration borne ses reçus à 10 000 opérations. Le module n'implémente pas de bouton de restauration d'historique ; les données sont conservées pour l'exploitation.
+Historique : les 20 dernières révisions par build sont conservées. Reçus d'opérations SQL : 30 jours, nettoyés au fil des nouvelles écritures. La mémoire de démonstration borne ses reçus à 10 000 opérations. Le bouton **Historique / restaurer** propose une ancienne version, puis sa restauration après confirmation dans une NOUVELLE révision (contrôle de concurrence).
 
 Les instantanés de catalogue/règles restent archivés. Aucun nettoyage automatique destructeur de ces instantanés n'est appliqué ; surveiller la taille de la base avant un éventuel archivage décidé par l'exploitant.
 
@@ -123,11 +156,11 @@ Le mode « Stats nues déclarées » contient les statistiques hors équipement 
 
 Les clés disponibles sont dans `utils/build/models.py::STAT_LABELS`. Les abréviations principales sont `vi`, `sa`, `fo`, `ine`, `cha`, `age`, `pa`, `pm`, `po`, `pv`, `pp`, `do`, `pui`, `so`, `cc`. Les résistances fixes sont `r_ne`, `r_te`, `r_fe`, `r_ea`, `r_ai` ; les pourcentages utilisent `rp_...`.
 
-`/build profil` ouvre le formulaire. Les paramètres optionnels `alignement` et `grade` préparent plutôt la modification de ces valeurs, après confirmation. Ils ne changent rien dans le jeu.
+`/build profil` ouvre le panel guidé : choisir une caractéristique, puis saisir deux nombres (capital dépensé et parchottage). « Saisie groupée / stats nues » accepte `Chance: 300`, une ligne par caractéristique, et conserve la compatibilité avec l’ancien JSON. Les paramètres optionnels `alignement` et `grade` préparent plutôt la modification de ces valeurs, après confirmation. Ils ne changent rien dans le jeu.
 
 ### Jets et FM
 
-Le bouton Détails fournit les références exactes des effets : `e0`, `e1`, etc. Ces références sont liées à la révision de l'objet.
+**Équipement → emplacement → Modifier les jets** propose des champs numériques par pages de cinq effets, un sélecteur de mode, un formulaire d’exo et une prévisualisation avant confirmation. Aucun JSON obligatoire. Deux formulaires de jets concurrents ne s’écrasent pas : un brouillon périmé est refusé. Le rapport TXT fournit aussi les références exactes des effets pour le mode expert `/build jets` : `e0`, `e1`, etc. Ces références sont liées à la révision de l'objet.
 
 ```text
 /build jets ... mode:« Naturels personnalisés » valeurs_json:[{"ref":"e0","value":25}]
@@ -180,7 +213,7 @@ Les outils Luna livrent les listes, fiches, comparaisons et propositions privée
 
 `utils/build/catalog.py` accepte l'enveloppe équipements Xixou et exige un rapprochement ID/nom/niveau/catégorie certain avec le wiki. Les identités contradictoires sont exclues. Il n'invente pas un endpoint panoplies ou sorts. Un catalogue vide/invalide ne remplace pas un instantané sain.
 
-`data/build/catalog_overrides_v1.json` est volontairement vide : pas de données de jeu inventées. Ajouter des tables **réellement vérifiées et sourcées**, suivant les modèles `ItemTemplate`, `SetDefinition`, `SetTier`, `Effect`. Une correction d'objet exige `source`, conservée dans `correction_sources`.
+`data/build/catalog_overrides_v1.json` contient 14 tables transcrites depuis les pages publiques Xixou ; le registre et les sources figurent dans `docs/EVOLUTION_BUILD_SOURCES.md`. Cela valide la transcription publiée, PAS les règles dans le jeu. Les corrections d’objets restent vides. Ajouter des tables sourcées selon `ItemTemplate`, `SetDefinition`, `SetTier`, `Effect` ; une correction d’objet exige `source`, conservée dans `correction_sources`.
 
 Forme illustrative **synthétique, ne pas recopier comme bonus réel** :
 
@@ -244,8 +277,8 @@ Pour arrêter le module sans perdre ses données : `BUILD_ENABLED=false`, redém
 Pour retirer le code, sur une branche sans modifications ultérieures incompatibles :
 
 ```bash
-git apply --reverse --check EVOLUTION_BUILD_INTEGRATION.patch
-git apply --reverse EVOLUTION_BUILD_INTEGRATION.patch
+git apply --reverse --check EVOLUTION_BUILD_V15_ROBUSTESSE.patch
+git apply --reverse EVOLUTION_BUILD_V15_ROBUSTESSE.patch
 ```
 
 ## Sources techniques et règles

@@ -97,6 +97,24 @@ class PostgresRepository:
             rows = await con.fetch("SELECT payload FROM evolution_builds WHERE guild_id=$1 AND owner_id=$2 ORDER BY updated_at DESC LIMIT 100", actor.guild_id, actor.user_id)
             return tuple(Build.model_validate(unpack(r["payload"])) for r in rows)
 
+    async def revisions(self, actor, build_id):
+        try:
+            uid = UUID(build_id)
+        except (ValueError, TypeError, AttributeError):
+            raise NotFound() from None
+        async with self.connection() as con:
+            # Une seule requête avec contrôle de propriété : pas de fenêtre de
+            # lecture d'historique non autorisée entre deux requêtes.
+            rows = await con.fetch("""
+                SELECT h.payload FROM evolution_build_history h
+                JOIN evolution_builds b ON b.id=h.build_id
+                WHERE b.id=$1 AND b.guild_id=$2 AND b.owner_id=$3
+                ORDER BY h.revision DESC LIMIT 20
+            """, uid, actor.guild_id, actor.user_id)
+            if not rows:
+                raise NotFound()
+            return tuple(Build.model_validate(unpack(row["payload"])) for row in rows)
+
     async def _replay(self, con, actor, operation, request_hash):
         op_key(actor, operation, request_hash)
         row = await con.fetchrow("SELECT request_hash,result FROM evolution_build_operations WHERE guild_id=$1 AND actor_id=$2 AND operation_id=$3", actor.guild_id, actor.user_id, operation)

@@ -10,6 +10,7 @@ from .catalog import search
 from .import_export import parse_json, export_build
 from .renderer import text_report
 from .embeds import card, safe
+from .editor import parse_stats, format_stats, integer, stat_name, SLOT_LABELS
 
 
 class OwnerView(discord.ui.View):
@@ -110,15 +111,30 @@ class BuildView(OwnerView):
 
     @discord.ui.button(label="Personnage", row=0)
     async def profile(self, interaction, button):
-        # send_modal est la réponse initiale : pas de defer avant.
-        await interaction.response.send_modal(ProfileModal(self.cog, self.actor, self.build))
+        from .panels import ProfileEditorView
+        await interaction.response.defer(ephemeral=True)
+        build, _, _ = await self.cog.service.inspect(self.actor, self.build.id)
+        view = ProfileEditorView(self.cog, self.actor, build)
+        await self.cog.send_view(interaction, content=view.content(), view=view, ephemeral=True)
 
-    @discord.ui.button(label="Détails", row=0)
+    @discord.ui.button(label="Détails / panoplies", row=0)
     async def details(self, interaction, button):
+        from .panels import DetailsView
         await interaction.response.defer(ephemeral=True)
         build, report, catalog = await self.cog.service.inspect(self.actor, self.build.id)
-        raw = text_report(build, report, catalog, self.cog.repository.durable).encode()
-        await interaction.followup.send(file=discord.File(BytesIO(raw), filename="evolution-build-details.txt"), ephemeral=True)
+        view = DetailsView(self.cog, self.actor, build, report, catalog)
+        await self.cog.send_view(interaction, embed=view.embed(), view=view, ephemeral=True)
+
+    @discord.ui.button(label="Historique / restaurer", row=2)
+    async def history(self, interaction, button):
+        from .panels import HistoryView
+        await interaction.response.defer(ephemeral=True)
+        current = await self.cog.repository.get(self.actor, self.build.id)
+        rows = await self.cog.repository.revisions(self.actor, self.build.id)
+        view = HistoryView(self.cog, self.actor, current, rows)
+        await self.cog.send_view(interaction, content=("**Historique privé** — les 20 dernières révisions.\n"
+            "Une restauration est prévisualisée puis enregistrée dans une NOUVELLE révision."
+            if len(rows) > 1 else "Aucune ancienne révision conservée pour ce build."), view=view, ephemeral=True)
 
     @discord.ui.button(label="Image", row=0)
     async def image(self, interaction, button):
@@ -147,9 +163,14 @@ class SlotsView(OwnerView):
     def __init__(self, cog, actor, build):
         self.build = build
         super().__init__(cog, actor)
-        select = discord.ui.Select(placeholder="Emplacement", options=[discord.SelectOption(label=s.replace("_", " ").capitalize(), value=s) for s in SLOTS])
+        select = discord.ui.Select(placeholder="Choisir un emplacement", options=[discord.SelectOption(label=SLOT_LABELS[s], value=s, description="Équipé" if build.in_slot(s) else "Emplacement vide") for s in SLOTS])
         async def chosen(interaction):
-            await interaction.response.send_modal(SearchModal(cog, actor, build, select.values[0]))
+            from .panels import SlotActionsView
+            await interaction.response.defer(ephemeral=True)
+            current, _, catalog = await cog.service.inspect(actor, build.id)
+            view = SlotActionsView(cog, actor, current, catalog, select.values[0])
+            self.stop()
+            await cog.send_view(interaction, content=view.content(), view=view, ephemeral=True)
         select.callback = chosen
         self.add_item(select)
 
@@ -169,7 +190,9 @@ class GuardedModal(discord.ui.Modal):
 
 
 class SearchModal(GuardedModal):
-    query = discord.ui.TextInput(label="Nom de l'objet", max_length=80)
+    query = discord.ui.TextInput(label="Nom (vide pour parcourir les objets)", required=False, max_length=80)
+    priority = discord.ui.TextInput(label="Trier par (ex. Force, Prospection, PA)", required=False, max_length=40)
+    minimum = discord.ui.TextInput(label="Niveau minimum (facultatif)", required=False, max_length=3)
 
     def __init__(self, cog, actor, build, slot):
         self.build, self.slot = build, slot
@@ -179,55 +202,87 @@ class SearchModal(GuardedModal):
         await interaction.response.defer(ephemeral=True)
         await self.guard(interaction)
         _, _, catalog = await self.cog.service.inspect(self.actor, self.build.id)
-        results = search(catalog, str(self.query), self.slot, self.build.profile.level)
+        priority = stat_name(str(self.priority)) if str(self.priority).strip() else None
+        minimum = integer(str(self.minimum) or "1", "Niveau minimum", 1, self.build.profile.level)
+        results = search(catalog, str(self.query), self.slot, self.build.profile.level, priority=priority, minimum=minimum)
         if not results:
             raise BuildError("Aucun objet correspondant dans ce catalogue et ce niveau.")
-        view = ItemResults(self.cog, self.actor, self.build, self.slot, results)
+        view = ItemResults(self.cog, self.actor, self.build, self.slot, results, catalog=catalog, query=str(self.query), priority=priority, minimum=minimum)
         await self.cog.send_view(interaction, content="Sélectionne un objet pour voir le nouveau total et les changements de panoplie.", view=view, ephemeral=True)
 
 
 class ItemResults(OwnerView):
-    def __init__(self, cog, actor, build, slot, items):
+    def __init__(self, cog, actor, build, slot, items, *, catalog=None, query="", priority=None, minimum=1, page=0):
+        self.build, self.slot, self.catalog = build, slot, catalog
+        self.query, self.priority, self.minimum, self.page = query, priority, minimum, page
         super().__init__(cog, actor)
-        select = discord.ui.Select(placeholder="Objet", options=[discord.SelectOption(label=i.name[:100], value=i.ref,
-                                    description=f"Niveau {i.level} · {i.category}"[:100]) for i in items])
+        select = discord.ui.Select(placeholder=f"Choisir un objet — page {page + 1}", row=0,
+            options=[discord.SelectOption(label=i.name[:100], value=i.ref,
+                description=(f"Niv. {i.level} · {i.category}" +
+                    (f" · {sum(e.high for e in i.effects if e.kind == 'stat' and e.stat == priority):+d} {priority}" if priority else ""))[:100]) for i in items])
         async def chosen(interaction):
             await interaction.response.defer(ephemeral=True)
             preview = await cog.service.equipment(actor, build.id, build.revision, slot, select.values[0])
             await cog.show_preview(interaction, actor, preview)
         select.callback = chosen
         self.add_item(select)
+        self.previous.disabled = catalog is None or page == 0
+        self.next.disabled = catalog is None or not search(catalog, query, slot, build.profile.level,
+            offset=(page + 1) * 25, priority=priority, minimum=minimum)
+
+    @discord.ui.button(label="Précédent", row=1)
+    async def previous(self, interaction, button):
+        await self.turn(interaction, -1)
+
+    @discord.ui.button(label="Suivant", row=1)
+    async def next(self, interaction, button):
+        await self.turn(interaction, 1)
+
+    @discord.ui.button(label="Changer la recherche", row=1)
+    async def change(self, interaction, button):
+        await interaction.response.send_modal(SearchModal(self.cog, self.actor, self.build, self.slot))
+
+    async def turn(self, interaction, delta):
+        from .panels import replace_view
+        page = self.page + delta
+        if page < 0 or self.catalog is None:
+            raise BuildError("Page indisponible.")
+        items = search(self.catalog, self.query, self.slot, self.build.profile.level,
+                       offset=page * 25, priority=self.priority, minimum=self.minimum)
+        if not items:
+            raise BuildError("Fin des résultats.")
+        self.stop()
+        view = ItemResults(self.cog, self.actor, self.build, self.slot, items, catalog=self.catalog,
+            query=self.query, priority=self.priority, minimum=self.minimum, page=page)
+        await replace_view(interaction, view, content="Sélectionne un objet pour prévisualiser le remplacement complet.")
 
 
 class ProfileModal(GuardedModal):
     classe = discord.ui.TextInput(label="Classe", max_length=20)
     level = discord.ui.TextInput(label="Niveau", max_length=3)
-    allocated = discord.ui.TextInput(label='Points DÉPENSÉS : {"cha": 300}', style=discord.TextStyle.paragraph, required=False, max_length=300)
-    scrolled = discord.ui.TextInput(label='Parchottage : {"cha": 101}', style=discord.TextStyle.paragraph, required=False, max_length=300)
-    naked = discord.ui.TextInput(label="Stats nues JSON (sinon laisser vide)", style=discord.TextStyle.paragraph, required=False, max_length=1000)
+    allocated = discord.ui.TextInput(label="Points dépensés (ex. Chance: 300)", style=discord.TextStyle.paragraph, required=False, max_length=300)
+    scrolled = discord.ui.TextInput(label="Parchottage (ex. Chance: 101)", style=discord.TextStyle.paragraph, required=False, max_length=300)
+    naked = discord.ui.TextInput(label="Stats nues (ex. Chance: 101), sinon vide", style=discord.TextStyle.paragraph, required=False, max_length=1000)
 
     def __init__(self, cog, actor, build):
         self.build = build
         super().__init__(cog, actor, "Profil du personnage")
         p = build.profile
         self.classe.default, self.level.default = p.classe, str(p.level)
-        self.allocated.default = canonical({v.stat: v.value for v in p.allocated})
-        self.scrolled.default = canonical({v.stat: v.value for v in p.scrolled})
-        self.naked.default = canonical({v.stat: v.value for v in p.naked_stats}) if p.mode == "declared" else ""
+        self.allocated.default = format_stats(p.allocated)
+        self.scrolled.default = format_stats(p.scrolled)
+        self.naked.default = format_stats(p.naked_stats) if p.mode == "declared" else ""
 
     async def on_submit(self, interaction):
         from .conditions import norm
         await interaction.response.defer(ephemeral=True)
         await self.guard(interaction)
         def stats(value):
-            parsed = parse_json((value.strip() or "{}").encode())
-            if not isinstance(parsed, dict):
-                raise BuildError("Un objet JSON de caractéristiques est attendu.")
-            return values(parsed)
+            return parse_stats(value)
         declared = bool(str(self.naked).strip())
         if declared and any(stats(str(field)) for field in (self.allocated, self.scrolled)):
             raise BuildError("Les stats nues incluent déjà les points et le parcho : vider ces deux champs.")
-        profile = Profile(classe=norm(str(self.classe)), level=int(str(self.level)),
+        profile = Profile(classe=norm(str(self.classe)), level=integer(str(self.level), "Niveau", 1, 200),
                           allocated=stats(str(self.allocated)), scrolled=stats(str(self.scrolled)),
                           naked_stats=stats(str(self.naked)) if declared else (), mode="declared" if declared else "rules",
                           alignment=self.build.profile.alignment, grade=self.build.profile.grade)

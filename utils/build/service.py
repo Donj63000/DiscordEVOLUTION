@@ -178,3 +178,17 @@ class BuildService:
                 instance = revised(instance, final_values=remapped)
             candidate = candidate.with_slot(row.slot, instance)
         return await self.preview(actor, candidate, {"action": "migrate", "id": build.id, "revision": build.revision, "target": latest.id, "rules": self.rules.id})
+
+    async def restore_revision(self, actor, build_id, expected, revision):
+        """Restaurer une copie dans une NOUVELLE révision, sans effacer l'historique."""
+        current = await self.repository.get(actor, build_id)
+        if current.revision != expected:
+            raise Conflict("Le build a changé : rouvre son historique.")
+        versions = await self.repository.revisions(actor, build_id)
+        previous = next((b for b in versions if b.revision == revision), None)
+        if previous is None:
+            raise BuildError("Cette révision n'est plus conservée.")
+        candidate = revised(previous, revision=current.revision,
+                            created_at=current.created_at, updated_at=current.updated_at)
+        return await self.preview(actor, candidate, {"action": "restore_revision",
+            "id": build_id, "revision": expected, "source_revision": revision})

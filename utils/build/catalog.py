@@ -24,7 +24,7 @@ for weapon in ("arc", "arbalete", "arme magique", "baguette", "baton", "dague", 
 
 def freeze_catalog(items, sets=(), *, generated_at="", source_hash=None, diagnostics=()):
     body = dict(schema_version=1, generated_at=generated_at, source_hash=source_hash or digest([i.model_dump(mode="json") for i in items]),
-                normalizer="evolution-build-1", items=[i.model_dump(mode="json") for i in sorted(items, key=lambda i: i.ref)],
+                normalizer="evolution-build-1.1", items=[i.model_dump(mode="json") for i in sorted(items, key=lambda i: i.ref)],
                 sets=[s.model_dump(mode="json") for s in sorted(sets, key=lambda s: s.ref)], diagnostics=list(diagnostics))
     return Catalog(id=digest(body), **body)
 
@@ -110,6 +110,8 @@ def normalize(entries, payload, overrides=None):
                 warning = []
                 if "panoplie" not in row:
                     warning.append("Appartenance à une panoplie non fournie ; absence de bonus non certifiée.")
+                if isinstance(set_raw, (list, tuple)) and len(set_raw) == 1 and isinstance(set_raw[0], str):
+                    set_raw = set_raw[0]
                 if isinstance(set_raw, str):
                     set_ref = norm(set_raw) or None
                 elif set_raw is None or set_raw == []:
@@ -154,23 +156,32 @@ def normalize(entries, payload, overrides=None):
                           source_hash=digest({"payload": payload, "overrides": overrides}), diagnostics=diagnostics)
 
 
-def search(catalog, query="", slot=None, level=200, limit=25):
+def search(catalog, query="", slot=None, level=200, limit=25, *, offset=0, priority=None, minimum=1):
     if slot is not None and slot not in SLOTS:
         raise BuildError("Emplacement inconnu.")
+    from .models import STAT_LABELS
+    if type(offset) is not int or not 0 <= offset <= 20000 or priority is not None and priority not in STAT_LABELS:
+        raise BuildError("Pagination ou tri inconnu.")
+    if type(minimum) is not int or not 1 <= minimum <= level <= 200:
+        raise BuildError("Intervalle de niveaux invalide.")
     q = norm(query)
-    pool = [i for i in catalog.items if i.level <= level and (slot is None or slot in i.allowed_slots)]
+    pool = [i for i in catalog.items if minimum <= i.level <= level and (slot is None or slot in i.allowed_slots)]
     if q:
         from rapidfuzz.fuzz import WRatio
         ranked = [(1000 if i.ref == query else 200 if q == norm(i.name) else 110 if q in norm(i.name) else WRatio(q, norm(i.name)), i) for i in pool]
         pool = [i for score, i in sorted(ranked, key=lambda row: (-row[0], row[1].name, row[1].ref)) if score >= 60]
     else:
-        pool.sort(key=lambda i: (i.level, i.name, i.ref))
-    return tuple(pool[:max(1, min(limit, 25))])
+        pool.sort(key=lambda i: (-i.level, i.name, i.ref))
+    if priority is not None:
+        # Stable : pertinence du nom puis niveau départagent les jets égaux.
+        pool.sort(key=lambda i: -sum(e.high for e in i.effects if e.kind == "stat" and e.stat == priority))
+    return tuple(pool[offset:offset + max(1, min(limit, 25))])
 
 
 class CatalogService:
-    def __init__(self, repository, wiki_provider, overrides_path=None):
+    def __init__(self, repository, wiki_provider, overrides_path=None, set_loader=None):
         self.repository = repository
+        self.set_loader = set_loader
         self.wiki_provider = wiki_provider
         self.overrides_path = Path(overrides_path) if overrides_path else Path(__file__).resolve().parents[2] / "data/build/catalog_overrides_v1.json"
         self.latest = None
@@ -201,6 +212,18 @@ class CatalogService:
                     raise BuildError("Corrections trop volumineuses.")
                 overrides = json.loads(raw)
                 candidate = await asyncio.to_thread(normalize, entries, payload, overrides)
+                if self.set_loader is not None:
+                    # Les corrections locales font autorité ; conserver les tables
+                    # publiques archivées au lieu de les retélécharger à chaque clic.
+                    previous = dict(self.latest.by_set) if self.latest else {}
+                    previous.update(candidate.by_set)
+                    refs = {i.set_ref for i in candidate.items if i.set_ref}
+                    definitions, notes = await self.set_loader.enrich(refs, tuple(previous.values()))
+                    candidate = freeze_catalog(candidate.items, definitions,
+                        generated_at=candidate.generated_at,
+                        source_hash=digest({"api": candidate.source_hash,
+                                           "sets": [d.model_dump(mode="json") for d in sorted(definitions, key=lambda d: d.ref)]}),
+                        diagnostics=candidate.diagnostics + notes)
                 verify_snapshot(candidate)
                 await self.repository.put_snapshot("catalog", candidate.id, canonical(candidate))
                 self.latest, self.last_error = candidate, ""

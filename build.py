@@ -16,6 +16,10 @@ from utils.build.rules import load_rules
 from utils.build.repository import MemoryRepository
 from utils.build.postgres_store import PostgresRepository
 from utils.build.catalog import CatalogService, search
+from utils.build.set_source import PublicSetLoader
+from utils.build.panels import BuildListView, ProfileEditorView
+from utils.build.sharing import SharedBuildAction, SharedBuildView
+from utils.build.diagnostics import coverage_text
 from utils.build.service import BuildService
 from utils.build.embeds import card, safe
 from utils.build.renderer import render, text_report
@@ -23,7 +27,7 @@ from utils.build.views import BuildView, ConfirmView, ActionConfirm, Optimizatio
 from utils.build.import_export import export_build, parse_json, MAX_IMPORT
 from utils.build.optimizer import Constraints, Limits
 from utils.build.optimizer_worker import OptimizerWorker
-from utils.build.comparison import compare
+from utils.build.comparison import compare, comparison_text
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +40,8 @@ class BuildCog(commands.Cog):
         self.config = Config.from_env()
         self.repository = MemoryRepository(self.config.quota) if self.config.backend == "memory" else PostgresRepository(self.config.dsn, self.config.quota, migrate=self.config.migrate)
         self.rules = load_rules(self.config.rules_path)
-        self.catalogs = CatalogService(self.repository, self.wiki, self.config.overrides_path)
+        self.set_loader = PublicSetLoader() if flag("BUILD_SET_ENRICHMENT", True) else None
+        self.catalogs = CatalogService(self.repository, self.wiki, self.config.overrides_path, self.set_loader)
         self.service = BuildService(self.repository, self.catalogs, self.rules)
         self.worker = OptimizerWorker()
         self.render_lock = asyncio.Lock()
@@ -47,30 +52,42 @@ class BuildCog(commands.Cog):
         self.start_error = "Initialisation du module en cours."
         self.task = None
         self.last_refresh_request = 0.0
+        self.init_lock = asyncio.Lock()
+        self.storage_open = False
 
     def wiki(self):
         return self.bot.get_cog("DofusWikiCog")
 
     async def cog_load(self):
+        self.bot.add_dynamic_items(SharedBuildAction)
         self.task = asyncio.create_task(self.initialize(), name="evolution-build-start")
 
     async def initialize(self):
-        try:
-            if self.config.backend == "postgres" and not self.config.dsn:
-                raise BuildError("BUILD_DATABASE_URL absent. Configurer PostgreSQL ou choisir explicitement BUILD_BACKEND=memory pour un essai non durable.")
-            await self.repository.open()
-            await self.service.start()
-            await self.catalogs.restore()
-            self.ready, self.start_error = True, ""
-            await self.catalogs.refresh()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self.start_error = str(exc) if isinstance(exc, BuildError) else "Initialisation impossible. Vérifier les réglages Build et les migrations."
-            log.warning("build initialize failed type=%s", type(exc).__name__)
+        """Initialisation réessayable ; aucune seconde pool lors d'un simple refresh."""
+        async with self.init_lock:
+            if self.closed:
+                return
+            try:
+                if not self.ready:
+                    if self.config.backend == "postgres" and not self.config.dsn:
+                        raise BuildError("BUILD_DATABASE_URL absent. Configurer PostgreSQL ou choisir explicitement BUILD_BACKEND=memory pour un essai non durable.")
+                    if not self.storage_open:
+                        await self.repository.open()
+                        self.storage_open = True
+                    await self.service.start()
+                    await self.catalogs.restore()
+                    self.ready = True
+                self.start_error = ""
+                await self.catalogs.refresh()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.start_error = str(exc) if isinstance(exc, BuildError) else "Initialisation impossible. Vérifier les réglages Build et les migrations."
+                log.warning("build initialize failed type=%s", type(exc).__name__)
 
     async def cog_unload(self):
         self.closed, self.ready = True, False
+        self.bot.remove_dynamic_items(SharedBuildAction)
         for view in list(self.views):
             view.stop()
         if self.task:
@@ -78,6 +95,8 @@ class BuildCog(commands.Cog):
             with suppress(asyncio.CancelledError):
                 await self.task
         await self.worker.close()
+        if self.set_loader is not None:
+            await self.set_loader.close()
         await self.repository.close()
         self.list_cache.clear()
         self.service.cache.clear()
@@ -171,8 +190,8 @@ class BuildCog(commands.Cog):
             lines = [f"{STAT_LABELS[row['stat']]} : {row['premier']} → {row['second']} ({row['delta']:+d})"
                      + (" * partiel" if not row["complet"] else "") for row in comparison["ecarts"]]
             embed.add_field(name="Changements après confirmation", value=("\n".join(lines[:14]) or "Aucun écart de caractéristiques connues.")[:1024], inline=False)
-            old_sets = {c.origin: c.value for c in previous.contributions if c.origin.startswith("panoplie:")}
-            new_sets = {c.origin: c.value for c in preview.report.contributions if c.origin.startswith("panoplie:")}
+            old_sets = {(c.origin, c.stat): c.value for c in previous.contributions if c.origin.startswith("panoplie:")}
+            new_sets = {(c.origin, c.stat): c.value for c in preview.report.contributions if c.origin.startswith("panoplie:")}
             if old_sets != new_sets:
                 embed.add_field(name="Panoplies", value="Les bonus de panoplie ont été recalculés dans les nouveaux totaux. Les bonus non couverts restent signalés dans les réserves.", inline=False)
         return embed
@@ -254,7 +273,7 @@ class BuildCog(commands.Cog):
                 await click.edit_original_response(content="Cette publication a déjà été envoyée ; aucun doublon créé.", embed=None, view=None)
                 return
             try:
-                message = await channel.send(content=f"Build partagé pendant 7 jours. Code : `{receipt['code']}`\nVoir : `/build ouvrir` · Copier : `/build copier`.", embed=card(build, report, catalog, self.repository.durable), allowed_mentions=discord.AllowedMentions.none())
+                message = await channel.send(content=f"Build partagé pendant 7 jours. Code : `{receipt['code']}`\nVoir : `/build ouvrir` · Copier : `/build copier`.", embed=card(build, report, catalog, self.repository.durable), view=SharedBuildView(receipt["code"]), allowed_mentions=discord.AllowedMentions.none())
             except discord.HTTPException as exc:
                 await self.repository.publication(actor, receipt["code"], "failed")
                 raise BuildError("Partage enregistré mais publication non confirmée. Ne relance pas automatiquement : vérifie le salon.") from exc
@@ -309,11 +328,9 @@ class BuildCog(commands.Cog):
             self.list_cache.popitem(last=False)
         for b in builds:
             self.remember(b)
-        text = "\n".join(f"{safe(b.name, 80)} · {b.profile.classe} {b.profile.level}\n`{b.id}`" for b in builds)
-        if len(text) > 1800:
-            await interaction.followup.send(file=discord.File(BytesIO(text.encode()), filename="mes-builds.txt"), ephemeral=True)
-        else:
-            await interaction.edit_original_response(content=text or "Aucun build. Utilise /build creer.")
+        view = BuildListView(self, actor, builds)
+        await interaction.edit_original_response(content=view.content(), view=view)
+        view.message = await interaction.original_response()
 
     @group.command(name="ouvrir", description="Ouvrir un de mes builds, ou consulter un code de partage du serveur.")
     @app_commands.autocomplete(build=build_choices)
@@ -356,14 +373,8 @@ class BuildCog(commands.Cog):
                               grade=grade if grade is not None else current.profile.grade)
             await self.show_preview(interaction, actor, await self.service.profile(actor, build, current.revision, profile))
             return
-        from utils.build.views import OwnerView
-        view = OwnerView(self, actor)
-        button = discord.ui.Button(label="Ouvrir le formulaire", style=discord.ButtonStyle.primary)
-        async def click(i):
-            await i.response.send_modal(ProfileModal(self, actor, current))
-        button.callback = click
-        view.add_item(button)
-        await self.send_view(interaction, content="Le profil déclaré inclut déjà le parchottage et les points investis. Les règles automatiques restent en bêta.", view=view, ephemeral=True)
+        view = ProfileEditorView(self, actor, current)
+        await self.send_view(interaction, content=view.content(), view=view, ephemeral=True)
 
     @group.command(name="jets", description="Jets effet par effet : les valeurs remplacent les jets naturels, les exos s'ajoutent.")
     @app_commands.choices(emplacement=[app_commands.Choice(name=s.replace('_', ' '), value=s) for s in SLOTS],
@@ -384,7 +395,13 @@ class BuildCog(commands.Cog):
         a, ra, _ = await self.service.inspect(actor, premier)
         b, rb, _ = await self.service.inspect(actor, second)
         result = compare(a, ra, b, rb)
-        await interaction.followup.send(file=discord.File(BytesIO(canonical(result).encode()), filename="comparaison-builds.json"), ephemeral=True)
+        summary = comparison_text(a, ra, b, rb)
+        embed = discord.Embed(title="Comparaison de mes builds", description=safe(summary, 3900), colour=0x2A79BB)
+        embed.set_footer(text="* Sommes partielles · Le rapport TXT contient toutes les réserves.")
+        await interaction.followup.send(embed=embed, files=[
+            discord.File(BytesIO(summary.encode()), filename="comparaison-builds.txt"),
+            discord.File(BytesIO(canonical(result).encode()), filename="comparaison-builds.json")],
+            ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @group.command(name="partager", description="Confirmer la publication d'une révision figée dans le salon actuel.")
     @app_commands.autocomplete(build=build_choices)
@@ -514,13 +531,21 @@ class BuildCog(commands.Cog):
 
     @group.command(name="actualiser", description="Staff : actualiser le catalogue sans migrer les builds existants.")
     async def refreshing(self, interaction: discord.Interaction):
-        await self.begin(interaction)
+        # Le staff doit pouvoir réessayer même si la DB a refusé le démarrage.
+        await interaction.response.defer(ephemeral=True, thinking=True)
         self.require_staff(interaction)
-        if time.monotonic() - self.last_refresh_request < 60 or self.catalogs.lock.locked():
+        if self.closed or not flag("BUILD_ENABLED"):
+            raise BuildError("Evolution Build est désactivé.")
+        if time.monotonic() - self.last_refresh_request < 60 or self.catalogs.lock.locked() or self.init_lock.locked():
             raise BuildError("Actualisation déjà en cours ou trop récente.")
         self.last_refresh_request = time.monotonic()
-        result = await self.catalogs.refresh()
-        await interaction.edit_original_response(content="\n".join(result.diagnostics) + ("\n" + self.catalogs.last_error if self.catalogs.last_error else "\nCatalogue enregistré. Les anciens builds restent figés."))
+        await self.initialize()
+        self.ensure_ready()
+        result = self.catalogs.latest
+        if result is None:
+            raise BuildError(self.catalogs.last_error or self.start_error or "Catalogue indisponible ; les builds existants ne sont pas modifiés.")
+        text = coverage_text(result) + "\n" + (self.catalogs.last_error or self.start_error or "Catalogue enregistré. Les anciens builds restent figés ; /build migrer applique les nouveautés après confirmation.")
+        await interaction.edit_original_response(content=text[:1900])
 
     @group.command(name="renommer", description="Renommer mon build après prévisualisation.")
     @app_commands.autocomplete(build=build_choices)
@@ -544,6 +569,7 @@ class BuildCog(commands.Cog):
                 f"Règles : {self.rules.version}", f"Vues : {len(self.views)}", f"Optimiseur actif : {self.worker.lock.locked()}",
                 self.start_error, self.catalogs.last_error]
         if catalog:
+            text.append(coverage_text(catalog))
             text.extend(catalog.diagnostics)
         await interaction.edit_original_response(content="\n".join(s for s in text if s)[:1900])
 
@@ -553,16 +579,20 @@ class BuildCog(commands.Cog):
         actor = await self.begin(interaction)
         await self.show_preview(interaction, actor, await self.service.migrate(actor, build))
 
-    @group.command(name="aide", description="Fonctionnement, jets JSON, confidentialité et limites de la bêta.")
+    @group.command(name="aide", description="Démarrer le builder guidé : personnage, équipements, jets et partage.")
     async def help_build(self, interaction: discord.Interaction):
-        text = ("**Evolution Build — bêta**\n/build creer → /build ouvrir → Équipement → choisir → confirmer.\n"
-                "Les points du profil sont les points DÉPENSÉS, pas les statistiques gagnées. Le mode déclaré contient les stats nues déjà calculées.\n"
-                "Jets personnalisés : /build jets avec valeurs_json `[{\"ref\":\"e0\",\"value\":1}]`. Les références d'effets figurent dans Détails. Exos : `[{\"stat\":\"pm\",\"value\":1}]`.\n"
-                "Naturels personnalisés : toutes les lignes statiques doivent être saisies. FM déclarée : un over remplace le jet naturel ; n'ajoute pas un exo de la même caractéristique.\n"
-                "**Les données partielles et les règles non validées ne sont pas des totaux certifiés.** /build degats reste expérimental. L'optimiseur ne prouve ni optimum ni impossibilité.\n"
-                "Builds privés. /build partager demande confirmation ; code limité au serveur, expirant après 7 jours. /build depublier révoque les futures lectures.\n"
-                "Sans PostgreSQL : mode memory explicitement temporaire. /build exporter avant tout redémarrage.\n"
-                "Données : https://xixou.io/ · Wiki : https://wiki.moon-bot.io/")
+        text = ("**Evolution Build — démarrage guidé**\n"
+                "**1.** `/build mes` → Nouveau personnage.\n"
+                "**2.** Personnage → choisir une caractéristique → saisir capital et parchottage.\n"
+                "**3.** Équipement → emplacement → rechercher (nom facultatif) → aperçu → confirmer.\n"
+                "**4.** Modifier les jets → champs numériques → aperçu → confirmer. Aucun JSON obligatoire.\n"
+                "Détails affiche toutes les statistiques, résistances, bonus de panoplie et réserves.\n"
+                "Historique permet de restaurer une version sans perdre les modifications suivantes.\n"
+                "La saisie groupée accepte `Chance: 300`, une ligne par caractéristique ; l'ancien JSON reste accepté.\n"
+                "**Les totaux partiels sont signalés par *.** Les règles non validées ne sont pas certifiées.\n"
+                "Les builds sont privés ; partager demande confirmation et crée une copie figée valable 7 jours.\n"
+                "Le mode mémoire perd les builds au redémarrage. PostgreSQL est requis pour les conserver.\n"
+                "Le manuel fonctionne sans Luna. Données : https://xixou.io/ · https://wiki.moon-bot.io/")
         await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 

@@ -19,3 +19,25 @@ def compare(first, report_a, second, report_b):
         "validation_avant": report_a.equipability, "validation_apres": report_b.equipability,
         "avertissements": [w.text for w in report_a.warnings + report_b.warnings],
     }
+
+
+def comparison_text(first, report_a, second, report_b):
+    """Version lisible, directement dérivée du contrat de comparaison commun."""
+    from .editor import SLOT_LABELS
+    from .renderer import EQUIPABILITY_LABELS
+    result = compare(first, report_a, second, report_b)
+    lines = [f"COMPARAISON — {first.name} -> {second.name}",
+             "Les différences décrivent le deuxième build moins le premier."]
+    if not result['versions_comparables']:
+        lines.append("ATTENTION : versions de règles ou de catalogue différentes ; migrer explicitement avant une comparaison à version identique.")
+    if not result['profil_identique']:
+        lines.append("Les profils de personnages sont différents : ce n'est pas seulement un changement d'équipement.")
+    lines += ["", f"Contrôles avant : {EQUIPABILITY_LABELS[result['validation_avant']]}",
+              f"Contrôles après : {EQUIPABILITY_LABELS[result['validation_apres']]}", "", "CARACTÉRISTIQUES"]
+    lines += [f"{row['libelle']} : {row['premier']} -> {row['second']} ({row['delta']:+d})"
+              + (" * partiel" if not row['complet'] else "") for row in result['ecarts']]
+    if not result['ecarts']:
+        lines.append("Aucun écart parmi les sommes calculées. Cela ne certifie pas les valeurs inconnues.")
+    lines += ["", "EMPLACEMENTS MODIFIÉS", ", ".join(SLOT_LABELS[s] for s in result['emplacements_changes']) or "Aucun."]
+    lines += ["", "RÉSERVES", *dict.fromkeys(result['avertissements'])]
+    return "\n".join(lines)

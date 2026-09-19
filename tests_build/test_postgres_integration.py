@@ -72,3 +72,22 @@ async def test_pg_share_claim_and_rollback(pg,build):
     assert (await pg.shared(actor,code)).name==b.name
     await pg.delete(actor,b.id,1,"delete",digest("delete"))
     with pytest.raises(NotFound):await pg.shared(actor,code)
+
+
+@pytest.mark.asyncio
+async def test_pg_history_owner_filter_and_new_revision(pg, build):
+    actor = unique_actor()
+    candidate = revised(build, guild_id=actor.guild_id, owner_id=actor.user_id)
+    first = await pg.commit(actor, candidate, None, 'hist-create', digest('create'), digest('report'))
+    second = await pg.commit(actor, revised(first, name='Autre nom'), first.revision,
+                             'hist-edit', digest('edit'), digest('report'))
+    assert [b.revision for b in await pg.revisions(actor, first.id)] == [2, 1]
+    with pytest.raises(NotFound):
+        await pg.revisions(unique_actor(), first.id)
+    with pytest.raises(NotFound):
+        await pg.revisions(actor, 'not-an-uuid')
+    third = await pg.commit(actor, revised(second, name=first.name), second.revision,
+                            'hist-restore', digest('restore'), digest('report'))
+    assert third.revision == 3
+    assert [b.name for b in await pg.revisions(actor, first.id)] == [first.name, 'Autre nom', first.name]
+    await pg.delete(actor, first.id, third.revision, 'hist-delete', digest('delete'))

@@ -9,6 +9,8 @@ on:
       - 'migrations/build/**'
       - 'data/build/**'
       - 'requirements.txt'
+      - 'tools/build_preflight.py'
+      - 'docs/EVOLUTION_BUILD*'
       - '.github/workflows/evolution-build.yml'
   workflow_dispatch:
 permissions:
@@ -42,13 +44,19 @@ jobs:
           cache: pip
       - name: Install actual project dependencies
         run: python -m pip install -r requirements.txt
+      - name: Offline catalogue and dependency preflight
+        run: python tools/build_preflight.py
       - name: Compile modules
         run: python -m compileall -q build.py utils/build tests_build
       - name: Unit and real PostgreSQL/discord.py integration tests
         run: python -m pytest tests_build -q --junitxml=build-tests.xml
+      - name: Existing bot non-regression suites
+        run: python -m pytest tests tests_evo tests_jobs -q --junitxml=bot-regression-tests.xml
       - name: Preserve test result
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: evolution-build-tests
-          path: build-tests.xml
+          path: |
+            build-tests.xml
+            bot-regression-tests.xml

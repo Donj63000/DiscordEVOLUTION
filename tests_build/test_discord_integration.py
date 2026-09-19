@@ -25,21 +25,29 @@ def test_real_command_tree_serializes():
 
 
 @pytest.mark.asyncio
-async def test_real_views_limits_and_modal_response(build,actor,monkeypatch):
-    tracked=set()
-    cog=SimpleNamespace(track=tracked.add,untrack=tracked.discard,ensure_ready=lambda:None,
-                        actor=lambda i,g=None: actor,error=AsyncMock())
-    view=BuildView(cog,actor,build)
-    assert len(view.children)<=25 and view in tracked
-    interaction=SimpleNamespace(response=SimpleNamespace(send_modal=AsyncMock(),defer=AsyncMock()))
+async def test_real_views_limits_and_modal_response(build, actor, catalog, rules):
+    from utils.build.panels import ProfileEditorView
+    tracked = set()
+    cog = SimpleNamespace(track=tracked.add, untrack=tracked.discard, ensure_ready=lambda: None,
+        actor=lambda i, g=None: actor, error=AsyncMock(), send_view=AsyncMock(),
+        service=SimpleNamespace(inspect=AsyncMock(return_value=(build, calculate(build, catalog, rules), catalog))))
+    view = BuildView(cog, actor, build)
+    assert len(view.children) <= 25 and view in tracked
+    interaction = SimpleNamespace(response=SimpleNamespace(send_modal=AsyncMock(), defer=AsyncMock()))
     await view.profile.callback(interaction)
-    interaction.response.send_modal.assert_awaited_once()
-    interaction.response.defer.assert_not_awaited()
-    modal=interaction.response.send_modal.await_args.args[0]
-    assert isinstance(modal,ProfileModal) and len(modal.children)==5
-    assert all(len(child.label)<=45 for child in modal.children)
-    view.stop();modal.stop()
-    assert view not in tracked
+    interaction.response.defer.assert_awaited_once()
+    panel = cog.send_view.await_args.kwargs['view']
+    assert isinstance(panel, ProfileEditorView)
+    # L'ouverture d'une modale depuis le panel doit répondre directement.
+    interaction2 = SimpleNamespace(response=SimpleNamespace(send_modal=AsyncMock(), defer=AsyncMock()))
+    await panel.advanced.callback(interaction2)
+    interaction2.response.send_modal.assert_awaited_once()
+    interaction2.response.defer.assert_not_awaited()
+    modal = interaction2.response.send_modal.await_args.args[0]
+    assert isinstance(modal, ProfileModal) and len(modal.children) == 5
+    assert all(len(child.label) <= 45 for child in modal.children)
+    for widget in (view, panel, modal): widget.stop()
+    assert not tracked
 
 
 @pytest.mark.asyncio

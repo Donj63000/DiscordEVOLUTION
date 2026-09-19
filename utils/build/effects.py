@@ -4,7 +4,7 @@ import re
 from .models import BuildError, Contribution, Effect, Instance, ItemTemplate
 
 ELEMENTS = {"neutre": "ne", "terre": "te", "feu": "fe", "eau": "ea", "air": "ai"}
-ATTACK = re.compile(r"^(?:(dommages?|vole(?:r)?|vol de vie)\s*:?\s*)?\+?(\d+)(?:\s*(?:à|a|-)\s*\+?(\d+))?\s*\((?:(dommages?|vol(?:e| de vie)?)\s+)?(neutre|terre|feu|eau|air)\)$", re.I)
+ATTACK = re.compile(r"^(?:(dommages?|vole(?:r)?|vol de vie)\s*:?\s*)?\+?(\d+)(?:\s*(?:à|a|-)\s*\+?(\d+))?\s*(?:PDV\s*)?\((?:(dommages?|vol(?:e| de vie)?)\s+)?(neutre|terre|feu|eau|air)\)$", re.I)
 
 
 def parse_line(raw: str, index: int) -> Effect:
@@ -17,6 +17,16 @@ def parse_line(raw: str, index: int) -> Effect:
         a, b = sorted((int(low), int(high or low)))
         kind = "steal" if "vol" in ((prefix or "") + (label or "")).lower() else "damage"
         return Effect(ref=ref, kind=kind, low=a, high=b, element=ELEMENTS[element.lower()], text=text[:600])
+    # Vie (PV) et vitalité sont distinctes. Ces lignes ne sont pas des jets
+    # de forgemagie classiques, mais apparaissent dans les bonus publiés.
+    for pattern, stat in (
+        (r"^([+-]?\d+)(?:\s*(?:à|a)\s*([+-]?\d+))?\s+(?:en vie|points? de vie|PDV)$", "pv"),
+        (r"^Augmente le poids portable de\s+(\d+)(?:\s*(?:à|a)\s*(\d+))?\s+pods$", "pod"),
+    ):
+        matched = re.fullmatch(pattern, text, re.I)
+        if matched:
+            low, high = sorted((int(matched[1]), int(matched[2] or matched[1])))
+            return Effect(ref=ref, kind="stat", stat=stat, low=low, high=high, text=text[:600])
     # PvP, effets temporaires et conditions sont exclus des statistiques permanentes.
     if re.search(r"\b(?:pvp|tour|tours|contre les joueurs|si |lorsque |sort )", text, re.I):
         return Effect(ref=ref, kind="context", text=text[:600])

@@ -1,5 +1,6 @@
 """Fonction pure commune aux vues, images, sauvegardes, comparaisons et solveur."""
 from collections import defaultdict
+from . import ENGINE_VERSION
 from .models import (Build, Catalog, Report, Metric, Contribution, Diagnostic, STAT_LABELS,
                      BuildError)
 from .rules import character, derive, Rules
@@ -51,4 +52,4 @@ def calculate(build: Build, catalog: Catalog, rules: Rules) -> Report:
     return Report(metrics=metrics, contributions=tuple(ledger), errors=tuple(errors), warnings=tuple(warnings),
                   equipability=equipability, completeness="partial" if unknown else "complete",
                   nature="declared" if build.profile.mode == "declared" or any(r.item.mode == "declared_fm" for r in build.slots) else "natural",
-                  catalog_id=catalog.id, rules_id=rules.id)
+                  catalog_id=catalog.id, rules_id=rules.id, engine=ENGINE_VERSION)

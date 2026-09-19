@@ -1,5 +1,2144 @@
 {
   "schema_version": 1,
   "items": {},
-  "sets": []
+  "sets": [
+    {
+      "ref": "panoplie ancestrale",
+      "name": "Panoplie Ancestrale",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_pui",
+              "kind": "stat",
+              "stat": "pui",
+              "low": 5,
+              "high": 5,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_ini",
+              "kind": "stat",
+              "stat": "ini",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_pui",
+              "kind": "stat",
+              "stat": "pui",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_cc",
+              "kind": "stat",
+              "stat": "cc",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 4,
+          "effects": [
+            {
+              "ref": "s4_ini",
+              "kind": "stat",
+              "stat": "ini",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 3,
+              "high": 3,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_pui",
+              "kind": "stat",
+              "stat": "pui",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_cc",
+              "kind": "stat",
+              "stat": "cc",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_rp_ne",
+              "kind": "stat",
+              "stat": "rp_ne",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_rp_te",
+              "kind": "stat",
+              "stat": "rp_te",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 5,
+          "effects": [
+            {
+              "ref": "s5_ini",
+              "kind": "stat",
+              "stat": "ini",
+              "low": 60,
+              "high": 60,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_pui",
+              "kind": "stat",
+              "stat": "pui",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_cc",
+              "kind": "stat",
+              "stat": "cc",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_rp_ne",
+              "kind": "stat",
+              "stat": "rp_ne",
+              "low": 3,
+              "high": 3,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_rp_te",
+              "kind": "stat",
+              "stat": "rp_te",
+              "low": 3,
+              "high": 3,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 6,
+          "effects": [
+            {
+              "ref": "s6_ini",
+              "kind": "stat",
+              "stat": "ini",
+              "low": 100,
+              "high": 100,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 5,
+              "high": 5,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_pui",
+              "kind": "stat",
+              "stat": "pui",
+              "low": 25,
+              "high": 25,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_cc",
+              "kind": "stat",
+              "stat": "cc",
+              "low": 6,
+              "high": 6,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_po",
+              "kind": "stat",
+              "stat": "po",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_rp_ne",
+              "kind": "stat",
+              "stat": "rp_ne",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_rp_te",
+              "kind": "stat",
+              "stat": "rp_te",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-ancestrale/"
+    },
+    {
+      "ref": "panoplie blop multicolore royale",
+      "name": "Panoplie Blop Multicolore Royale",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 4,
+          "effects": [
+            {
+              "ref": "s4_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_po",
+              "kind": "stat",
+              "stat": "po",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-blop-multicolore-royale/"
+    },
+    {
+      "ref": "panoplie des sous-bois",
+      "name": "Panoplie des Sous-bois",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_cc",
+              "kind": "stat",
+              "stat": "cc",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_pp",
+              "kind": "stat",
+              "stat": "pp",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_cc",
+              "kind": "stat",
+              "stat": "cc",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-des-sous-bois/"
+    },
+    {
+      "ref": "panoplie du bouftou",
+      "name": "Panoplie du Bouftou",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 5,
+              "high": 5,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 5,
+              "high": 5,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 4,
+          "effects": [
+            {
+              "ref": "s4_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 5,
+          "effects": [
+            {
+              "ref": "s5_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 6,
+          "effects": [
+            {
+              "ref": "s6_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 7,
+          "effects": [
+            {
+              "ref": "s7_pv",
+              "kind": "stat",
+              "stat": "pv",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s7_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s7_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 50,
+              "high": 50,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s7_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 50,
+              "high": 50,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s7_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 5,
+              "high": 5,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s7_pa",
+              "kind": "stat",
+              "stat": "pa",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-du-bouftou/"
+    },
+    {
+      "ref": "panoplie du bworker berserker",
+      "name": "Panoplie du Bworker Berserker",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_cc",
+              "kind": "stat",
+              "stat": "cc",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 4,
+          "effects": [
+            {
+              "ref": "s4_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 50,
+              "high": 50,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 50,
+              "high": 50,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_cc",
+              "kind": "stat",
+              "stat": "cc",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_pm",
+              "kind": "stat",
+              "stat": "pm",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-du-bworker-berserker/"
+    },
+    {
+      "ref": "panoplie du bworker gladiateur",
+      "name": "Panoplie du Bworker Gladiateur",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_age",
+              "kind": "stat",
+              "stat": "age",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_age",
+              "kind": "stat",
+              "stat": "age",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_cc",
+              "kind": "stat",
+              "stat": "cc",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 4,
+          "effects": [
+            {
+              "ref": "s4_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 50,
+              "high": 50,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_age",
+              "kind": "stat",
+              "stat": "age",
+              "low": 50,
+              "high": 50,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_cc",
+              "kind": "stat",
+              "stat": "cc",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_pa",
+              "kind": "stat",
+              "stat": "pa",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-du-bworker-gladiateur/"
+    },
+    {
+      "ref": "panoplie du chene mou",
+      "name": "Panoplie du Chêne Mou",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 4,
+          "effects": [
+            {
+              "ref": "s4_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 60,
+              "high": 60,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 5,
+          "effects": [
+            {
+              "ref": "s5_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 80,
+              "high": 80,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 3,
+              "high": 3,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_pui",
+              "kind": "stat",
+              "stat": "pui",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 3,
+              "high": 3,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 6,
+          "effects": [
+            {
+              "ref": "s6_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 100,
+              "high": 100,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_pui",
+              "kind": "stat",
+              "stat": "pui",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_pm",
+              "kind": "stat",
+              "stat": "pm",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-du-chene-mou/"
+    },
+    {
+      "ref": "panoplie du jeune aventurier",
+      "name": "Panoplie du Jeune Aventurier",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_age",
+              "kind": "stat",
+              "stat": "age",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_age",
+              "kind": "stat",
+              "stat": "age",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 4,
+          "effects": [
+            {
+              "ref": "s4_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_age",
+              "kind": "stat",
+              "stat": "age",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 5,
+          "effects": [
+            {
+              "ref": "s5_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 25,
+              "high": 25,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 25,
+              "high": 25,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 25,
+              "high": 25,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 25,
+              "high": 25,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 25,
+              "high": 25,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_age",
+              "kind": "stat",
+              "stat": "age",
+              "low": 25,
+              "high": 25,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 6,
+          "effects": [
+            {
+              "ref": "s6_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_fo",
+              "kind": "stat",
+              "stat": "fo",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_age",
+              "kind": "stat",
+              "stat": "age",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-du-jeune-aventurier/"
+    },
+    {
+      "ref": "panoplie du meulou",
+      "name": "Panoplie du Meulou",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 4,
+          "effects": [
+            {
+              "ref": "s4_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 60,
+              "high": 60,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 6,
+              "high": 6,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 5,
+          "effects": [
+            {
+              "ref": "s5_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 80,
+              "high": 80,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 7,
+              "high": 7,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_po",
+              "kind": "stat",
+              "stat": "po",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 6,
+          "effects": [
+            {
+              "ref": "s6_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 100,
+              "high": 100,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 8,
+              "high": 8,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_po",
+              "kind": "stat",
+              "stat": "po",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_pa",
+              "kind": "stat",
+              "stat": "pa",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-du-meulou/"
+    },
+    {
+      "ref": "panoplie du minotot",
+      "name": "Panoplie du Minotot",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 4,
+          "effects": [
+            {
+              "ref": "s4_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 3,
+              "high": 3,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 5,
+          "effects": [
+            {
+              "ref": "s5_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 40,
+              "high": 40,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s5_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 6,
+          "effects": [
+            {
+              "ref": "s6_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 50,
+              "high": 50,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 50,
+              "high": 50,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s6_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 5,
+              "high": 5,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 7,
+          "effects": [
+            {
+              "ref": "s7_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s7_ine",
+              "kind": "stat",
+              "stat": "ine",
+              "low": 60,
+              "high": 60,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s7_cha",
+              "kind": "stat",
+              "stat": "cha",
+              "low": 60,
+              "high": 60,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s7_so",
+              "kind": "stat",
+              "stat": "so",
+              "low": 6,
+              "high": 6,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s7_po",
+              "kind": "stat",
+              "stat": "po",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-du-minotot/"
+    },
+    {
+      "ref": "panoplie du prespic",
+      "name": "Panoplie du Prespic",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_ren",
+              "kind": "stat",
+              "stat": "ren",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 15,
+              "high": 15,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 5,
+              "high": 5,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_ren",
+              "kind": "stat",
+              "stat": "ren",
+              "low": 5,
+              "high": 5,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 4,
+          "effects": [
+            {
+              "ref": "s4_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 8,
+              "high": 8,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_ren",
+              "kind": "stat",
+              "stat": "ren",
+              "low": 8,
+              "high": 8,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-du-prespic/"
+    },
+    {
+      "ref": "panoplie ougah",
+      "name": "Panoplie Ougah",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_pp",
+              "kind": "stat",
+              "stat": "pp",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 2,
+              "high": 2,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_pp",
+              "kind": "stat",
+              "stat": "pp",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 4,
+              "high": 4,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 4,
+          "effects": [
+            {
+              "ref": "s4_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_pp",
+              "kind": "stat",
+              "stat": "pp",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_do",
+              "kind": "stat",
+              "stat": "do",
+              "low": 6,
+              "high": 6,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s4_po",
+              "kind": "stat",
+              "stat": "po",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-ougah/"
+    },
+    {
+      "ref": "panoplie souveraine",
+      "name": "Panoplie Souveraine",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 30,
+              "high": 30,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s2_pp",
+              "kind": "stat",
+              "stat": "pp",
+              "low": 5,
+              "high": 5,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_vi",
+              "kind": "stat",
+              "stat": "vi",
+              "low": 60,
+              "high": 60,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_pp",
+              "kind": "stat",
+              "stat": "pp",
+              "low": 10,
+              "high": 10,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_po",
+              "kind": "stat",
+              "stat": "po",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-souveraine/"
+    },
+    {
+      "ref": "panoplie ventouse",
+      "name": "Panoplie Ventouse",
+      "tiers": [
+        {
+          "pieces": 1,
+          "effects": []
+        },
+        {
+          "pieces": 2,
+          "effects": [
+            {
+              "ref": "s2_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            }
+          ]
+        },
+        {
+          "pieces": 3,
+          "effects": [
+            {
+              "ref": "s3_sa",
+              "kind": "stat",
+              "stat": "sa",
+              "low": 20,
+              "high": 20,
+              "text": "",
+              "element": null
+            },
+            {
+              "ref": "s3_pa",
+              "kind": "stat",
+              "stat": "pa",
+              "low": 1,
+              "high": 1,
+              "text": "",
+              "element": null
+            }
+          ]
+        }
+      ],
+      "source": "https://xixou.io/encyclopedie/panoplies/panoplie-ventouse/"
+    }
+  ]
 }
