@@ -6,6 +6,7 @@ from contextlib import suppress
 from io import BytesIO
 import logging
 import time
+from typing import Literal
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -73,7 +74,7 @@ class BuildCog(commands.Cog):
             log.debug("build startup pending reason=%s", self.start_error)
             await asyncio.sleep(30)
 
-    async def initialize(self):
+    async def initialize(self, *, refresh_equipment=True):
         """Je restaure la console avant d'ouvrir les parcours des membres."""
         async with self.init_lock:
             if self.closed:
@@ -87,7 +88,8 @@ class BuildCog(commands.Cog):
                     await self.catalogs.restore()
                     self.ready = True
                 self.start_error = ""
-                await self.catalogs.refresh()
+                if refresh_equipment:
+                    await self.catalogs.refresh()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -601,20 +603,36 @@ class BuildCog(commands.Cog):
             raise BuildError("Cette commande est réservée à la gestion du serveur.")
 
     @group.command(name="actualiser", description="Staff : actualiser le catalogue sans migrer les builds existants.")
-    async def refreshing(self, interaction: discord.Interaction):
+    async def refreshing(self, interaction: discord.Interaction,
+                         catalogue: Literal["equipements", "sorts", "tous"] = "equipements"):
         await interaction.response.defer(ephemeral=True, thinking=True)
         self.require_staff(interaction)
         if self.closed or not flag("BUILD_ENABLED"):
             raise BuildError("Evolution Build est désactivé.")
-        if time.monotonic() - self.last_refresh_request < 60 or self.catalogs.lock.locked() or self.init_lock.locked():
+        if (time.monotonic() - self.last_refresh_request < 60 or self.catalogs.lock.locked()
+                or self.spells.lock.locked() or self.init_lock.locked()):
             raise BuildError("Actualisation déjà en cours ou trop récente.")
         self.last_refresh_request = time.monotonic()
-        await self.initialize()
+        if catalogue in {"equipements", "tous"}:
+            await self.initialize()
+        elif not self.ready:
+            await self.initialize(refresh_equipment=False)
         self.ensure_ready()
-        result = self.catalogs.latest
-        if result is None:
-            raise BuildError(self.catalogs.last_error or self.start_error or "Catalogue indisponible ; les builds existants ne sont pas modifiés.")
-        text = coverage_text(result) + "\n" + (self.catalogs.last_error or self.start_error or "Catalogue enregistré. Les anciens builds restent figés ; /build migrer applique les nouveautés après confirmation.")
+        messages = []
+        if catalogue in {"equipements", "tous"}:
+            result = self.catalogs.latest
+            status = self.catalogs.last_error or self.start_error
+            messages.append("**Équipements** : " + (status or "Catalogue enregistré.")
+                + ("\n" + coverage_text(result)[:1000] if result else "\nAucun catalogue disponible."))
+        if catalogue in {"sorts", "tous"}:
+            try:
+                result = await self.spells.refresh()
+                messages.append("**Sorts** : " + (self.spells.last_error or
+                    f"Catalogue enregistré ({len(result.attacks)} niveaux)."))
+            except BuildError as exc:
+                messages.append("**Sorts** : " + str(exc))
+        log.debug("build explicit refresh catalogue=%s", catalogue)
+        text = "\n".join(messages) + "\nLes builds et attaques déjà sélectionnés restent figés dans leur version."
         await interaction.edit_original_response(content=text[:1900])
 
     @group.command(name="renommer", description="Renommer mon build après prévisualisation.")

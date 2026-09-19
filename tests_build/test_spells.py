@@ -93,6 +93,40 @@ class SnapshotRepository(MemoryRepository):
 
 
 @pytest.mark.asyncio
+async def test_explicit_refresh_replaces_catalog_but_preserves_selected_attack():
+    repo = SnapshotRepository()
+    api = SimpleNamespace(enabled=True, catalog=AsyncMock(return_value=payload_with()))
+    service = SpellCatalogService(repo, lambda: api)
+    previous = await service.ensure()
+    attack = await service.attack(previous.id, "spell:3", 1)
+    api.catalog.return_value = payload_with(normal=[{"text": "Dommages : 50 (feu)"}])
+    refreshed = await service.refresh()
+    assert refreshed.id != previous.id
+    assert (await service.search())[0].normal_lines[0].minimum == 50
+    assert await repo.snapshot("attacks", attack.revision) == canonical(attack)
+    assert await service.attack(previous.id, "spell:3", 1) == attack
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["equipements", "sorts", "tous"])
+async def test_refresh_command_routes_catalogs(scope, monkeypatch):
+    import build as module
+    monkeypatch.setenv("BUILD_ENABLED", "1")
+    cog = SimpleNamespace(closed=False, ready=True, last_refresh_request=0,
+        require_staff=lambda interaction: None, ensure_ready=lambda: None,
+        initialize=AsyncMock(), init_lock=asyncio.Lock(), start_error="",
+        catalogs=SimpleNamespace(lock=asyncio.Lock(), latest=None, last_error="Source équipements indisponible"),
+        spells=SimpleNamespace(lock=asyncio.Lock(), refresh=AsyncMock(return_value=SimpleNamespace(attacks=(1,))), last_error=""))
+    interaction = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock()), edit_original_response=AsyncMock())
+    await module.BuildCog.refreshing.callback(cog, interaction, scope)
+    assert cog.initialize.await_count == int(scope in {"equipements", "tous"})
+    assert cog.spells.refresh.await_count == int(scope in {"sorts", "tous"})
+    content = interaction.edit_original_response.call_args.kwargs["content"]
+    if scope == "tous":
+        assert "Source équipements indisponible" in content and "Sorts" in content
+
+
+@pytest.mark.asyncio
 async def test_catalog_is_lazy_archived_and_restored_without_network():
     repo = SnapshotRepository()
     api = SimpleNamespace(enabled=True, catalog=AsyncMock(return_value=payload_with()))
