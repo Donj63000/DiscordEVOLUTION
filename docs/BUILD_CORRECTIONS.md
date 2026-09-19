@@ -20,3 +20,9 @@ Le Staff utilise `/build actualiser catalogue:sorts` ou `catalogue:tous` pour
 actualiser les sorts. Sans option, seuls les équipements sont actualisés.
 Une panne conserve la dernière archive confirmée et le résultat indique la
 famille en échec. Les attaques déjà sélectionnées gardent leur version.
+
+## Retour à une archive existante
+
+Réactiver une version déjà archivée met à jour l'index confirmé sans renvoyer ses
+fragments. Une séquence A → B → A conserve donc A après redémarrage, pour chaque
+famille de données versionnées. Un échec d'engagement conserve la version active.

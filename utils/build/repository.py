@@ -178,6 +178,7 @@ class MemoryRepository:
             raise BuildError("Collision d'empreinte d'instantané.")
         if previous is None and sum(len(x.encode()) for x in self.snapshots.values()) + len(payload.encode()) > 96 * 1024 * 1024:
             raise BuildError("Mémoire des instantanés saturée : actualisation refusée sans effacer les builds.")
+        self.snapshots.pop(key, None)
         self.snapshots[key] = payload
 
     async def snapshot(self, kind, identifier):

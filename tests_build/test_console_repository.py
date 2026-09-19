@@ -166,6 +166,32 @@ async def create(repo, actor, build, operation="create"):
     return await repo.commit(actor, build, None, operation, digest(operation), digest("report"))
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["catalog", "rules", "spells", "attacks"])
+async def test_reactivate_existing_archive_survives_restart(discord_store, kind):
+    repo = await reopen(discord_store)
+    for payload in ('{"value":"A"}', '{"value":"B"}'):
+        await repo.put_snapshot(kind, digest(payload), payload)
+    channel = discord_store[1]
+    sent = len(channel.sent)
+    await repo.put_snapshot(kind, digest('{"value":"A"}'), '{"value":"A"}')
+    assert len(channel.sent) == sent
+    assert await repo.latest_snapshot(kind) == '{"value":"A"}'
+    restarted = await reopen(discord_store)
+    assert await restarted.latest_snapshot(kind) == '{"value":"A"}'
+
+
+@pytest.mark.asyncio
+async def test_failed_reactivation_does_not_change_active_archive(discord_store):
+    repo = await reopen(discord_store)
+    for payload in ("A", "B"):
+        await repo.put_snapshot("catalog", digest(payload), payload)
+    discord_store[1].edit_failure = "before"
+    with pytest.raises(BuildError):
+        await repo.put_snapshot("catalog", digest("A"), "A")
+    assert await repo.latest_snapshot("catalog") == "B"
+
+
 def quote(catalog, **changes):
     value = {
         "schema_version": 1, "id": str(uuid4()), "server": "Serveur synthétique",

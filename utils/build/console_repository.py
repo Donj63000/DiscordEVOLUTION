@@ -675,6 +675,11 @@ class ConsoleRepository:
                 descriptor = self._root["snapshots"][kind][identifier]
                 if (await self._read_blob(descriptor)).decode("utf-8") != payload:
                     raise BuildError("L'instantané de calcul archivé a été altéré.")
+                if self._root["latest"].get(kind) != identifier:
+                    root = deepcopy(self._root)
+                    root["latest"][kind] = identifier
+                    await self._commit_root(root)
+                    log.debug("build console snapshot reactivated kind=%s id=%s", kind, identifier)
                 return
             descriptor = await self._write_blob(payload.encode("utf-8"))
             root = deepcopy(self._root)
