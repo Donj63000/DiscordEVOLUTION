@@ -1,8 +1,10 @@
 {
   "schema_version": 1,
-  "version": "retro-beta-2026-09-19",
+  "version": "retro-documented-2026-09-20",
   "sources": [
-    "https://xixou.io/guides/classes/"
+    "https://xixou.io/guides/classes/",
+    "https://xixou.io/wp-content/plugins/xixou-builder/assets/js/xb-builder-v2.js",
+    "https://xixou.io/calculateurs/"
   ],
   "allocations": [
     {
@@ -1658,8 +1660,8 @@
   "base_pm": 3,
   "base_pp": 100,
   "enutrof_pp": 120,
-  "base_pv": null,
-  "pv_per_level": null,
+  "base_pv": 50,
+  "pv_per_level": 5,
   "base_verified": false,
   "allocation_verified": false,
   "derivatives_verified": false,
@@ -1668,9 +1670,73 @@
   "set_count": "distinct_templates",
   "fixtures": [],
   "notes": [
-    "Paliers : tables publiques Xixou. Aucun personnage étalon observé en jeu fourni.",
-    "PA/PM/PP et calcul dérivé PP/VI : hypothèses de simulation non certifiées ; les métriques restent partielles.",
-    "Pas de formule de PV de base inventée. Initiative et pods complets non couverts.",
-    "Le mode déclaré permet de saisir les valeurs hors équipement ; ce n’est pas une preuve de légalité."
+    "Paliers : tables publiques Xixou relues le 20 septembre 2026. Aucun personnage étalon observé en jeu fourni.",
+    "PA/PM/PP et PV50+5*(niveau-1) suivent le builder public Xixou. Valeurs documentées, non certifiées en jeu.",
+    "Initiative complète et pods de métiers non modélisés ; leurs inconnues ne contaminent pas les dégâts.",
+    "Le parchottage saisi est antérieur aux investissements ; les paliers portent sur la caractéristique totale.",
+    "Une divergence de formule PV existe dans des sources tierces : la comparaison à un personnage en jeu reste nécessaire."
+  ],
+  "evidence": [
+    {
+      "topic": "allocation",
+      "status": "documented",
+      "sources": [
+        "https://xixou.io/guides/classes/"
+      ],
+      "metrics": [
+        "vi",
+        "sa",
+        "fo",
+        "ine",
+        "cha",
+        "age"
+      ],
+      "cases": []
+    },
+    {
+      "topic": "base",
+      "status": "documented",
+      "sources": [
+        "https://xixou.io/wp-content/plugins/xixou-builder/assets/js/xb-builder-v2.js"
+      ],
+      "metrics": [
+        "pa",
+        "pm",
+        "pp",
+        "pv",
+        "invo",
+        "po",
+        "do",
+        "pui",
+        "so",
+        "cc",
+        "pi",
+        "pi_per",
+        "ren",
+        "r_ne",
+        "r_te",
+        "r_fe",
+        "r_ea",
+        "r_ai",
+        "rp_ne",
+        "rp_te",
+        "rp_fe",
+        "rp_ea",
+        "rp_ai"
+      ],
+      "cases": []
+    },
+    {
+      "topic": "derivatives",
+      "status": "documented",
+      "sources": [
+        "https://xixou.io/wp-content/plugins/xixou-builder/assets/js/xb-builder-v2.js"
+      ],
+      "metrics": [
+        "pp",
+        "pv"
+      ],
+      "cases": []
+    }
   ]
 }

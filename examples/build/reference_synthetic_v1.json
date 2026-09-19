@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "schema_version": 1,
+      "name": "Synthétique Enutrof niveau 1",
+      "origin": "synthetic",
+      "game_version": "synthetic-only documented-2026-09-20",
+      "observed_at": null,
+      "evidence": [],
+      "build": {
+        "schema_version": 1,
+        "id": "00000000-0000-4000-8000-000000000001",
+        "guild_id": 1,
+        "owner_id": 1,
+        "name": "Synthétique Enutrof niveau 1",
+        "revision": 0,
+        "catalog_id": "9fda5fda7540d99a877ed57f9dcfb483ed322b26f145f1281a6c741e73a754e5",
+        "rules_id": "8aede3659d2b5228021c3b1b90ea27658b5868dde897b34b60d2abc88c7ff25e",
+        "profile": {
+          "classe": "enutrof",
+          "level": 1,
+          "allocated": [],
+          "scrolled": [],
+          "mode": "rules",
+          "naked_stats": [],
+          "alignment": null,
+          "grade": null
+        },
+        "slots": [],
+        "created_at": "2026-09-20T00:00:00+02:00",
+        "updated_at": "2026-09-20T00:00:00+02:00"
+      },
+      "expected": [
+        {
+          "stat": "pa",
+          "value": 6
+        },
+        {
+          "stat": "pv",
+          "value": 50
+        },
+        {
+          "stat": "pp",
+          "value": 120
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "name": "Synthétique Enutrof niveau 99",
+      "origin": "synthetic",
+      "game_version": "synthetic-only documented-2026-09-20",
+      "observed_at": null,
+      "evidence": [],
+      "build": {
+        "schema_version": 1,
+        "id": "00000000-0000-4000-8000-000000000099",
+        "guild_id": 1,
+        "owner_id": 1,
+        "name": "Synthétique Enutrof niveau 99",
+        "revision": 0,
+        "catalog_id": "9fda5fda7540d99a877ed57f9dcfb483ed322b26f145f1281a6c741e73a754e5",
+        "rules_id": "8aede3659d2b5228021c3b1b90ea27658b5868dde897b34b60d2abc88c7ff25e",
+        "profile": {
+          "classe": "enutrof",
+          "level": 99,
+          "allocated": [],
+          "scrolled": [],
+          "mode": "rules",
+          "naked_stats": [],
+          "alignment": null,
+          "grade": null
+        },
+        "slots": [],
+        "created_at": "2026-09-20T00:00:00+02:00",
+        "updated_at": "2026-09-20T00:00:00+02:00"
+      },
+      "expected": [
+        {
+          "stat": "pa",
+          "value": 6
+        },
+        {
+          "stat": "pv",
+          "value": 540
+        },
+        {
+          "stat": "pp",
+          "value": 120
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "name": "Synthétique Enutrof niveau 100",
+      "origin": "synthetic",
+      "game_version": "synthetic-only documented-2026-09-20",
+      "observed_at": null,
+      "evidence": [],
+      "build": {
+        "schema_version": 1,
+        "id": "00000000-0000-4000-8000-000000000100",
+        "guild_id": 1,
+        "owner_id": 1,
+        "name": "Synthétique Enutrof niveau 100",
+        "revision": 0,
+        "catalog_id": "9fda5fda7540d99a877ed57f9dcfb483ed322b26f145f1281a6c741e73a754e5",
+        "rules_id": "8aede3659d2b5228021c3b1b90ea27658b5868dde897b34b60d2abc88c7ff25e",
+        "profile": {
+          "classe": "enutrof",
+          "level": 100,
+          "allocated": [],
+          "scrolled": [],
+          "mode": "rules",
+          "naked_stats": [],
+          "alignment": null,
+          "grade": null
+        },
+        "slots": [],
+        "created_at": "2026-09-20T00:00:00+02:00",
+        "updated_at": "2026-09-20T00:00:00+02:00"
+      },
+      "expected": [
+        {
+          "stat": "pa",
+          "value": 7
+        },
+        {
+          "stat": "pv",
+          "value": 545
+        },
+        {
+          "stat": "pp",
+          "value": 120
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "name": "Synthétique Enutrof niveau 200",
+      "origin": "synthetic",
+      "game_version": "synthetic-only documented-2026-09-20",
+      "observed_at": null,
+      "evidence": [],
+      "build": {
+        "schema_version": 1,
+        "id": "00000000-0000-4000-8000-000000000200",
+        "guild_id": 1,
+        "owner_id": 1,
+        "name": "Synthétique Enutrof niveau 200",
+        "revision": 0,
+        "catalog_id": "9fda5fda7540d99a877ed57f9dcfb483ed322b26f145f1281a6c741e73a754e5",
+        "rules_id": "8aede3659d2b5228021c3b1b90ea27658b5868dde897b34b60d2abc88c7ff25e",
+        "profile": {
+          "classe": "enutrof",
+          "level": 200,
+          "allocated": [],
+          "scrolled": [],
+          "mode": "rules",
+          "naked_stats": [],
+          "alignment": null,
+          "grade": null
+        },
+        "slots": [],
+        "created_at": "2026-09-20T00:00:00+02:00",
+        "updated_at": "2026-09-20T00:00:00+02:00"
+      },
+      "expected": [
+        {
+          "stat": "pa",
+          "value": 7
+        },
+        {
+          "stat": "pv",
+          "value": 1045
+        },
+        {
+          "stat": "pp",
+          "value": 120
+        }
+      ]
+    }
+  ]
+}

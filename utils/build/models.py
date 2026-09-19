@@ -10,7 +10,8 @@ from types import MappingProxyType
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_validator
+from pydantic import (BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator,
+                      model_serializer, model_validator)
 
 Int = Annotated[StrictInt, Field(ge=-10000, le=10000)]
 Positive = Annotated[StrictInt, Field(ge=1, le=2**63 - 1)]
@@ -166,6 +167,22 @@ class RecipeLine(Frozen):
     quantity: Annotated[StrictInt, Field(ge=1, le=100000)]
 
 
+class WeaponMetadata(Frozen):
+    critical_denominator: Annotated[StrictInt, Field(ge=0, le=10000)] | None = None
+    failure_denominator: Annotated[StrictInt, Field(ge=0, le=10000)] | None = None
+    critical_bonus: Int | None = None
+    ap_cost: Annotated[StrictInt, Field(ge=0, le=100)] | None = None
+    critical_effects: Annotated[tuple[Effect, ...], Field(max_length=100)] | None = None
+    raw_lines: Annotated[tuple[Annotated[str, Field(max_length=600)], ...], Field(max_length=100)] = ()
+    source: Annotated[str, Field(max_length=400)] = "https://xixou.io/les-outils/api/"
+
+    @model_validator(mode="after")
+    def meaningful_probability(self):
+        if self.critical_denominator == 1 or self.failure_denominator == 1:
+            raise ValueError("Probabilité critique d'arme invalide.")
+        return self
+
+
 class ItemTemplate(Frozen):
     ref: Annotated[str, Field(pattern=r"^(?:item:[0-9]{1,12}|xixou:[a-f0-9]{24})$")]
     revision: Hash
@@ -185,6 +202,14 @@ class ItemTemplate(Frozen):
     recipe: Annotated[tuple[RecipeLine, ...], Field(max_length=100)] = ()
     recipe_known: StrictBool = False
     image_urls: Annotated[tuple[Annotated[str, Field(max_length=500)], ...], Field(max_length=8)] = ()
+    weapon: WeaponMetadata | None = None
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_revision(self, handler):
+        data = handler(self)
+        if self.weapon is None:
+            data.pop("weapon", None)
+        return data
 
     @model_validator(mode="after")
     def no_duplicates(self):
@@ -299,8 +324,20 @@ class Build(Frozen):
         return revised(self, slots=[s.model_dump(mode="json") for s in sorted(slots, key=lambda s: SLOTS.index(s.slot))])
 
 
+class CatalogIssue(Frozen):
+    code: Text
+    severity: Literal["info", "warning", "excluded"] = "warning"
+    category: Annotated[str, Field(max_length=180)] = ""
+    name: Annotated[str, Field(max_length=180)] = ""
+    ref: Annotated[str, Field(max_length=180)] = ""
+    row: Annotated[StrictInt, Field(ge=0, le=30000)] = 0
+    text: Annotated[str, Field(max_length=600)]
+    source: Annotated[str, Field(max_length=400)] = "https://xixou.io/api/v1/equipements.json"
+    source_hash: Hash
+
+
 class Catalog(Frozen):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     id: Hash
     generated_at: Annotated[str, Field(max_length=100)] = ""
     source_hash: Hash
@@ -308,9 +345,19 @@ class Catalog(Frozen):
     items: Annotated[tuple[ItemTemplate, ...], Field(max_length=20000)]
     sets: Annotated[tuple[SetDefinition, ...], Field(max_length=2000)] = ()
     diagnostics: tuple[Annotated[str, Field(max_length=300)], ...] = ()
+    audit: Annotated[tuple[CatalogIssue, ...], Field(max_length=200000)] = ()
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_snapshot(self, handler):
+        data = handler(self)
+        if self.schema_version == 1:
+            data.pop("audit", None)
+        return data
 
     @model_validator(mode="after")
     def identities(self):
+        if self.schema_version == 1 and self.audit:
+            raise ValueError("Les diagnostics structurés exigent un catalogue version 2.")
         if len({i.ref for i in self.items}) != len(self.items):
             raise ValueError("Catalogue ambigu.")
         if len({s.ref for s in self.sets}) != len(self.sets):

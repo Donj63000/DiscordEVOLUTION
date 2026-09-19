@@ -2,14 +2,20 @@
 from __future__ import annotations
 import asyncio
 import json
+import logging
 from pathlib import Path
+import re
 import time
 from collections import defaultdict
+from types import SimpleNamespace
 from utils.dofus_wiki import WikiError
-from .conditions import norm
+from .conditions import norm, parse, recognized
 from .effects import parse_lines
-from .models import (Catalog, ItemTemplate, SetDefinition, BuildError, digest, canonical,
-                     SLOTS)
+from .models import (Catalog, CatalogIssue, ItemTemplate, SetDefinition, WeaponMetadata,
+                     BuildError, digest, canonical, SLOTS)
+
+log = logging.getLogger(__name__)
+API_SOURCE = "https://xixou.io/api/v1/equipements.json"
 
 CATEGORY_SLOTS = {
     "chapeau": ("coiffe",), "coiffe": ("coiffe",), "cape": ("cape",), "sac": ("cape",),
@@ -17,15 +23,18 @@ CATEGORY_SLOTS = {
     "botte": ("bottes",), "bottes": ("bottes",), "anneau": ("anneau_1", "anneau_2"),
     "bouclier": ("bouclier",), "familier": ("compagnon",), "monture": ("compagnon",),
     "dragodinde": ("compagnon",), "dofus": tuple(f"dofus_{i}" for i in range(1, 7)),
+    "pierre ame": ("arme",), "filet capture": ("arme",),
 }
 for weapon in ("arc", "arbalete", "arme magique", "baguette", "baton", "dague", "epee", "faux", "hache", "marteau", "outil", "pelle", "pioche"):
     CATEGORY_SLOTS[weapon] = ("arme",)
 
 
-def freeze_catalog(items, sets=(), *, generated_at="", source_hash=None, diagnostics=()):
-    body = dict(schema_version=1, generated_at=generated_at, source_hash=source_hash or digest([i.model_dump(mode="json") for i in items]),
+def freeze_catalog(items, sets=(), *, generated_at="", source_hash=None, diagnostics=(), audit=None):
+    body = dict(schema_version=2 if audit is not None else 1, generated_at=generated_at, source_hash=source_hash or digest([i.model_dump(mode="json") for i in items]),
                 normalizer="evolution-build-1.1", items=[i.model_dump(mode="json") for i in sorted(items, key=lambda i: i.ref)],
                 sets=[s.model_dump(mode="json") for s in sorted(sets, key=lambda s: s.ref)], diagnostics=list(diagnostics))
+    if audit is not None:
+        body["audit"] = [issue.model_dump(mode="json") for issue in audit]
     return Catalog(id=digest(body), **body)
 
 
@@ -51,6 +60,34 @@ def strings(value, *, field):
     return tuple(v.strip() for v in value if v.strip())
 
 
+def weapon_metadata(row, source):
+    """Je conserve seulement les valeurs explicitement fournies par la source."""
+    if "arme_stats" not in row:
+        return None
+    lines = strings(row["arme_stats"], field="arme_stats")
+    result = {}
+    patterns = (
+        (r"^PA\s*:\s*(\d+)$", "ap_cost"),
+        (r"^Bonus coup critiques?\s*:\s*([+-]?\d+)$", "critical_bonus"),
+        (r"^Critique\s*:\s*1/(\d+)(?:\s*-\s*Échec\s*:\s*1/\d+)?$", "critical_denominator"),
+    )
+    for line in lines:
+        for pattern, key in patterns:
+            match = re.fullmatch(pattern, line, re.I)
+            if match:
+                value = int(match[1])
+                if key in result and result[key] != value:
+                    raise ValueError("Métadonnées d'arme contradictoires.")
+                result[key] = value
+        failure = re.search(r"(?:^| - )Échec\s*:\s*1/(\d+)$", line, re.I)
+        if failure:
+            value = int(failure[1])
+            if "failure_denominator" in result and result["failure_denominator"] != value:
+                raise ValueError("Probabilité d'échec contradictoire.")
+            result["failure_denominator"] = value
+    return WeaponMetadata(**result, raw_lines=lines, source=source)
+
+
 def normalize(entries, payload, overrides=None):
     """Rapprochement ID ET nom/niveau/catégorie ; sinon identité exacte unique.
 
@@ -74,8 +111,8 @@ def normalize(entries, payload, overrides=None):
         key = (identity_key(entry.name), entry.level, equipment_category(entry.category))
         by_id.setdefault(str(entry.identifier), []).append(entry)
         by_identity[key].append(entry)
-    items, rejected, ambiguous, seen = {}, 0, set(), 0
-    allowed_overrides = {"conditions", "conditions_known", "two_handed", "unique", "set_ref", "effects", "recipe", "recipe_known"}
+    items, rejected, ambiguous, seen, audit = {}, 0, set(), 0, []
+    allowed_overrides = {"conditions", "conditions_known", "two_handed", "unique", "set_ref", "effects", "recipe", "recipe_known", "weapon"}
     for category, rows in payload["data"].items():
         if not isinstance(rows, list):
             raise BuildError("Famille de catalogue tronquée/invalide.")
@@ -83,14 +120,27 @@ def normalize(entries, payload, overrides=None):
             seen += 1
             if seen > 30000:
                 raise BuildError("Nombre de lignes excessif.")
+            issue_context = dict(category=str(category)[:180], row=seen,
+                                 name=str(row.get("name", ""))[:180] if isinstance(row, dict) else "",
+                                 source_hash=digest(row))
+            def issue(code, text, severity="warning", ref="", source=API_SOURCE):
+                audit.append(CatalogIssue(code=code, text=text[:600], severity=severity,
+                                          ref=ref, source=source, **issue_context))
             try:
                 if not isinstance(row, dict):
                     raise ValueError("Ligne invalide.")
                 name, level = row.get("name"), _integer(row.get("level"))
                 cat = equipment_category(category)
                 slots = CATEGORY_SLOTS.get(cat)
+                if any(norm(str(effect)) == "objet saisonnier" for effect in row.get("effets", ())):
+                    issue("SEASONAL_ITEM", "Objet saisonnier exclu du catalogue Retro officiel permanent.", "excluded")
+                    rejected += 1
+                    continue
                 if not slots or not isinstance(name, str) or level is None or not 1 <= level <= 200:
-                    raise ValueError("Identité/catégorie invalide.")
+                    issue("CATEGORY_UNSUPPORTED" if not slots else "IDENTITY_INVALID",
+                          "Catégorie non équipable dans ce builder." if not slots else "Nom ou niveau invalide.", "excluded")
+                    rejected += 1
+                    continue
                 identity = (identity_key(name), level, cat)
                 rawid = row.get("id")
                 identifier = _integer(rawid)
@@ -98,9 +148,14 @@ def normalize(entries, payload, overrides=None):
                     raise ValueError("ID externe invalide.")
                 matches = by_id.get(str(identifier), ()) if identifier is not None else by_identity.get(identity, ())
                 matches = [e for e in matches if (identity_key(e.name), e.level, equipment_category(e.category)) == identity]
-                if len(matches) != 1:
+                if not matches and identifier is None:
+                    entry = SimpleNamespace(token="xixou:" + digest(identity)[:24], url=API_SOURCE)
+                    issue("API_IDENTITY", "Identité exacte issue de Xixou ; absente de l'index secondaire.",
+                          "info", entry.token)
+                elif len(matches) != 1:
                     raise ValueError("Identité absente/ambiguë.")
-                entry = matches[0]
+                else:
+                    entry = matches[0]
                 effects_raw = row.get("effets", row.get("effects"))
                 if effects_raw is None:
                     raise ValueError("Effets absents, pas une liste vide certifiée.")
@@ -126,6 +181,11 @@ def normalize(entries, payload, overrides=None):
                             conditions=conditions, conditions_known="conditions" in row and row["conditions"] is not None,
                             source=entry.url, warnings=warning, two_handed=None, unique=None,
                             recipe=[], recipe_known=False, image_urls=[])
+                metadata = weapon_metadata(row, entry.url)
+                if metadata is not None:
+                    body["weapon"] = metadata
+                if "recette" in row and isinstance(row["recette"], list) and not row["recette"]:
+                    body["recipe_known"] = True
                 correction = overrides["items"].get(entry.token)
                 if correction:
                     if not isinstance(correction, dict) or not correction.get("source") or set(correction) - (allowed_overrides | {"source"}):
@@ -139,21 +199,41 @@ def normalize(entries, payload, overrides=None):
                 data = candidate.model_dump(mode="json")
                 data.pop("revision")
                 candidate = ItemTemplate(revision=digest(data), **data)
+                for effect in candidate.effects:
+                    if effect.kind in {"unknown", "context"}:
+                        issue("EFFECT_UNKNOWN" if effect.kind == "unknown" else "EFFECT_CONTEXT",
+                              effect.text, ref=entry.token, source=entry.url)
+                if not candidate.conditions_known:
+                    issue("CONDITIONS_MISSING", "Conditions non fournies.", ref=entry.token)
+                for condition in candidate.conditions:
+                    if not recognized(parse(condition)):
+                        issue("CONDITION_UNKNOWN", condition, ref=entry.token, source=entry.url)
+                for text in candidate.warnings:
+                    issue("ITEM_COVERAGE", text, ref=entry.token, source=entry.url)
+                if candidate.set_ref and candidate.set_ref not in {s.ref for s in sets}:
+                    issue("SET_MISSING", candidate.set_ref, ref=entry.token, source=entry.url)
                 if candidate.ref in items and candidate != items[candidate.ref]:
                     ambiguous.add(candidate.ref)
+                    issue("IDENTITY_CONFLICT", "Réponses contradictoires pour la même identité ; objet exclu.",
+                          "excluded", candidate.ref)
                 items[candidate.ref] = candidate
             except BuildError:
                 raise
-            except (ValueError, TypeError, KeyError):
+            except (ValueError, TypeError, KeyError) as exc:
                 rejected += 1
+                issue("IDENTITY_AMBIGUOUS" if "Identité absente" in str(exc) else "ROW_INVALID",
+                      "Identité absente/ambiguë." if "Identité absente" in str(exc)
+                      else "Ligne rejetée : " + str(exc).split("\n", 1)[0], "excluded")
     for ref in ambiguous:
         items.pop(ref, None)
     if not items:
         raise BuildError("Aucun objet rapproché de façon fiable ; ancien catalogue conservé.")
     diagnostics = (f"Lignes reçues : {seen}", f"Objets rapprochés : {len(items)}", f"Lignes exclues : {rejected}",
                    f"Identités contradictoires exclues : {len(ambiguous)}", f"Tables de panoplie sourcées : {len(sets)}")
+    log.debug("Build catalogue: received=%s accepted=%s rejected=%s issues=%s", seen, len(items), rejected, len(audit))
     return freeze_catalog(tuple(items.values()), sets, generated_at=str(payload.get("genere_le", ""))[:100],
-                          source_hash=digest({"payload": payload, "overrides": overrides}), diagnostics=diagnostics)
+                          source_hash=digest({"payload": payload, "overrides": overrides}), diagnostics=diagnostics,
+                          audit=tuple(audit))
 
 
 def search(catalog, query="", slot=None, level=200, limit=25, *, offset=0, priority=None, minimum=1):
@@ -223,12 +303,15 @@ class CatalogService:
                         generated_at=candidate.generated_at,
                         source_hash=digest({"api": candidate.source_hash,
                                            "sets": [d.model_dump(mode="json") for d in sorted(definitions, key=lambda d: d.ref)]}),
-                        diagnostics=candidate.diagnostics + notes)
+                        diagnostics=candidate.diagnostics + notes,
+                        audit=tuple(issue for issue in candidate.audit
+                                    if issue.code != "SET_MISSING" or issue.text not in {d.ref for d in definitions}))
                 verify_snapshot(candidate)
                 await self.repository.put_snapshot("catalog", candidate.id, canonical(candidate))
                 self.latest, self.last_error = candidate, ""
                 self.refreshed_at = time.monotonic()
             except (BuildError, WikiError, ValueError, OSError, TimeoutError) as exc:
+                log.debug("Build catalogue: refresh_failed reason=%s previous=%s", type(exc).__name__, self.latest is not None)
                 self.last_error = "Actualisation impossible ; vérifier le diagnostic et la configuration Xixou."
                 if self.latest is None:
                     raise BuildError(self.last_error) from exc

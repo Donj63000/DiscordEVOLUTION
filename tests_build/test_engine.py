@@ -183,11 +183,13 @@ def test_weapon_shield_restriction(build,rules,item_factory):
     assert calculate(b,cat,rules).equipability == "invalid"
 
 
-def test_beta_rules_never_claim_exact_game_profile(build,catalog):
+def test_documented_rules_do_not_claim_in_game_validation(build,catalog):
     rules=load_rules(); b=revised(build,rules_id=rules.id,profile=Profile(classe="enutrof",level=200))
     report=calculate(b,catalog,rules)
     assert report.totals["pa"] == 7 and report.totals["pm"] == 3
-    assert not report.known("pa") and not report.known("pp")
+    assert report.known("pa") and report.known("pp")
+    assert not rules.base_verified and not rules.derivatives_verified
+    assert any(w.code == "DOCUMENTED_RULES" for w in report.warnings)
     assert report.equipability == "unknown"
 
 

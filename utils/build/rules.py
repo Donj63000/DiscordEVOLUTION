@@ -2,7 +2,7 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Literal
-from pydantic import Field, StrictBool, StrictInt, model_validator
+from pydantic import Field, StrictBool, StrictInt, model_serializer, model_validator
 from .models import (Frozen, Hash, Text, Profile, Contribution, Diagnostic, PRIMARY,
                      CLASSES, STAT_LABELS, StatValue, as_stats, digest, BuildError)
 
@@ -26,6 +26,20 @@ class AllocationRule(Frozen):
             raise ValueError("Palier terminal manquant.")
         return self
 
+
+class RuleEvidence(Frozen):
+    topic: Literal["base", "allocation", "derivatives", "restrictions"]
+    status: Literal["documented", "in_game"] = "documented"
+    sources: Annotated[tuple[Text, ...], Field(min_length=1, max_length=12)]
+    metrics: tuple[Text, ...] = ()
+    cases: tuple[Text, ...] = ()
+
+    @model_validator(mode="after")
+    def observed_cases(self):
+        if self.status == "in_game" and not self.cases:
+            raise ValueError("Une validation en jeu exige des références d'observations.")
+        return self
+
 class Rules(Frozen):
     schema_version: Literal[1] = 1
     id: Hash
@@ -47,6 +61,21 @@ class Rules(Frozen):
     set_count: Literal["distinct_templates"] = "distinct_templates"
     notes: tuple[Annotated[str, Field(max_length=500)], ...] = ()
     fixtures: tuple[Text, ...] = ()
+    evidence: tuple[RuleEvidence, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_hash(self, handler):
+        body = handler(self)
+        if not self.evidence:
+            body.pop("evidence", None)
+        return body
+
+    def documented_metrics(self, topic):
+        return {metric for evidence in self.evidence if evidence.topic == topic
+                for metric in evidence.metrics}
+
+    def documented(self, topic):
+        return any(evidence.topic == topic for evidence in self.evidence)
 
     @model_validator(mode="after")
     def complete(self):
@@ -100,11 +129,13 @@ def character(profile: Profile, rules: Rules):
         for stat in PRIMARY:
             totals[stat] = rules.allocated_value(profile.classe, stat, spent.get(stat, 0), scroll.get(stat, 0))
         if not rules.base_verified:
-            unknown.update(set(STAT_LABELS) - set(PRIMARY))
+            unknown.update(set(STAT_LABELS) - set(PRIMARY) - rules.documented_metrics("base"))
             warnings.append(Diagnostic(code="BASE_RULES_BETA", text="Bases PA/PM/PP provisoires : recette en jeu absente. Pas une certification Retro."))
-        if not rules.allocation_verified:
+        if not rules.allocation_verified and not rules.documented("allocation"):
             unknown.update(PRIMARY)
             warnings.append(Diagnostic(code="ALLOCATION_BETA", text="Paliers transcrits depuis Xixou ; interaction parchottage et cas de référence à valider en jeu."))
+        if rules.evidence:
+            warnings.append(Diagnostic(code="DOCUMENTED_RULES", text="Calcul selon les sources documentées du profil de règles ; aucune comparaison en jeu n'est revendiquée."))
         if rules.base_pv is None or rules.pv_per_level is None:
             unknown.add("pv")
         else:
@@ -134,8 +165,8 @@ def derive(totals, base, profile, rules, unknown):
             add("pv", totals.get("vi", 0) - base["vi"])
         else:
             unknown.add("pv")
-    if "cha" in unknown or not rules.derivatives_verified:
+    if "cha" in unknown or not (rules.derivatives_verified or "pp" in rules.documented_metrics("derivatives")):
         unknown.add("pp")
-    if "vi" in unknown or not rules.derivatives_verified:
+    if "vi" in unknown or not (rules.derivatives_verified or "pv" in rules.documented_metrics("derivatives")):
         unknown.add("pv")
     return ledger

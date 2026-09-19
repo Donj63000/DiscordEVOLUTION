@@ -44,6 +44,15 @@ def parse(text):
     text = norm(text)
     if not text or text in {"aucune", "aucune condition", "sans condition"}:
         return ("true",)
+    if text == "bi=non equipable":
+        return ("false",)
+    from .models import CLASSES
+    for identifier, classe in enumerate(CLASSES, 1):
+        text = re.sub(r"\bclasse\s+non\s+" + classe + r"\b", f"classe != {identifier}", text)
+        text = re.sub(r"\bclasse\s*=\s*" + classe + r"\b", f"classe = {identifier}", text)
+    for alignment, identifier in {"neutre": 0, "bontarien": 1, "brakmarien": 2, "mercenaire": 3}.items():
+        text = re.sub(r"\balignement\s*=\s*" + alignment + r"\b", f"alignement = {identifier}", text)
+    text = re.sub(r"(?<=\d)\s+(?=[a-z_]+\s*(?:[<>=!~]))", " & ", text)
     tokens, position = [], 0
     while position < len(text):
         match = TOKEN.match(text, position)
@@ -100,6 +109,8 @@ def evaluate(node, context):
     kind = node[0]
     if kind == "true":
         return Truth.TRUE
+    if kind == "false":
+        return Truth.FALSE
     if kind == "cmp":
         _, symbol, op, expected = node
         actual = context.get(symbol)
@@ -109,3 +120,14 @@ def evaluate(node, context):
     if kind in {"and", "or"}:
         return (tri_and if kind == "and" else tri_or)(evaluate(n, context) for n in node[1])
     return Truth.UNKNOWN
+
+
+def recognized(node):
+    """Je distingue une syntaxe connue d'une valeur de personnage encore absente."""
+    if node[0] in {"true", "false"}:
+        return True
+    if node[0] == "cmp":
+        return not node[1].startswith("unknown:")
+    if node[0] in {"and", "or"}:
+        return all(recognized(child) for child in node[1])
+    return False

@@ -4,7 +4,7 @@ from . import ENGINE_VERSION
 from .models import (Build, Catalog, Report, Metric, Contribution, Diagnostic, STAT_LABELS,
                      BuildError)
 from .rules import character, derive, Rules
-from .effects import resolve_values
+from .effects import resolve_values, affected_stats
 from .validation import validate
 
 
@@ -20,8 +20,15 @@ def calculate(build: Build, catalog: Catalog, rules: Rules) -> Report:
         ledger.extend(contributions)
         for effect in unsupported:
             # Impact non classé : impossible de certifier quelles statistiques seraient épargnées.
-            unknown.update(STAT_LABELS)
+            unknown.update(affected_stats(effect))
             warnings.append(Diagnostic(code="EFFECT_UNKNOWN", text=effect.text, origin=row.slot))
+        pet_stats = {effect.stat for effect in item.effects
+                     if effect.kind == "stat" and effect.low != effect.high}
+        if item.category == "familier" and len(pet_stats) > 1:
+            warnings.append(Diagnostic(code="PET_BUDGET", origin=row.slot,
+                                       text="Bonus de familier liés au nourrissage : renseigner les jets réels ; maxima simultanés non certifiés."))
+            if row.item.mode == "natural_best":
+                unknown.update(pet_stats)
         warnings.extend(Diagnostic(code="ITEM_COVERAGE", text=w, origin=row.slot) for w in item.warnings)
         if item.warnings:
             unknown.update(STAT_LABELS)
@@ -47,7 +54,8 @@ def calculate(build: Build, catalog: Catalog, rules: Rules) -> Report:
     errors, validity_warnings = validate(build, catalog, rules, totals, unknown)
     warnings.extend(validity_warnings)
     # Ne pas confondre somme partielle et absence d'équipement (un brouillon vide reste autorisé).
-    equipability = "invalid" if errors else "unknown" if validity_warnings or unknown else "valid"
+    blocking_unknown = unknown - {"ini", "pod"}
+    equipability = "invalid" if errors else "unknown" if validity_warnings or blocking_unknown else "valid"
     metrics = tuple(Metric(stat=s, value=totals[s], status="partial" if s in unknown else "known") for s in STAT_LABELS)
     return Report(metrics=metrics, contributions=tuple(ledger), errors=tuple(errors), warnings=tuple(warnings),
                   equipability=equipability, completeness="partial" if unknown else "complete",

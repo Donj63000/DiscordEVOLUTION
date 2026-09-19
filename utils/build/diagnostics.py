@@ -20,8 +20,18 @@ def catalog_coverage(catalog):
         "panoplies_referencees": len(membership),
         "tables_panoplies_disponibles": len(set(membership) & set(available)),
         "tables_panoplies_manquantes": missing,
+        "diagnostics_par_code": dict(Counter(issue.code for issue in catalog.audit)),
+        "lignes_exclues": sum(issue.severity == "excluded" for issue in catalog.audit),
+        "familles": dict(Counter(item.category for item in catalog.items)),
         "portee": "La présence d'une table ne certifie ni les règles du jeu ni chaque objet.",
     }
+
+
+def catalog_audit(catalog):
+    """Je fournis une preuve exploitable par objet sans exposer de configuration."""
+    return {"schema_version": 1, "coverage": catalog_coverage(catalog),
+            "source_hash": catalog.source_hash, "generated_at": catalog.generated_at,
+            "issues": [issue.model_dump(mode="json") for issue in catalog.audit]}
 
 
 def coverage_text(catalog):
