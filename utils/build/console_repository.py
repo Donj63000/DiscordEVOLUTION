@@ -73,6 +73,7 @@ class ConsoleRepository:
         self.channel = channel
         self._injected_channel = channel is not None
         self._leadership = leadership
+        self._leadership_channel = None
         self._gate = asyncio.Lock()
         self._open_lock = asyncio.Lock()
         self._root_message = None
@@ -95,11 +96,22 @@ class ConsoleRepository:
         check = self._leadership or getattr(self.bot, "ensure_build_leadership", None)
         if check is None:
             raise BuildError("Le verrou Build est indisponible : écritures suspendues.")
-        await self._io(check())
+        verified = await self._io(check())
+        self._leadership_channel = verified if (
+            getattr(verified, "id", None) is not None and getattr(verified, "guild", None) is not None
+        ) else None
 
     def _resolve_channel(self):
         if self._injected_channel:
             return self.channel
+        if self._leadership_channel is not None:
+            return self._leadership_channel
+        lock_channel_id = getattr(self.bot, "_lock_channel_id", None)
+        get_channel = getattr(self.bot, "get_channel", None)
+        if lock_channel_id is not None and get_channel is not None:
+            locked = get_channel(lock_channel_id)
+            if locked is not None and getattr(locked, "guild", None) is not None:
+                return locked
         channels = {
             candidate.id: candidate
             for guild in getattr(self.bot, "guilds", ())

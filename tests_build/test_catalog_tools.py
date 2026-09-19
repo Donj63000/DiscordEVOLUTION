@@ -123,12 +123,14 @@ def test_damage_unknown_stats_refused(build,catalog,rules):
         simulate(report,(DamageLine(element="te",minimum=1,maximum=2),),Scenario())
 
 
-def test_config_dsn_hidden_and_no_implicit_database_fallback(monkeypatch):
+def test_config_uses_console_without_external_database(monkeypatch):
     monkeypatch.setenv("DATABASE_URL","secret-of-other-module")
     monkeypatch.delenv("BUILD_DATABASE_URL",raising=False)
-    assert Config.from_env().dsn==""
+    assert Config.from_env().backend == "console"
     monkeypatch.setenv("BUILD_DATABASE_URL","secret-build")
     assert "secret-build" not in repr(Config.from_env())
+    monkeypatch.setenv("BUILD_BACKEND", "postgres")
+    assert Config.from_env().backend == "console"
     monkeypatch.setenv("BUILD_MAX_PER_USER","0")
     with pytest.raises(BuildError):Config.from_env()
 
@@ -172,5 +174,6 @@ async def test_live_recipe_missing_is_not_free(build,catalog):
         raise WikiError("unavailable")
     b=build.with_slot("coiffe",equip(catalog.items[0])).with_slot("cape",equip(catalog.items[1]))
     result=await shopping_list(b,catalog,SimpleNamespace(client=SimpleNamespace(items=items,detail=detail)))
-    assert result["ingredients"][0]["quantity"]==2
-    assert result["recettes_manquantes"]==[catalog.items[1].name]
+    resource = next(row for row in result["ingredients"] if row["ref"] == "item:10")
+    assert resource["quantity"]==2 and resource["status"] == "recipe_unknown"
+    assert result["recettes_manquantes"]==sorted([catalog.items[1].name, "Ressource"])

@@ -1,6 +1,6 @@
 """Configuration séparée de Luna et du stockage historique du bot."""
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from .models import BuildError
 
 
@@ -21,19 +21,15 @@ def integer(name, default, low, high):
 
 @dataclass(frozen=True)
 class Config:
-    backend: str
-    dsn: str = field(repr=False)
+    backend: str = "console"
     quota: int = 20
-    migrate: bool = False
     rules_path: str | None = None
     overrides_path: str | None = None
     max_views: int = 500
 
     @classmethod
     def from_env(cls):
-        backend = os.getenv("BUILD_BACKEND", "postgres").strip().lower()
-        if backend not in {"postgres", "memory"}:
-            raise BuildError("BUILD_BACKEND doit être postgres ou memory (essai non durable).")
-        return cls(backend, os.getenv("BUILD_DATABASE_URL", ""), integer("BUILD_MAX_PER_USER", 20, 1, 100),
-                   flag("BUILD_AUTO_MIGRATE"), os.getenv("BUILD_RULES_FILE") or None,
-                   os.getenv("BUILD_CATALOG_OVERRIDES") or None, integer("BUILD_MAX_VIEWS", 500, 10, 1000))
+        return cls(quota=integer("BUILD_MAX_PER_USER", 20, 1, 100),
+                   rules_path=os.getenv("BUILD_RULES_FILE") or None,
+                   overrides_path=os.getenv("BUILD_CATALOG_OVERRIDES") or None,
+                   max_views=integer("BUILD_MAX_VIEWS", 500, 10, 1000))

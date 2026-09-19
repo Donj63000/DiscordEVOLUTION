@@ -13,7 +13,7 @@ def safe(value, maximum=1000):
 def card(build, report, catalog, durable, *, preview=False):
     embed = discord.Embed(title=safe(("Prévisualisation — " if preview else "Evolution Build — ") + build.name, 256),
                           description=f"{safe(build.profile.classe.capitalize())} · niveau {build.profile.level} · révision {build.revision}\n"
-                          + ("**Aucun changement enregistré. Confirme ci-dessous.**" if preview else "Sauvegarde PostgreSQL." if durable else "**ESSAI EN MÉMOIRE : perdu au redémarrage. Exporte le JSON.**"),
+                          + ("**Aucun changement enregistré. Confirme ci-dessous.**" if preview else "Sauvegardé dans #console." if durable else "**ESSAI EN MÉMOIRE : perdu au redémarrage. Exporte le JSON.**"),
                           colour=0x2A79BB)
     labels = {"valid": "Contrôles couverts respectés", "invalid": "Non équipable", "unknown": "À vérifier"}
     embed.add_field(name="Validation", value=f"{labels[report.equipability]} · {COMPLETENESS_LABELS[report.completeness]} · {NATURE_LABELS[report.nature]}", inline=False)

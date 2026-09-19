@@ -21,7 +21,7 @@ def metric_text(report, stat):
 
 def text_report(build, report, catalog, durable):
     rows = [f"EVOLUTION BUILD — {build.name}", f"{build.profile.classe.capitalize()} · niveau {build.profile.level} · révision {build.revision}",
-            "Sauvegarde PostgreSQL" if durable else "ESSAI EN MÉMOIRE — perdu au redémarrage, exporte le JSON",
+            "Sauvegarde dans #console" if durable else "ESSAI EN MÉMOIRE — perdu au redémarrage, exporte le JSON",
             f"Équipabilité : {EQUIPABILITY_LABELS[report.equipability]} · {COMPLETENESS_LABELS[report.completeness]} · {NATURE_LABELS[report.nature]}", ""]
     rows.extend(f"{STAT_LABELS[s]} : {metric_text(report, s)}" for s in STAT_LABELS)
     rows += ["", "ÉQUIPEMENTS"]
@@ -70,7 +70,7 @@ def render(build, report, catalog, durable, icons=None):
     draw.text((40, 121), f"{build.profile.classe.capitalize()} · Niveau {build.profile.level} · Révision {build.revision}", font=medium, fill="#d6e4f4")
     status = {"valid": "Contrôles couverts respectés", "invalid": "Non équipable : voir les erreurs", "unknown": "Équipabilité à vérifier"}[report.equipability]
     draw.text((40, 164), status, font=medium, fill="#ffcd83")
-    draw.text((40, 201), "Conservé dans PostgreSQL" if durable else "ESSAI NON DURABLE — export JSON conseillé", font=small, fill="#ffcd83")
+    draw.text((40, 201), "Conservé dans #console" if durable else "ESSAI NON DURABLE — export JSON conseillé", font=small, fill="#ffcd83")
     for n, stat in enumerate(KEY_STATS):
         col, row = n % 7, n // 7
         x, y = 40 + col * 160, 255 + row * 110

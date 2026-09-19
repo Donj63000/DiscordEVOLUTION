@@ -103,6 +103,28 @@ class BuildView(OwnerView):
         self.build = build
         super().__init__(cog, actor)
 
+    @discord.ui.button(label="Simulateur", row=3)
+    async def simulator(self, interaction, button):
+        from .advanced_views import send_simulator
+        await interaction.response.defer(ephemeral=True)
+        await send_simulator(self.cog, interaction, self.actor, self.build.id)
+
+    @discord.ui.button(label="Mes prix", row=3)
+    async def prices(self, interaction, button):
+        from .advanced_views import PriceBookView
+        await interaction.response.defer(ephemeral=True)
+        current, _, catalog = await self.cog.service.inspect(self.actor, self.build.id)
+        view = PriceBookView(self.cog, self.actor, current, catalog)
+        await self.cog.send_view(interaction, content="**Carnet privé de prix** · renseigne le serveur, les jets, le montant et la date. Aucune collecte du marché.", view=view, ephemeral=True)
+
+    @discord.ui.button(label="Optimisation / budget", row=3)
+    async def advanced_optimizer(self, interaction, button):
+        from .advanced_views import AdvancedOptimizerView
+        await interaction.response.defer(ephemeral=True)
+        current, _, _ = await self.cog.service.inspect(self.actor, self.build.id)
+        view = AdvancedOptimizerView(self.cog, self.actor, current)
+        await self.cog.send_view(interaction, content=view.content(), view=view, ephemeral=True)
+
     @discord.ui.button(label="Équipement", style=discord.ButtonStyle.primary, row=0)
     async def equipment(self, interaction, button):
         view = SlotsView(self.cog, self.actor, self.build)
@@ -296,8 +318,9 @@ class OptimizationView(OwnerView):
         super().__init__(cog, actor)
         choices = results.get("solutions", []) + results.get("tentative", [])
         select = discord.ui.Select(placeholder="Choisir une proposition", options=[discord.SelectOption(
-            label=f"Proposition {i + 1} · score {r['score']}"[:100], value=str(i),
-            description="Contraintes couvertes vérifiées" if r["constraints_verified"] else "Piste partielle NON CERTIFIÉE") for i, r in enumerate(choices)])
+            label=f"Proposition {i + 1} · score {r['score'] if r['score'] is not None else 'inconnu'}"[:100], value=str(i),
+            description=(("Contraintes couvertes" if r["constraints_verified"] else "Piste partielle") +
+                (f" · achats {r['cost']} k" if r.get("cost") is not None else " · coût inconnu"))[:100]) for i, r in enumerate(choices)])
         async def chosen(interaction):
             from .models import Build
             await interaction.response.defer(ephemeral=True)

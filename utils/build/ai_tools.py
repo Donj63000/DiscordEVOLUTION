@@ -7,11 +7,17 @@ from .models import Actor, Profile, CLASSES, SLOTS, BuildError, canonical, value
 from .config import flag
 
 NAMES = frozenset({"build_lire", "build_lister", "build_rechercher_objets", "build_creer_brouillon",
-                   "build_preparer_modification", "build_comparer", "build_optimiser"})
+                   "build_preparer_modification", "build_comparer", "build_optimiser",
+                   "build_simulateur", "build_prix", "build_optimisation_avancee", "build_recettes", "build_vers_exo"})
 
 
 def definitions(tool, text, number, choice, array):
     return [
+        tool("build_simulateur", "Ouvre en MP le simulateur privé sort/arme, cible, comparaison et optimisation de dégâts. Aucun résultat privé retourné au modèle.", {"build": text(maximum=36)}),
+        tool("build_prix", "Ouvre en MP le carnet privé de prix par serveur et jets. Toute saisie ou suppression attend la confirmation du propriétaire.", {"build": text(maximum=36)}),
+        tool("build_optimisation_avancee", "Ouvre en MP les contraintes, les objets possédés et le budget de recherche. Le propriétaire confirme toute modification.", {"build": text(maximum=36)}),
+        tool("build_recettes", "Envoie en MP les matières premières et recettes indisponibles du build, sans prix inventés.", {"build": text(maximum=36)}),
+        tool("build_vers_exo", "Prépare en MP le transfert des jets vers /exo. Le propriétaire renseigne le puits puis confirme le remplacement de sa session.", {"build": text(maximum=36), "emplacement": choice(SLOTS)}),
         tool("build_lire", "Envoie au demandeur sa fiche privée par MP. Le contenu ne revient pas dans la conversation IA publique. Référence UUID requise.", {"build": text(maximum=36)}),
         tool("build_lister", "Envoie en MP uniquement au demandeur sa liste privée de builds. Aucun nom de build privé n'est retourné à l'IA.", {}),
         tool("build_rechercher_objets", "Recherche publique, bornée à cinq objets, dans le catalogue du builder. Ne choisit et n'équipe aucun objet à la place du membre.",
@@ -59,7 +65,41 @@ async def dispatch(name, ctx, **params):
         if sent >= 2:
             raise BuildError("Deux cartes privées ont déjà été demandées. Continuer avec /build.")
         setattr(ctx, "_build_private_cards", sent + 1)
-        if name == "build_creer_brouillon":
+        if name in {"build_simulateur", "build_prix", "build_optimisation_avancee", "build_vers_exo"}:
+            from .advanced_views import SimulatorView, PriceBookView, AdvancedOptimizerView, ExoTransferView
+            current, _, catalog = await cog.service.inspect(actor, params["build"])
+            if name == "build_simulateur":
+                view = SimulatorView(cog, actor, current)
+                content = view.content()
+            elif name == "build_prix":
+                view = PriceBookView(cog, actor, current, catalog)
+                content = "Carnet privé de prix, associés au serveur et aux jets exacts. Toute modification attend ta confirmation."
+            elif name == "build_vers_exo":
+                from .fm_adapter import to_exo_values
+                instance = current.in_slot(params["emplacement"])
+                if instance is None:
+                    raise BuildError("Emplacement vide.")
+                view = ExoTransferView(cog, actor, to_exo_values(instance, catalog.resolve(instance)))
+                content = "Renseigne le puits, puis confirme l'ouverture de /exo avec ces jets."
+            else:
+                view = AdvancedOptimizerView(cog, actor, current)
+                content = view.content()
+            try:
+                view.message = await ctx.member.send(content, view=view, allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                view.stop()
+                raise
+        elif name == "build_recettes":
+            import asyncio
+            from .crafting import shopping_list
+            current, _, catalog = await cog.service.inspect(actor, params["build"])
+            wiki = cog.wiki()
+            if wiki is None:
+                raise BuildError("Wiki indisponible.")
+            async with asyncio.timeout(30):
+                result = await shopping_list(current, catalog, wiki)
+            await ctx.member.send(file=discord.File(BytesIO(canonical(result).encode()), filename="recettes-privees.json"), allowed_mentions=discord.AllowedMentions.none())
+        elif name == "build_creer_brouillon":
             preview = await cog.service.new(actor, params["nom"], Profile(classe=params["classe"], level=params["niveau"]))
             await cog.dm_preview(ctx.member, actor, preview)
         elif name == "build_preparer_modification":

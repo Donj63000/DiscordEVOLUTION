@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Diagnostic de données/dépendances sans écriture en base ni connexion Discord.
+"""Diagnostic de données/dépendances sans écriture dans #console ni connexion Discord.
 
 --public-panoplies : contrôle HTTP OPT-IN des pages des tables embarquées.
 Ce contrôle compare les données, pas les règles au moteur du jeu.
@@ -21,9 +21,10 @@ def main() -> int:
     parser.add_argument('--public-panoplies', action='store_true', help='Comparer les tables embarquées aux pages publiques Xixou (réseau explicite).')
     args = parser.parse_args()
     report = {'module': 'Evolution Build', 'controle': 'données et dépendances, pas certification en jeu',
+              'stockage': 'console Discord uniquement', 'recette_discord_executee': False,
               'dependances': {}, 'tables': [], 'reseau_execute': False}
     missing = []
-    for name in ('discord.py', 'asyncpg', 'pydantic', 'Pillow', 'aiohttp'):
+    for name in ('discord.py', 'pydantic', 'Pillow', 'aiohttp'):
         try:
             report['dependances'][name] = metadata.version(name)
         except metadata.PackageNotFoundError:

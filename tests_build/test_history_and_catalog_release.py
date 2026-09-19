@@ -111,4 +111,4 @@ def test_published_final_tiers_not_cumulative(name,stat,value):
 
 
 def test_report_records_new_engine(build,catalog,rules):
-    assert calculate(build,catalog,rules).engine=='1.1.0-beta.2'
+    assert calculate(build,catalog,rules).engine=='1.2.0-beta.1'

@@ -13,8 +13,7 @@ from pydantic import ValidationError
 from utils.build.config import Config, flag
 from utils.build.models import Actor, Profile, Build, BuildError, Conflict, SLOTS, CLASSES, STAT_LABELS, values, canonical, revised
 from utils.build.rules import load_rules
-from utils.build.repository import MemoryRepository
-from utils.build.postgres_store import PostgresRepository
+from utils.build.console_repository import ConsoleRepository
 from utils.build.catalog import CatalogService, search
 from utils.build.set_source import PublicSetLoader
 from utils.build.panels import BuildListView, ProfileEditorView
@@ -28,6 +27,7 @@ from utils.build.import_export import export_build, parse_json, MAX_IMPORT
 from utils.build.optimizer import Constraints, Limits
 from utils.build.optimizer_worker import OptimizerWorker
 from utils.build.comparison import compare, comparison_text
+from utils.build.spells import SpellCatalogService
 
 log = logging.getLogger(__name__)
 
@@ -38,11 +38,12 @@ class BuildCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.from_env()
-        self.repository = MemoryRepository(self.config.quota) if self.config.backend == "memory" else PostgresRepository(self.config.dsn, self.config.quota, migrate=self.config.migrate)
+        self.repository = ConsoleRepository(bot, self.config.quota)
         self.rules = load_rules(self.config.rules_path)
         self.set_loader = PublicSetLoader() if flag("BUILD_SET_ENRICHMENT", True) else None
         self.catalogs = CatalogService(self.repository, self.wiki, self.config.overrides_path, self.set_loader)
         self.service = BuildService(self.repository, self.catalogs, self.rules)
+        self.spells = SpellCatalogService(self.repository, lambda: getattr(self.wiki(), "enrichment_client", None))
         self.worker = OptimizerWorker()
         self.render_lock = asyncio.Lock()
         self.views = OrderedDict()
@@ -60,17 +61,25 @@ class BuildCog(commands.Cog):
 
     async def cog_load(self):
         self.bot.add_dynamic_items(SharedBuildAction)
-        self.task = asyncio.create_task(self.initialize(), name="evolution-build-start")
+        self.task = asyncio.create_task(self.start_when_ready(), name="evolution-build-start")
+
+    async def start_when_ready(self):
+        """J'attends Discord et je retente une restauration refusée au démarrage."""
+        await self.bot.wait_until_ready()
+        while not self.closed:
+            await self.initialize()
+            if self.ready:
+                return
+            log.debug("build startup pending reason=%s", self.start_error)
+            await asyncio.sleep(30)
 
     async def initialize(self):
-        """Initialisation réessayable ; aucune seconde pool lors d'un simple refresh."""
+        """Je restaure la console avant d'ouvrir les parcours des membres."""
         async with self.init_lock:
             if self.closed:
                 return
             try:
                 if not self.ready:
-                    if self.config.backend == "postgres" and not self.config.dsn:
-                        raise BuildError("BUILD_DATABASE_URL absent. Configurer PostgreSQL ou choisir explicitement BUILD_BACKEND=memory pour un essai non durable.")
                     if not self.storage_open:
                         await self.repository.open()
                         self.storage_open = True
@@ -82,7 +91,7 @@ class BuildCog(commands.Cog):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self.start_error = str(exc) if isinstance(exc, BuildError) else "Initialisation impossible. Vérifier les réglages Build et les migrations."
+                self.start_error = str(exc) if isinstance(exc, BuildError) else "Initialisation impossible. Vérifier le salon #console, ses permissions et le verrou du bot."
                 log.warning("build initialize failed type=%s", type(exc).__name__)
 
     async def cog_unload(self):
@@ -252,6 +261,8 @@ class BuildCog(commands.Cog):
             discord.File(BytesIO(text_report(build, report, catalog, self.repository.durable).encode()), filename="evolution-build-details.txt")], ephemeral=True)
 
     async def confirm_share(self, interaction, actor, build_id):
+        from utils.build.repository import PublicationPending
+
         if interaction.guild_id != actor.guild_id:
             raise BuildError("Pour partager publiquement, utilise /build partager dans le salon du serveur choisi.")
         build, report, catalog = await self.service.inspect(actor, build_id)
@@ -269,18 +280,70 @@ class BuildCog(commands.Cog):
             if not channel.permissions_for(guild.me).embed_links:
                 raise BuildError("Le bot ne peut pas publier de fiche dans ce salon.")
             receipt = await self.service.share(actor, build, operation)
-            if not await self.repository.claim_publication(actor, receipt["code"]):
+            try:
+                claimed = await self.repository.claim_publication(actor, receipt["code"])
+            except PublicationPending:
+                found = await self.reconcile_share_publication(actor, receipt["code"], channel)
+                if found is None:
+                    raise BuildError(
+                        "Publication toujours incertaine. Aucun nouvel envoi effectué ; "
+                        "vérifie le salon puis réessaie cette confirmation après rétablissement de l'accès."
+                    ) from None
+                await click.edit_original_response(
+                    content="La publication existante a été retrouvée et confirmée ; aucun doublon envoyé.",
+                    embed=None, view=None,
+                )
+                return
+            if not claimed:
                 await click.edit_original_response(content="Cette publication a déjà été envoyée ; aucun doublon créé.", embed=None, view=None)
                 return
             try:
-                message = await channel.send(content=f"Build partagé pendant 7 jours. Code : `{receipt['code']}`\nVoir : `/build ouvrir` · Copier : `/build copier`.", embed=card(build, report, catalog, self.repository.durable), view=SharedBuildView(receipt["code"]), allowed_mentions=discord.AllowedMentions.none())
-            except discord.HTTPException as exc:
-                await self.repository.publication(actor, receipt["code"], "failed")
-                raise BuildError("Partage enregistré mais publication non confirmée. Ne relance pas automatiquement : vérifie le salon.") from exc
+                async with asyncio.timeout(30):
+                    message = await channel.send(content=f"Build partagé pendant 7 jours. Code : `{receipt['code']}`\nVoir : `/build ouvrir` · Copier : `/build copier`.", embed=card(build, report, catalog, self.repository.durable), view=SharedBuildView(receipt["code"]), allowed_mentions=discord.AllowedMentions.none())
+            except (discord.HTTPException, OSError) as exc:
+                message = await self.reconcile_share_publication(actor, receipt["code"], channel)
+                if message is None:
+                    raise BuildError(
+                        "Partage réservé mais publication incertaine. Aucun nouvel envoi automatique ; "
+                        "vérifie le salon puis réessaie cette confirmation après rétablissement de l'accès."
+                    ) from exc
+                await click.edit_original_response(
+                    content="La publication a été retrouvée après une réponse réseau perdue. Aucun doublon envoyé.",
+                    embed=None, view=None,
+                )
+                return
             await self.repository.publication(actor, receipt["code"], "sent", message.id, channel.id)
             await click.edit_original_response(content="Cette révision a été partagée. Les modifications futures resteront privées.", embed=None, view=None)
         view = ActionConfirm(self, actor, publish, "Publier dans ce salon")
         await self.send_view(interaction, content="**Confirmation : le nom, les équipements et les statistiques seront visibles dans ce salon.** Le partage est une copie figée, révocable, valable 7 jours.", view=view, ephemeral=True)
+
+    async def reconcile_share_publication(self, actor, code, channel):
+        """Je retrouve un unique envoi du bot avant de confirmer un accusé perdu."""
+        from datetime import datetime, timedelta, timezone
+
+        prefix = f"Build partagé pendant 7 jours. Code : `{code}`\n"
+        matches = []
+        try:
+            async with asyncio.timeout(30):
+                async for message in channel.history(
+                    limit=None, after=datetime.now(timezone.utc) - timedelta(days=7),
+                ):
+                    if message.author == self.bot.user and (message.content or "").startswith(prefix):
+                        matches.append(message)
+                        if len(matches) > 1:
+                            break
+        except (discord.HTTPException, OSError) as exc:
+            log.debug("build publication reconciliation unreadable channel_id=%s type=%s",
+                      channel.id, type(exc).__name__)
+            return None
+        if len(matches) != 1:
+            log.debug("build publication reconciliation ambiguous channel_id=%s matches=%s",
+                      channel.id, len(matches))
+            return None
+        message = matches[0]
+        await self.repository.publication(actor, code, "sent", message.id, channel.id)
+        log.debug("build publication reconciled channel_id=%s message_id=%s", channel.id, message.id)
+        return message
 
     async def build_choices(self, interaction, current):
         try:
@@ -496,7 +559,7 @@ class BuildCog(commands.Cog):
             copied = from_exo(instance, catalog.resolve(instance), view.session)
         await self.show_preview(interaction, actor, await self.service.instance(actor, current, emplacement, copied, "from_exo"))
 
-    @group.command(name="vers-exo", description="Exporter les jets déclarés d'un objet ; ne modifie aucune session /exo.")
+    @group.command(name="vers-exo", description="Ouvrir /exo avec ces jets après saisie du puits et confirmation.")
     @app_commands.autocomplete(build=build_choices)
     @app_commands.choices(emplacement=[app_commands.Choice(name=s.replace('_', ' '), value=s) for s in SLOTS])
     async def to_exo(self, interaction: discord.Interaction, build: str, emplacement: str):
@@ -507,18 +570,26 @@ class BuildCog(commands.Cog):
         if item is None:
             raise BuildError("Emplacement vide.")
         output = to_exo_values(item, catalog.resolve(item))
-        await interaction.followup.send(file=discord.File(BytesIO(canonical(output).encode()), filename="jets-declares.json"), ephemeral=True)
+        from utils.build.advanced_views import ExoTransferView
+        await self.send_view(interaction, content="Renseigne le puits séparément, puis confirme l'ouverture de l'atelier avec ces jets.",
+            view=ExoTransferView(self, actor, output), ephemeral=True)
 
-    @group.command(name="degats", description="Estimation EXPÉRIMENTALE d'une ligne explicite ; pas de formule Retro certifiée.")
+    @group.command(name="degats", description="Simulateur sort/arme et cible ; anciens paramètres manuels toujours disponibles.")
     @app_commands.autocomplete(build=build_choices)
     @app_commands.choices(element=[app_commands.Choice(name=n, value=v) for n, v in (("Neutre", "ne"), ("Terre", "te"), ("Feu", "fe"), ("Eau", "ea"), ("Air", "ai"))])
-    async def damage(self, interaction: discord.Interaction, build: str, element: str,
-                     minimum: app_commands.Range[int, 0, 10000], maximum: app_commands.Range[int, 0, 10000],
+    async def damage(self, interaction: discord.Interaction, build: str, element: str | None = None,
+                     minimum: app_commands.Range[int, 0, 10000] | None = None, maximum: app_commands.Range[int, 0, 10000] | None = None,
                      resistance_fixe: app_commands.Range[int, 0, 10000] = 0,
                      resistance_pourcent: app_commands.Range[int, -100, 100] = 0,
                      coefficient: app_commands.Range[int, 0, 1000] = 100):
         from utils.build.damage import simulate, DamageLine, Scenario
         actor = await self.begin(interaction)
+        if element is None and minimum is None and maximum is None:
+            from utils.build.advanced_views import send_simulator
+            await send_simulator(self, interaction, actor, build)
+            return
+        if element is None or minimum is None or maximum is None:
+            raise BuildError("Le mode manuel requiert élément, minimum et maximum ensemble.")
         _, report, _ = await self.service.inspect(actor, build)
         result = simulate(report, (DamageLine(element=element, minimum=minimum, maximum=maximum),),
                           Scenario(coefficient_percent=coefficient, flat_resistance=resistance_fixe, percent_resistance=resistance_pourcent))
@@ -531,7 +602,6 @@ class BuildCog(commands.Cog):
 
     @group.command(name="actualiser", description="Staff : actualiser le catalogue sans migrer les builds existants.")
     async def refreshing(self, interaction: discord.Interaction):
-        # Le staff doit pouvoir réessayer même si la DB a refusé le démarrage.
         await interaction.response.defer(ephemeral=True, thinking=True)
         self.require_staff(interaction)
         if self.closed or not flag("BUILD_ENABLED"):
@@ -591,7 +661,11 @@ class BuildCog(commands.Cog):
                 "La saisie groupée accepte `Chance: 300`, une ligne par caractéristique ; l'ancien JSON reste accepté.\n"
                 "**Les totaux partiels sont signalés par *.** Les règles non validées ne sont pas certifiées.\n"
                 "Les builds sont privés ; partager demande confirmation et crée une copie figée valable 7 jours.\n"
-                "Le mode mémoire perd les builds au redémarrage. PostgreSQL est requis pour les conserver.\n"
+                "Les builds et leur historique sont conservés dans le salon #console du bot.\n"
+                "**Simulateur** : choisis un sort ou ton arme, puis la cible ; compare ou optimise la même attaque.\n"
+                "**Mes prix / Optimisation** : prix personnels par serveur et jets, budget et objets possédés explicites.\n"
+                "`/build vers-exo` ouvre l'atelier après saisie séparée du puits et confirmation.\n"
+                "`/build recettes` décompose les recettes connues jusqu'aux matières premières.\n"
                 "Le manuel fonctionne sans Luna. Données : https://xixou.io/ · https://wiki.moon-bot.io/")
         await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 

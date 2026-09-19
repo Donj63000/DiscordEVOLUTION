@@ -6,7 +6,6 @@ on:
       - 'utils/build/**'
       - 'utils/evo_tools.py'
       - 'tests_build/**'
-      - 'migrations/build/**'
       - 'data/build/**'
       - 'requirements.txt'
       - 'tools/build_preflight.py'
@@ -19,20 +18,7 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: build_test
-          POSTGRES_PASSWORD: test_only_ephemeral
-          POSTGRES_DB: build_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U build_test -d build_test"
-          --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      BUILD_TEST_DATABASE_URL: postgresql://build_test:test_only_ephemeral@localhost:5432/build_test
       BUILD_ENABLED: 'false'
       BUILD_AI_ENABLED: 'false'
       BUILD_OPTIMIZER_ENABLED: 'false'
@@ -48,7 +34,7 @@ jobs:
         run: python tools/build_preflight.py
       - name: Compile modules
         run: python -m compileall -q build.py utils/build tests_build
-      - name: Unit and real PostgreSQL/discord.py integration tests
+      - name: Domain, simulated console storage and discord.py integration tests
         run: python -m pytest tests_build -q --junitxml=build-tests.xml
       - name: Existing bot non-regression suites
         run: python -m pytest tests tests_evo tests_jobs -q --junitxml=bot-regression-tests.xml

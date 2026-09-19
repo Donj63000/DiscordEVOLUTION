@@ -36,6 +36,6 @@ Le parseur public requiert l’identité de la page, les bornes annoncées et to
 • API équipements authentifiée : non appelée pendant cette livraison, aucune clé utilisée.
 • Personnages réels : aucun relevé fourni ; règles non certifiées inchangées.
 
-Pour valider le HTML réel dans le déploiement : `python tools/build_preflight.py --public-panoplies`. Le contrôle ne modifie ni le fichier local ni PostgreSQL. Une modification du site peut exiger d’adapter le parseur sans changer les calculs du domaine.
+Pour valider le HTML réel dans le déploiement : `python tools/build_preflight.py --public-panoplies`. Le contrôle ne modifie ni le fichier local ni les snapshots de #console. Une modification du site peut exiger d’adapter le parseur sans changer les calculs du domaine.
 
 Documentation technique : https://xixou.io/les-outils/api/ ; https://discordpy.readthedocs.io/en/stable/interactions/api.html#discord.ui.DynamicItem . L’attribution Xixou est conservée dans les fiches et les rapports.

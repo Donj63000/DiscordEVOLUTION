@@ -189,6 +189,59 @@ async def test_bootstrap_pins_only_root_and_ignores_foreign_messages(discord_sto
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("verified_return", [True, False])
+async def test_default_resolution_prefers_verified_lock_among_multiple_guild_consoles(discord_store, monkeypatch, verified_return):
+    from unittest.mock import AsyncMock
+    import utils.build.console_repository as storage
+    bot, channel, _ = discord_store
+    other = Channel(bot)
+    other.id = 301
+    other.guild = SimpleNamespace(id=101, filesize_limit=8 * 1024 * 1024)
+    bot.guilds = [other.guild, channel.guild]
+    bot._lock_channel_id = channel.id
+    bot.get_channel = lambda identifier: channel if identifier == channel.id else other
+    bot.ensure_build_leadership = AsyncMock(return_value=channel if verified_return else None)
+    monkeypatch.setattr(storage, "resolve_console_channel", lambda guild: channel if guild.id == 100 else other)
+    repo = ConsoleRepository(bot)
+    await repo.open()
+    assert repo.channel is channel
+    assert repo._root["guild_id"] == 100
+    assert not other.messages
+    assert await repo.list(Actor(guild_id=100, user_id=200)) == ()
+    with pytest.raises(NotFound):
+        await repo.list(Actor(guild_id=101, user_id=200))
+
+
+@pytest.mark.asyncio
+async def test_default_resolution_still_rejects_ambiguity_without_verified_channel(discord_store, monkeypatch):
+    import utils.build.console_repository as storage
+    bot, channel, _ = discord_store
+    other = Channel(bot)
+    other.id = 301
+    other.guild = SimpleNamespace(id=101, filesize_limit=8 * 1024 * 1024)
+    bot.guilds = [channel.guild, other.guild]
+    monkeypatch.setattr(storage, "resolve_console_channel", lambda guild: channel if guild.id == 100 else other)
+    with pytest.raises(BuildError, match="console Discord unique"):
+        await ConsoleRepository(bot).open()
+    assert not channel.messages and not other.messages
+
+
+@pytest.mark.asyncio
+async def test_verified_console_change_during_session_is_rejected(discord_store):
+    from unittest.mock import AsyncMock
+    bot, channel, _ = discord_store
+    bot.ensure_build_leadership = AsyncMock(return_value=channel)
+    repo = ConsoleRepository(bot)
+    await repo.open()
+    other = Channel(bot)
+    other.id = 301
+    bot.ensure_build_leadership.return_value = other
+    with pytest.raises(BuildError, match="console Build a changé"):
+        await repo.list(Actor(guild_id=100, user_id=200))
+    assert not other.messages
+
+
+@pytest.mark.asyncio
 async def test_restart_recovers_build_history_receipts_catalog_and_share(console, discord_store, actor, build, catalog):
     saved = await create(console, actor, build)
     changed = await console.commit(actor, revised(saved, name="Après redémarrage"), 1,
@@ -598,7 +651,7 @@ async def test_memory_supports_price_contract_and_extra_snapshot_families(actor,
     repo = MemoryRepository()
     value = quote(catalog)
     await repo.set_price(actor, value)
-    assert (await repo.prices(actor))[0] == value
+    assert (await repo.prices(actor))[0] == {**value, "jets": []}
     with pytest.raises(BuildError):
         await repo.set_price(actor, quote(catalog, kamas=-1))
     await repo.delete_price(actor, value["id"])
