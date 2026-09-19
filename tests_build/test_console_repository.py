@@ -1,5 +1,6 @@
 """Je simule Discord pour éprouver engagement, reprise et isolation sans réseau."""
 from copy import deepcopy
+import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
@@ -49,16 +50,18 @@ class Message:
         self.pinned = False
 
     async def edit(self, *, content, attachments, **kwargs):
-        if self.channel.edit_failure == "before":
+        root = content.startswith(f"{MARKER} root ")
+        failure = self.channel.edit_failure if root else self.channel.upload_edit_failure
+        if failure == "before":
             raise OSError("Écriture refusée")
         self.content = content
         self.attachments = [attachment(item) for item in attachments]
-        self.channel.root_edits += 1
-        if self.channel.fetch_failure_after_edit:
+        self.channel.root_edits += int(root)
+        if root and self.channel.fetch_failure_after_edit:
             self.channel.fail_fetch = True
-        if self.channel.after_edit:
+        if root and self.channel.after_edit:
             self.channel.after_edit()
-        if self.channel.edit_failure == "after":
+        if failure == "after":
             raise OSError("Accusé perdu")
         return self
 
@@ -85,6 +88,7 @@ class Channel:
         self.sent = []
         self.root_edits = 0
         self.edit_failure = None
+        self.upload_edit_failure = None
         self.fail_fetch = False
         self.fetch_failure_after_edit = False
         self.after_edit = None
@@ -291,7 +295,8 @@ async def test_catalog_not_resent_on_member_mutation(console, discord_store, act
     await console.commit(actor, revised(saved, name="Nouveau nom"), 1,
                          "rename", digest("rename"), digest("report"))
     assert console._root["snapshots"] == snapshots
-    assert len(discord_store[1].sent) - len(before) == 2
+    assert sum(message.content.startswith(f"{MARKER} blob ")
+               for message in discord_store[1].sent[len(before):]) == 2
 
 
 @pytest.mark.asyncio
@@ -447,15 +452,162 @@ async def test_changed_catalog_after_load_blocks_mutation_and_cached_snapshot(co
 
 
 @pytest.mark.asyncio
-async def test_orphan_blob_from_lost_send_does_not_become_state(console, discord_store, actor, build):
+async def test_lost_send_is_reconciled_without_duplicate(console, discord_store, actor, build):
     channel = discord_store[1]
     channel.send_failure = "after"
-    with pytest.raises(BuildError):
-        await create(console, actor, build)
+    saved = await create(console, actor, build)
     channel.send_failure = None
     restored = await reopen(discord_store)
-    assert await restored.list(actor) == ()
+    assert await restored.list(actor) == (saved,)
     assert len(await channel.pins()) == 1
+    descriptor = restored._root["members"]["100:200"]
+    assert sum(f"blob sha256:{descriptor['sha256']} " in m.content for m in channel.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_partial_upload_resumes_after_restart_without_resending(discord_store):
+    channel = discord_store[1]
+    channel.guild.filesize_limit = 2048
+    repo = await reopen(discord_store)
+    payload = "x" * 4700
+    def interrupt(message):
+        if f"{MARKER} blob " in message.content:
+            channel.send_after = None
+            raise asyncio.CancelledError()
+    channel.send_after = interrupt
+    with pytest.raises(asyncio.CancelledError):
+        await repo.put_snapshot("spells", digest(payload), payload)
+    first = [m.id for m in channel.sent if f"{MARKER} blob " in m.content]
+    restarted = await reopen(discord_store)
+    await restarted.put_snapshot("spells", digest(payload), payload)
+    descriptor = restarted._root["snapshots"]["spells"][digest(payload)]
+    assert descriptor["parts"][0]["id"] == first[0]
+    assert len([m for m in channel.sent if f"{MARKER} blob " in m.content]) == 3
+    assert await restarted.latest_snapshot("spells") == payload
+    assert not any(m.content.startswith(f"{MARKER} upload") for m in channel.messages.values())
+
+
+@pytest.mark.asyncio
+async def test_missing_uncertain_fragment_blocks_retry_after_restart(discord_store):
+    channel = discord_store[1]
+    repo = await reopen(discord_store)
+    def disconnect(message):
+        if message.content.startswith(f"{MARKER} upload"):
+            channel.send_failure = "before"
+    channel.send_after = disconnect
+    with pytest.raises(BuildError, match="non confirmé"):
+        await repo.put_snapshot("spells", digest("uncertain"), "uncertain")
+    channel.send_after = channel.send_failure = None
+    restarted = await reopen(discord_store)
+    before = len(channel.sent)
+    with pytest.raises(BuildError, match="encore incertain"):
+        await restarted.put_snapshot("spells", digest("uncertain"), "uncertain")
+    with pytest.raises(BuildError, match="encore incertain"):
+        await restarted.put_snapshot("attacks", digest("other"), "other")
+    assert len(channel.sent) == before
+    assert await restarted.latest_snapshot("spells") is None
+
+
+@pytest.mark.asyncio
+async def test_history_failure_after_lost_ack_preserves_upload_for_recovery(discord_store):
+    channel = discord_store[1]
+    repo = await reopen(discord_store)
+    def disconnect(message):
+        if message.content.startswith(f"{MARKER} blob "):
+            channel.fail_history = True
+            raise OSError("Réponse perdue")
+    channel.send_after = disconnect
+    with pytest.raises(BuildError):
+        await repo.put_snapshot("spells", digest("recover"), "recover")
+    assert await repo.latest_snapshot("spells") is None
+    channel.fail_history = False
+    channel.send_after = None
+    restarted = await reopen(discord_store)
+    await restarted.put_snapshot("spells", digest("recover"), "recover")
+    assert len([m for m in channel.sent if f"{MARKER} blob " in m.content]) == 1
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_cleans_duplicates_and_preserves_foreign_messages(discord_store):
+    repo = await reopen(discord_store)
+    channel = discord_store[1]
+    descriptor = await repo._write_blob(b"archive")
+    original = channel.messages[descriptor["parts"][0]["id"]]
+    channel.next_id += 1
+    duplicate = Message(channel, channel.next_id, original.content, original.attachments)
+    channel.messages[duplicate.id] = duplicate
+    channel.next_id += 1
+    foreign = Message(channel, channel.next_id, original.content, original.attachments)
+    foreign.author = SimpleNamespace(id=234)
+    channel.messages[foreign.id] = foreign
+    await repo.put_snapshot("spells", digest("archive"), "archive")
+    assert original.id in channel.messages
+    assert duplicate.id not in channel.messages
+    assert foreign.id in channel.messages
+
+
+@pytest.mark.asyncio
+async def test_incomplete_upload_is_protected_during_other_confirmed_commit(discord_store):
+    channel = discord_store[1]
+    channel.guild.filesize_limit = 2048
+    repo = await reopen(discord_store)
+    def interrupt(message):
+        if message.content.startswith(f"{MARKER} blob "):
+            channel.send_after = None
+            raise asyncio.CancelledError()
+    channel.send_after = interrupt
+    with pytest.raises(asyncio.CancelledError):
+        await repo.put_snapshot("spells", digest("x" * 4700), "x" * 4700)
+    unfinished = set(channel.messages) - {repo._root_message.id}
+    await repo.put_snapshot("attacks", digest("other"), "other")
+    assert unfinished <= channel.messages.keys()
+
+
+@pytest.mark.asyncio
+async def test_mutation_inventory_does_not_redownload_confirmed_catalog(console, discord_store, actor, build):
+    from unittest.mock import AsyncMock
+    channel = discord_store[1]
+    for versions in console._root["snapshots"].values():
+        for descriptor in versions.values():
+            for part in descriptor["parts"]:
+                channel.messages[part["id"]].attachments[0].read = AsyncMock(
+                    side_effect=AssertionError("Catalogue confirmé relu inutilement"))
+    assert (await create(console, actor, build)).revision == 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_interruption_does_not_leave_false_uncertain_upload(discord_store):
+    from unittest.mock import AsyncMock
+    repo = await reopen(discord_store)
+    channel = discord_store[1]
+    orphan = await repo._write_blob(b"obsolete")
+    message = channel.messages[orphan["parts"][0]["id"]]
+    original_delete = message.delete
+    message.delete = AsyncMock(side_effect=OSError("Suppression interrompue"))
+    await repo.put_snapshot("attacks", digest("new"), "new")
+    assert message.id in channel.messages
+    assert not any(m.content.startswith(f"{MARKER} upload") for m in channel.messages.values())
+    message.delete = original_delete
+    await repo.put_snapshot("attacks", digest("next"), "next")
+    assert message.id not in channel.messages
+
+
+@pytest.mark.asyncio
+async def test_definitive_fragment_denial_can_retry_without_uncertainty(discord_store):
+    repo = await reopen(discord_store)
+    channel = discord_store[1]
+    send = channel.send
+    async def denied(content, **kwargs):
+        if content.startswith(f"{MARKER} blob "):
+            raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "Refusé")
+        return await send(content, **kwargs)
+    channel.send = denied
+    with pytest.raises(BuildError, match="non confirmé"):
+        await repo.put_snapshot("attacks", digest("allowed"), "allowed")
+    channel.send = send
+    restarted = await reopen(discord_store)
+    await restarted.put_snapshot("attacks", digest("allowed"), "allowed")
+    assert await restarted.latest_snapshot("attacks") == "allowed"
 
 
 @pytest.mark.asyncio

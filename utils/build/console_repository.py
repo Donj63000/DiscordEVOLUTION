@@ -340,17 +340,65 @@ class ConsoleRepository:
         if len(chunks) > 1024:
             raise BuildError("Le snapshot Build nécessite trop de fragments Discord.")
         descriptor = {"sha256": _sha(raw), "size": len(raw), "parts": []}
+        inventory, journals = await self._upload_inventory()
+        matching = [(message, journal) for message, journal in journals
+                    if journal["sha256"] == descriptor["sha256"]]
+        if matching:
+            journal_message, journal = max(matching, key=lambda row: row[1]["attempted"])
+            if journal["size"] != len(raw):
+                raise BuildError("Journal d'envoi incompatible : restauration Staff requise.")
+            chunk_size = journal["chunk_size"]
+            chunks = [raw[index:index + chunk_size] for index in range(0, len(raw), chunk_size)]
+        else:
+            journal = {"sha256": descriptor["sha256"], "size": len(raw),
+                       "chunk_size": chunk_size, "attempted": 0}
+            content = self._upload_content(journal)
+            try:
+                journal_message = await self._io(self.channel.send(content,
+                    allowed_mentions=discord.AllowedMentions.none()))
+            except Exception:
+                inventory, journals = await self._upload_inventory()
+                matches = [message for message, value in journals if value == journal]
+                if not matches:
+                    raise BuildError("Journal d'envoi non confirmé ; aucun fragment envoyé.") from None
+                journal_message = min(matches, key=lambda message: message.id)
         for index, chunk in enumerate(chunks):
             await self._check_leadership()
             content = (f"{MARKER} blob sha256:{descriptor['sha256']} "
                        f"part:{index + 1}/{len(chunks)} sha256:{_sha(chunk)}")
-            file = discord.File(io.BytesIO(chunk), filename=PART_FILENAME)
-            try:
-                message = await self._io(self.channel.send(
-                    content, file=file, allowed_mentions=discord.AllowedMentions.none(),
-                ))
-            finally:
-                file.close()
+            matches = inventory.get(content, [])
+            if matches:
+                message = min(matches, key=lambda message: message.id)
+                if await self._io(message.attachments[0].read()) != chunk:
+                    raise BuildError("Fragment retrouvé incompatible avec l'envoi demandé.")
+                if index >= journal["attempted"]:
+                    journal = {**journal, "attempted": index + 1}
+                    journal_message = await self._confirm_upload(journal_message, journal)
+                log.debug("build console fragment reused message_id=%s", message.id)
+            else:
+                if index < journal["attempted"]:
+                    raise BuildError("Envoi de fragment encore incertain : reprise suspendue, contrôle Staff requis.")
+                journal = {**journal, "attempted": index + 1}
+                journal_message = await self._confirm_upload(journal_message, journal)
+                file = discord.File(io.BytesIO(chunk), filename=PART_FILENAME)
+                try:
+                    await self._check_leadership()
+                    try:
+                        message = await self._io(self.channel.send(
+                            content, file=file, allowed_mentions=discord.AllowedMentions.none()))
+                    except Exception as exc:
+                        inventory, _ = await self._upload_inventory(allow_missing=True)
+                        matches = inventory.get(content, [])
+                        if not matches:
+                            if isinstance(exc, discord.HTTPException) and exc.status in {400, 401, 403, 404, 413}:
+                                journal = {**journal, "attempted": index}
+                                await self._io(journal_message.edit(content=self._upload_content(journal),
+                                    attachments=[], allowed_mentions=discord.AllowedMentions.none()))
+                            raise BuildError("Envoi de fragment non confirmé : reprise suspendue, contrôle Staff requis.") from None
+                        message = min(matches, key=lambda message: message.id)
+                        log.debug("build console fragment acknowledgement reconciled message_id=%s", message.id)
+                finally:
+                    file.close()
             if len(message.attachments) != 1:
                 raise BuildError("La pièce jointe Build envoyée n'a pas été confirmée.")
             descriptor["parts"].append({"id": message.id, "attachment_id": message.attachments[0].id,
@@ -358,6 +406,81 @@ class ConsoleRepository:
         if await self._read_blob(descriptor) != raw:
             raise BuildError("Le snapshot Build n'a pas été confirmé dans #console.")
         return descriptor
+
+    def _upload_content(self, journal):
+        return f"{MARKER} upload\n" + canonical(journal)
+
+    async def _confirm_upload(self, message, journal):
+        await self._check_leadership()
+        try:
+            await self._io(message.edit(content=self._upload_content(journal),
+                attachments=[], allowed_mentions=discord.AllowedMentions.none()))
+        except Exception:
+            log.debug("build console upload journal acknowledgement uncertain", exc_info=True)
+        confirmed = await self._io(self.channel.fetch_message(message.id))
+        if confirmed.content != self._upload_content(journal) or not self._owned(confirmed):
+            raise BuildError("Journal d'envoi non confirmé : fragment non envoyé.")
+        return confirmed
+
+    async def _upload_inventory(self, *, allow_missing=False):
+        """Je recherche tous les envois avant toute reprise, sans deviner une absence."""
+        inventory, journals, positions, candidates = {}, [], {}, []
+        pattern = re.compile(re.escape(MARKER) +
+            r" blob sha256:([0-9a-f]{64}) part:(\d+)/(\d+) sha256:([0-9a-f]{64})")
+        async with asyncio.timeout(IO_TIMEOUT):
+            async for message in self.channel.history(limit=None):
+                if not self._owned(message):
+                    continue
+                content = message.content or ""
+                if content.startswith(f"{MARKER} upload\n"):
+                    try:
+                        journal = _json(content.split("\n", 1)[1])
+                        if (set(journal) != {"sha256", "size", "chunk_size", "attempted"}
+                                or not isinstance(journal["sha256"], str)
+                                or not HASH.fullmatch(journal["sha256"])
+                                or not _valid_int(journal["size"]) or journal["size"] > MAX_BLOB_BYTES
+                                or not _valid_int(journal["chunk_size"]) or journal["chunk_size"] > PART_BYTES
+                                or not _valid_int(journal["attempted"], 0)
+                                or journal["attempted"] > (journal["size"] + journal["chunk_size"] - 1) // journal["chunk_size"]):
+                            raise ValueError("Journal invalide")
+                    except (ValueError, TypeError, KeyError):
+                        raise BuildError("Journal d'envoi altéré : contrôle Staff requis.") from None
+                    journals.append((message, journal))
+                elif match := pattern.fullmatch(content):
+                    candidates.append((message, match))
+            active = self._active_ids(self._root)
+            journal_hashes = {j["sha256"] for _, j in journals}
+            for message, match in candidates:
+                if message.id in active and match[1] not in journal_hashes:
+                    continue
+                position, count = int(match[2]), int(match[3])
+                attachments = list(message.attachments)
+                if (not 1 <= position <= count <= 1024 or len(attachments) != 1
+                        or attachments[0].filename != PART_FILENAME
+                        or not 0 < attachments[0].size <= PART_BYTES):
+                    raise BuildError("Fragment d'envoi altéré : contrôle Staff requis.")
+                raw = await attachments[0].read()
+                if len(raw) != attachments[0].size or _sha(raw) != match[4]:
+                    raise BuildError("Empreinte d'un fragment retrouvé invalide.")
+                key = (match[1], position, count)
+                if key in positions and positions[key] != raw:
+                    raise BuildError("Plusieurs fragments contradictoires : reprise suspendue.")
+                positions[key] = raw
+                inventory.setdefault(message.content, []).append(message)
+        for _, journal in journals:
+            count = (journal["size"] + journal["chunk_size"] - 1) // journal["chunk_size"]
+            for position in range(1, journal["attempted"] + 1):
+                raw = positions.get((journal["sha256"], position, count))
+                if raw is None and not allow_missing:
+                    raise BuildError("Envoi de fragment encore incertain : reprise suspendue, contrôle Staff requis.")
+                expected = min(journal["chunk_size"], journal["size"] - (position - 1) * journal["chunk_size"])
+                if raw is not None and len(raw) != expected:
+                    raise BuildError("Dimensions d'un fragment retrouvé invalides.")
+            parts = [positions.get((journal["sha256"], p, count)) for p in range(1, count + 1)]
+            if all(part is not None for part in parts) and _sha(b"".join(parts)) != journal["sha256"]:
+                raise BuildError("Empreinte de l'envoi reconstitué invalide.")
+        log.debug("build console upload inventory fragments=%s journals=%s", len(inventory), len(journals))
+        return inventory, journals
 
     def _memory(self, key, payload=None):
         repo = MemoryRepository(self.quota)
@@ -554,9 +677,35 @@ class ConsoleRepository:
         finally:
             if file:
                 file.close()
-        await self._cleanup()
+        await self._cleanup(sweep=True)
 
-    async def _cleanup(self):
+    async def _cleanup(self, *, sweep=False):
+        if sweep:
+            try:
+                inventory, journals = await self._upload_inventory()
+                await self._check_leadership()
+                current = await self._io(self.channel.fetch_message(self._root_message.id))
+                if not current.pinned or await self._read_root(current) != self._root:
+                    raise BuildError("Index modifié pendant le nettoyage.")
+                protected = self._active_ids(self._root)
+                pending = self._pending_roots.get(self.channel.id)
+                if pending is not None:
+                    protected |= self._active_ids(pending)
+                complete = {j["sha256"] for _, j in journals
+                    if j["attempted"] == (j["size"] + j["chunk_size"] - 1) // j["chunk_size"]}
+                incomplete = {j["sha256"] for _, j in journals} - complete
+                obsolete = [message for message, journal in journals
+                    if journal["sha256"] not in incomplete]
+                obsolete.extend(message for content, messages in inventory.items()
+                    if not any(f"sha256:{identifier} " in content for identifier in incomplete)
+                    for message in messages if message.id not in protected)
+                for message in obsolete:
+                    await self._check_leadership()
+                    await self._io(message.delete())
+                log.debug("build console orphan cleanup removed=%s", len(obsolete))
+            except Exception:
+                log.debug("build console orphan cleanup suspended; full reconciliation required", exc_info=True)
+                return
         active = self._active_ids(self._root) | {self._root_message.id}
         for message_id in self._root["garbage"]:
             if message_id in self._deleted_garbage or message_id in active:
