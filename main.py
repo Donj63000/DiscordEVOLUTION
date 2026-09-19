@@ -413,6 +413,28 @@ class EvoBot(commands.Bot):
                 raise EvoError("Evo attend la fin des demandes de l'instance précédente. Réessaie dans deux minutes.")
             self._evo_leadership_known = True
 
+    async def ensure_build_leadership(self):
+        """Je n'autorise les sauvegardes Build que sous le verrou de la console."""
+        from utils.build.models import BuildError
+
+        async with self._evo_check_lock:
+            if not self._singleton_ready or not self._evo_connected or self.is_closed():
+                raise BuildError("La connexion et le verrou du bot ne sont pas prêts.")
+            channel = self.get_channel(self._lock_channel_id) if self._lock_channel_id else None
+            if channel is None or self._lock_message_id is None:
+                raise BuildError("Le verrou du salon #console est indisponible.")
+            try:
+                if resolve_console_channel(channel.guild) is not channel:
+                    raise BuildError("Le verrou ne correspond pas à la console configurée.")
+                await self._verified_lock(channel)
+            except Exception as exc:
+                await self._suspend_evo("build_verification_failed")
+                log.debug("Build leadership rejected type=%s", type(exc).__name__)
+                raise BuildError("Verrou non vérifiable : aucune sauvegarde Build autorisée.") from None
+            if not self._evo_connected or time.monotonic() < self._evo_resume_at:
+                raise BuildError("Reprise du bot en cours : réessaie après la fin des opérations précédentes.")
+            return channel
+
     async def acquire_leadership(self):
         ch = await self.wait_console_channel(timeout=30)
         if not ch:

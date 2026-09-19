@@ -35,6 +35,7 @@ JOB_ALLOW_LOCAL_FALLBACK = os.getenv("JOB_ALLOW_LOCAL_FALLBACK", "0") == "1"
 log = logging.getLogger(__name__)
 
 CONSOLE_PRESERVE_MARKERS = (
+    "===BOTEVOBUILD",
     "===BOTLOCK===",
     "===BOTBRANDING===",
     "===BOTEVOBUDGET===",

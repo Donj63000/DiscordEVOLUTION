@@ -4,10 +4,26 @@ import asyncio
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 import secrets
 import re
 from typing import Protocol
 from .models import Actor, Build, BuildError, Conflict, NotFound, canonical, digest, revised, now
+
+SNAPSHOT_KINDS = frozenset({"catalog", "rules", "spells", "attacks"})
+
+
+class PublicationPending(BuildError):
+    """Un envoi déjà réservé doit être réconcilié, jamais répété aveuglément."""
+
+
+def validated_price(quote):
+    """Je valide et détache le prix avant de l'enregistrer dans l'espace du membre."""
+    from .prices import PriceQuote
+    try:
+        return PriceQuote.model_validate(quote).model_dump(mode="json")
+    except (TypeError, ValueError) as exc:
+        raise BuildError("Prix personnel invalide.") from exc
 
 
 def op_key(actor, operation, request_hash):
@@ -45,10 +61,13 @@ class Repository(Protocol):
     async def revoke(self, actor, code): ...
     async def claim_publication(self, actor, code) -> bool: ...
     async def publication(self, actor, code, state, message_id=None, channel_id=None): ...
+    async def prices(self, actor: Actor) -> tuple[dict, ...]: ...
+    async def set_price(self, actor: Actor, quote: dict): ...
+    async def delete_price(self, actor: Actor, quote_id: str): ...
 
 
 class MemoryRepository:
-    """Même contrôle de révision que SQL, aucune garantie après redémarrage."""
+    """Je partage les règles métier du dépôt console, sans persistance propre."""
     durable = False
 
     def __init__(self, quota=20):
@@ -56,7 +75,9 @@ class MemoryRepository:
         self.lock = asyncio.Lock()
         self.builds, self.snapshots, self.shares = {}, OrderedDict(), {}
         self.operations = OrderedDict()
+        self.operation_dates = {}
         self.history = {}
+        self._prices = {}
 
     async def open(self):
         return self
@@ -81,19 +102,26 @@ class MemoryRepository:
             return tuple(row[0] for row in reversed(self.history.get(build_id, ())))
 
     async def replay(self, actor, operation, request_hash):
+        self._prune_operations()
         key = op_key(actor, operation, request_hash)
         previous = self.operations.get(key)
         if previous:
             if previous[0] != request_hash:
                 raise Conflict("Cette opération a déjà été utilisée avec une autre demande.")
-            import json
             return json.loads(previous[1])
         return None
 
     def _remember(self, key, request_hash, result):
         self.operations[key] = request_hash, canonical(result)
-        while len(self.operations) > 10000:
-            self.operations.popitem(last=False)
+        self.operation_dates[key] = now()
+        self._prune_operations()
+
+    def _prune_operations(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+        for key, created_at in tuple(self.operation_dates.items()):
+            if key not in self.operations or datetime.fromisoformat(created_at) < cutoff:
+                self.operations.pop(key, None)
+                self.operation_dates.pop(key, None)
 
     async def commit(self, actor, candidate, expected, operation, request_hash, report_hash):
         require_owner(candidate, actor)
@@ -142,7 +170,7 @@ class MemoryRepository:
             self._remember(key, request_hash, {"deleted": build_id})
 
     async def put_snapshot(self, kind, identifier, payload):
-        if kind not in {"catalog", "rules"} or len(payload.encode()) > 24 * 1024 * 1024:
+        if kind not in SNAPSHOT_KINDS or len(payload.encode()) > 24 * 1024 * 1024:
             raise BuildError("Instantané invalide.")
         key = kind, identifier
         previous = self.snapshots.get(key)
@@ -202,7 +230,7 @@ class MemoryRepository:
             if row["state"] == "sent":
                 return False
             if row["state"] != "pending":
-                raise BuildError("Publication déjà tentée ou en cours. Vérifie le salon avant de créer un autre partage.")
+                raise PublicationPending("Publication déjà tentée ou en cours. Vérifie le salon avant de créer un autre partage.")
             row["state"] = "sending"
             return True
 
@@ -213,8 +241,29 @@ class MemoryRepository:
             build = await self.shared(actor, code)
             require_owner(build, actor)
             row = self.shares[share_hash(code)]
-            if row["state"] == "sent" and state == "sent" and row.get("message_id") == message_id:
+            if (row["state"] == "sent" and state == "sent"
+                    and row.get("message_id") == message_id and row.get("channel_id") == channel_id):
                 return
-            if row["state"] != "sending":
+            if row["state"] != "sending" and not (row["state"] == "failed" and state == "sent"):
                 raise Conflict("La réservation de publication n'est plus active.")
             row.update(state=state, message_id=message_id, channel_id=channel_id)
+
+    async def prices(self, actor):
+        rows = self._prices.get((actor.guild_id, actor.user_id), {})
+        return tuple(json.loads(canonical(row)) for row in rows.values())
+
+    async def set_price(self, actor, quote):
+        value = validated_price(quote)
+        async with self.lock:
+            rows = self._prices.setdefault((actor.guild_id, actor.user_id), {})
+            if value["id"] not in rows and len(rows) >= 1000:
+                raise BuildError("Limite de 1 000 prix personnels atteinte.")
+            rows[value["id"]] = value
+        return json.loads(canonical(value))
+
+    async def delete_price(self, actor, quote_id):
+        async with self.lock:
+            rows = self._prices.get((actor.guild_id, actor.user_id), {})
+            if quote_id not in rows:
+                raise NotFound()
+            del rows[quote_id]

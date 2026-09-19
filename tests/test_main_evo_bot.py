@@ -530,3 +530,84 @@ async def test_heartbeat_closes_old_instance_after_its_lock_was_replaced(bot, mo
     cog.suspend.assert_awaited_once()
     assert bot._close_calls == [True]
     assert bot._exit_calls == [0]
+
+
+@pytest.mark.asyncio
+async def test_build_leadership_is_independent_of_evo_cog(bot, monkeypatch):
+    channel, _, _ = prepare_evo_leadership(bot, monkeypatch)
+    monkeypatch.setattr(bot, "get_cog", lambda _: None)
+    assert await bot.ensure_build_leadership() is channel
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["not_ready", "disconnected", "closed", "missing_lock", "wrong_console"])
+async def test_build_leadership_refuses_unready_or_wrong_console(bot, monkeypatch, failure):
+    from utils.build.models import BuildError
+    channel, _, _ = prepare_evo_leadership(bot, monkeypatch)
+    if failure == "not_ready":
+        bot._singleton_ready = False
+    elif failure == "disconnected":
+        bot._evo_connected = False
+    elif failure == "closed":
+        bot._closed_flag = True
+    elif failure == "missing_lock":
+        bot._lock_message_id = None
+    else:
+        other = FakeChannel(channel_id=123456, sender=bot.user)
+        other.guild = channel.guild
+        channel.guild.text_channels.append(other)
+        monkeypatch.setenv("CHANNEL_CONSOLE_ID", "123456")
+    with pytest.raises(BuildError):
+        await bot.ensure_build_leadership()
+
+
+@pytest.mark.asyncio
+async def test_build_leadership_rechecks_rival_after_many_fragments(bot, monkeypatch):
+    from utils.build.models import BuildError
+    channel, own, _ = prepare_evo_leadership(bot, monkeypatch)
+    await bot.ensure_build_leadership()
+    channel.messages.append(FakeMessage(own.id + 1, bot.user, f"{main.LOCK_TAG} rival 1700000001"))
+    channel.messages.extend(FakeMessage(own.id + index, bot.user, "===BOTEVOBUILD=== blob")
+                            for index in range(2, 210))
+    with pytest.raises(BuildError, match="Verrou non vérifiable"):
+        await bot.ensure_build_leadership()
+    assert bot._lock_scan_message_id == own.id
+
+
+@pytest.mark.asyncio
+async def test_build_leadership_refuses_partial_history_without_advancing_watermark(bot, monkeypatch):
+    from utils.build.models import BuildError
+    channel, own, _ = prepare_evo_leadership(bot, monkeypatch)
+    await bot.ensure_build_leadership()
+
+    async def interrupted_history(**kwargs):
+        yield FakeMessage(own.id + 1, bot.user, "===BOTEVOBUILD=== blob")
+        raise PermissionError("Page suivante refusée")
+
+    monkeypatch.setattr(channel, "history", interrupted_history)
+    with pytest.raises(BuildError):
+        await bot.ensure_build_leadership()
+    assert bot._lock_scan_message_id == own.id
+
+
+@pytest.mark.asyncio
+async def test_build_leadership_handover_and_disconnect_during_verification(bot, monkeypatch):
+    from utils.build.models import BuildError
+    channel, _, _ = prepare_evo_leadership(bot, monkeypatch)
+    clock = [100.0]
+    monkeypatch.setattr(main, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    bot._evo_resume_at = 225.0
+    with pytest.raises(BuildError, match="Reprise"):
+        await bot.ensure_build_leadership()
+    clock[0] = 225.0
+    assert await bot.ensure_build_leadership() is channel
+    original = bot._verified_lock
+
+    async def disconnect_after_verification(target):
+        result = await original(target)
+        bot._evo_connected = False
+        return result
+
+    monkeypatch.setattr(bot, "_verified_lock", disconnect_after_verification)
+    with pytest.raises(BuildError, match="Reprise"):
+        await bot.ensure_build_leadership()
