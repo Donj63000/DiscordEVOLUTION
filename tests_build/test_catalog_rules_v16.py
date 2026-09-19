@@ -125,6 +125,21 @@ def test_naked_documented_profile_has_usable_combat_stats(build, catalog):
     assert all(evidence.status == "documented" for evidence in rules.evidence)
 
 
+def test_declared_derivatives_become_partial_only_while_equipped(build, catalog, rules):
+    from utils.build.models import equip
+    from utils.build.import_export import export_build, import_build
+    from utils.build.models import Actor
+    bare = calculate(build, catalog, rules)
+    assert bare.known("ini") and bare.known("pod")
+    equipped = build.with_slot("coiffe", equip(catalog.items[0]))
+    report = calculate(equipped, catalog, rules)
+    assert not report.known("ini") and not report.known("pod")
+    restored = import_build(export_build(equipped), Actor(guild_id=build.guild_id, user_id=build.owner_id))
+    assert not calculate(restored, catalog, rules).known("ini")
+    removed = calculate(equipped.with_slot("coiffe", None), catalog, rules)
+    assert removed.known("ini") and removed.known("pod")
+
+
 def test_reference_import_requires_observation_and_never_promotes_synthetic(build, catalog, rules):
     data = dict(name="Niveau nu synthétique", origin="synthetic", game_version="synthetic-only",
                 build=build.model_dump(mode="json"), expected=[{"stat": "pa", "value": 7}])

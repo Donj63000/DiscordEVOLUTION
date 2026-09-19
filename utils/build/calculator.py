@@ -12,6 +12,10 @@ def calculate(build: Build, catalog: Catalog, rules: Rules) -> Report:
     if (build.catalog_id, build.rules_id) != (catalog.id, rules.id):
         raise BuildError("Versions de catalogue/règles incompatibles avec le build.")
     ledger, unknown, warnings = character(build.profile, rules)
+    if build.profile.mode == "declared" and build.slots:
+        unknown.update({"ini", "pod"})
+        warnings.append(Diagnostic(code="DECLARED_DERIVATIVES_PARTIAL",
+            text="Initiative et pods partiels : les variations dérivées des équipements ne sont pas entièrement calculées."))
     base = {c.stat: c.value for c in ledger}
     set_members = defaultdict(set)
     for row in sorted(build.slots, key=lambda r: r.slot):
