@@ -22,6 +22,7 @@ from utils.xixou_image_paths import xixou_image_candidates
 log = logging.getLogger(__name__)
 XIXOU_ORIGIN = "https://xixou.io"
 FAMILIES = ("equipements", "ressources", "monstres", "carte")
+ALLOWED_FAMILIES = (*FAMILIES, "sorts")
 MAX_CATALOG_BYTES = 16 * 1024 * 1024
 MAX_STALE_SECONDS = 86400
 _VERIFIED_PACKET_NAME_ALIASES = {
@@ -455,6 +456,10 @@ def validate_catalog(family: str, value: object) -> dict:
     elif family == "carte":
         valid = (isinstance(data, dict) and isinstance(data.get("zones"), list)
                  and isinstance(data.get("resources"), dict))
+    elif family == "sorts":
+        block = data.get("spells") if isinstance(data, dict) else None
+        rows = block.get("spells") if isinstance(block, dict) else None
+        valid = isinstance(rows, list) and bool(rows) and all(isinstance(row, dict) for row in rows)
     else:
         valid = (isinstance(data, dict) and bool(data)
                  and all(isinstance(rows, list) and all(isinstance(row, dict) for row in rows)
@@ -498,7 +503,7 @@ class XixouClient:
         return None
 
     async def _fetch(self, family: str) -> CatalogCache:
-        if family not in FAMILIES or not self.enabled:
+        if family not in ALLOWED_FAMILIES or not self.enabled:
             raise XixouError("Client indisponible")
         async with self._semaphore, asyncio.timeout(self.timeout):
             if self._backoff_until > self.clock():
@@ -559,7 +564,7 @@ class XixouClient:
             return cache.value if cache is not None else None
 
     async def catalog(self, family: str) -> dict | None:
-        if family not in FAMILIES:
+        if family not in ALLOWED_FAMILIES:
             raise ValueError("Famille Xixou inconnue")
         if not self.enabled:
             return None

@@ -75,6 +75,23 @@ def valid_payload(family):
     return envelope(family, {"anneaux": [{"name": "Gelano", "level": "60"}]})
 
 
+@pytest.mark.asyncio
+async def test_spells_use_real_client_validation_and_remain_lazy():
+    client = XixouClient("test-only-key")
+    payload = envelope("sorts", {"spells": {"lang": "fr", "spells": [{"id": 1, "name": "Sort"}]}})
+    try:
+        with aioresponses() as mocked:
+            for family in FAMILIES:
+                mocked.get(api_url(family), payload=valid_payload(family))
+            mocked.get(api_url("sorts"), payload=payload)
+            await client.warmup()
+            assert "sorts" not in client._cache
+            assert await client.catalog("sorts") == payload
+            assert "sorts" in client._cache
+    finally:
+        await client.close()
+
+
 @pytest.mark.parametrize("value,expected", [
     (0, "0%"), (0.0, "0%"), (-0.0, "0%"), (0.001, "0.001%"),
     ("0,030 %", "0.03%"), ("1E-7", "0.0000001%"), ("100.0", "100%"),
