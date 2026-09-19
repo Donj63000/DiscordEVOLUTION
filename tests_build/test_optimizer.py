@@ -8,6 +8,46 @@ from utils.build.optimizer_worker import OptimizerWorker
 from utils.build.calculator import calculate
 
 
+def test_owned_custom_jets_survive_unlocked_zero_budget(build, rules, item_factory):
+    item = item_factory(90, "anneau_1", effects=(
+        Effect(ref="force", kind="stat", stat="fo", low=10, high=30),))
+    catalog = freeze_catalog([item])
+    instance = revised(equip(item), mode="natural_custom",
+                       final_values=[{"ref": "force", "value": 15}])
+    original = revised(build, catalog_id=catalog.id).with_slot("anneau_1", instance)
+    constraints = Constraints(objective="fo", budget=0, owned_slots=("anneau_1",),
+        locked=tuple(s for s in SLOTS if s != "anneau_2"))
+    moved = original.with_slot("anneau_1", None).with_slot("anneau_2", instance)
+    from utils.build.optimizer import purchase_cost, pools_for
+    assert purchase_cost(original, moved, catalog, constraints) == (0, [])
+    pools, _ = pools_for(original, catalog, constraints, Limits())
+    assert {i.mode for i in pools["anneau_2"]} == {"natural_custom", "natural_best"}
+    doubled = original.with_slot("anneau_2", revised(instance, id=new_id()))
+    assert purchase_cost(original, doubled, catalog, constraints)[0] is None
+    constraints = revised(constraints, locked=tuple(s for s in SLOTS if s != "anneau_1"))
+    result = optimize(original, catalog, rules, constraints)
+    assert result["solutions"][0]["cost"] == 0
+    assert result["solutions"][0]["score"] == 15
+    two_owned = original.with_slot("anneau_2", revised(instance, id=new_id()))
+    assert purchase_cost(two_owned, two_owned, catalog,
+        revised(constraints, owned_slots=("anneau_1", "anneau_2"))) == (0, [])
+
+
+def test_owned_fm_respects_permissions_and_forbidden(build, catalog):
+    from utils.build.optimizer import pools_for
+    instance = revised(equip(catalog.items[0]), mode="declared_fm")
+    original = build.with_slot("coiffe", instance)
+    constraints = Constraints(owned_slots=("coiffe",),
+        locked=tuple(s for s in SLOTS if s != "coiffe"))
+    pools, _ = pools_for(original, catalog, constraints, Limits())
+    assert all(i.mode != "declared_fm" for i in pools["coiffe"])
+    pools, _ = pools_for(original, catalog, revised(constraints, allow_exos=True), Limits())
+    assert any(i.mode == "declared_fm" for i in pools["coiffe"])
+    pools, _ = pools_for(original, catalog,
+        revised(constraints, allow_exos=True, forbidden=(instance.template_ref,)), Limits())
+    assert all(i.template_ref != instance.template_ref for i in pools["coiffe"])
+
+
 @pytest.fixture
 def search_case(item_factory,build):
     items=[item_factory(n,slot,{"fo":1}) for n,slot in enumerate(CORE,1) if not slot.startswith("anneau")]

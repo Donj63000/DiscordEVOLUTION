@@ -158,7 +158,23 @@ def pools_for(build, catalog, constraints, limits):
             selected[item.ref] = item
         chosen = list(selected.values())[:limits.candidates]
         truncated |= len(chosen) < len(eligible)
-        choices = tuple(equip(i) for i in chosen)
+        variants = {}
+        for owned_slot in constraints.owned_slots:
+            instance = build.in_slot(owned_slot)
+            if instance is None:
+                continue
+            template = catalog.resolve(instance)
+            if (slot not in template.allowed_slots or template.level > build.profile.level
+                    or template.ref in constraints.forbidden
+                    or (instance.mode == "declared_fm" and not constraints.allow_exos)):
+                continue
+            key = (template.ref, jet_signature(instance, template))
+            variants[key] = revised(instance, id=equip(template).id)
+        for template in chosen:
+            instance = equip(template)
+            variants.setdefault((template.ref, jet_signature(instance, template)), instance)
+        truncated |= len(variants) > limits.candidates
+        choices = tuple(variants.values())[:limits.candidates]
         if slot not in CORE:
             choices += (None,)
         if not choices:
@@ -218,7 +234,8 @@ def optimize(build: Build, catalog: Catalog, rules: Rules, constraints: Constrai
                     if template.set_ref:
                         sets.setdefault(template.set_ref, set()).add(template.ref)
                     slots += (SlotItem(slot=slot, item=instance),)
-                signature = state.signature + ((instance.template_ref if instance else ""),)
+                signature = state.signature + ((instance.template_ref,
+                    jet_signature(instance, catalog.resolve(instance))) if instance else ("", ""),)
                 expanded.append(State(slots, totals, sets, used, signature))
         if not expanded:
             return {"status": "NO_SOLUTION_FOUND", "solutions": [], "tentative": [], "global_optimum": False}
@@ -271,7 +288,9 @@ def optimize(build: Build, catalog: Catalog, rules: Rules, constraints: Constrai
     ranked.sort(key=lambda row: (not row[0], -(row[1]["score"] if row[1]["score"] is not None else float("-inf")), tuple((s["slot"], s["item"]["template_ref"], s["item"]["mode"]) for s in row[1]["build"]["slots"])))
     seen = set()
     for complete, row in ranked:
-        signature = tuple((s["slot"], s["item"]["template_ref"]) for s in row["build"]["slots"])
+        candidate = Build.model_validate(row["build"])
+        signature = tuple((s.slot, s.item.template_ref,
+                           jet_signature(s.item, catalog.resolve(s.item))) for s in candidate.slots)
         if signature in seen:
             continue
         seen.add(signature)
