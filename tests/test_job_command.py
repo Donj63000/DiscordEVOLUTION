@@ -308,35 +308,46 @@ async def test_job_confirmation_ignores_unrelated_replies(job_cog, confirmations
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("load_number", [1, 2])
+@pytest.mark.parametrize("load_phase", ["initial", "mutation"])
 @pytest.mark.parametrize("previous_prefix", [(), ("add",)])
-async def test_replacement_during_console_load_prevents_late_confirmation(
-    job_cog, confirmations, load_number, previous_prefix
+async def test_replacement_during_console_load_prevents_late_confirmation_or_write(
+    job_cog, confirmations, load_phase, previous_prefix
 ):
     author = SimpleNamespace(id=123, display_name="Hero", roles=[])
     previous_ctx = FakeContext(author)
     load_started = asyncio.Event()
     release_load = asyncio.Event()
-    previous_loads = 0
+    replacement_loaded = asyncio.Event()
 
     async def delayed_load(_guild):
-        nonlocal previous_loads
         if asyncio.current_task() is previous:
-            previous_loads += 1
-            if previous_loads == load_number:
+            if load_phase == "initial":
                 load_started.set()
                 await release_load.wait()
+        else:
+            replacement_loaded.set()
         return True
 
+    async def delayed_restore(_guild):
+        if asyncio.current_task() is previous and load_phase == "mutation":
+            load_started.set()
+            await release_load.wait()
+
     job_cog.load_from_console = delayed_load
+    job_cog._restore_jobs_for_mutation = delayed_restore
     previous = confirmations.start(previous_ctx, *previous_prefix, "Métier précédent", "50")
+    if load_phase == "mutation":
+        await confirmations.next_confirmation()
+        confirmations.reply(previous_ctx, "oui")
     await asyncio.wait_for(load_started.wait(), timeout=2.0)
-    await invoke_job(job_cog, FakeContext(author), "Mineur", "100")
+    replacement = confirmations.start(FakeContext(author), "Mineur", "100")
+    await asyncio.wait_for(replacement_loaded.wait(), timeout=2.0)
     release_load.set()
-    await asyncio.wait_for(previous, timeout=2.0)
+    await asyncio.wait_for(asyncio.gather(previous, replacement), timeout=2.0)
 
     assert confirmations.started.empty()
-    assert previous_ctx.sent_messages == []
+    expected_titles = ["Confirmation"] if load_phase == "mutation" else []
+    assert [message.embed.title for message in previous_ctx.sent_messages] == expected_titles
     assert job_cog.jobs_data["123"]["jobs"] == {"Mineur": 100}
     job_cog.save_data_local.assert_called_once_with()
     assert not job_cog._job_submissions

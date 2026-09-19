@@ -177,11 +177,13 @@ async def test_failed_subcommand_edit_can_be_retried(remote_catalog, guild_id):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("evo_enabled", [False, True])
+@pytest.mark.parametrize("build_enabled", [False, True])
 async def test_active_sync_removes_legacy_root_even_with_ai_enabled(
-    sync_bot, monkeypatch, evo_enabled,
+    sync_bot, monkeypatch, evo_enabled, build_enabled,
 ):
     monkeypatch.setenv("ENABLE_AI_COMMANDS", "1")
     monkeypatch.setenv("EVO_ENABLED", "1" if evo_enabled else "0")
+    monkeypatch.setenv("BUILD_ENABLED", "1" if build_enabled else "0")
     monkeypatch.setenv("EVO_ALLOW_LEGACY_AI", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
@@ -191,6 +193,8 @@ async def test_active_sync_removes_legacy_root_even_with_ai_enabled(
     expected = {"annonce-config", "event-rapide"}
     if not evo_enabled:
         expected.update({"evo", "evo-budget", "evo-oublier"})
+    if not build_enabled:
+        expected.add("build")
     assert names == expected
     sync_bot.tree.sync.assert_awaited_once_with(guild=discord.Object(id=100))
 

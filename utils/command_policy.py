@@ -15,9 +15,10 @@ GEMINI_COMMANDS = frozenset({"ia", "iahelp", "iaend", "bot", "analyse", "pl", "e
 OPENAI_COMMANDS = frozenset({
     "iastaff", "annonce", "annonce-model", "annonce-config", "organisation-model",
 })
+BUILD_COMMANDS = frozenset({"build"})
 EVO_COMMANDS = frozenset({"evo", "evo-oublier", "evo-budget"})
 RETIRED_COMMANDS = frozenset({"event-rapide"})
-MANAGED_UNAVAILABLE_ROOTS = GEMINI_COMMANDS | OPENAI_COMMANDS | RETIRED_COMMANDS | EVO_COMMANDS
+MANAGED_UNAVAILABLE_ROOTS = GEMINI_COMMANDS | OPENAI_COMMANDS | RETIRED_COMMANDS | EVO_COMMANDS | BUILD_COMMANDS
 RETIRED_SLASH_PATHS: dict[tuple[str, ...], str] = {
     ("stats", "classement"): (
         "Ce raccourci a été retiré du menu. Utilise `/ladder` pour le classement des profils."
@@ -63,6 +64,8 @@ def ai_service_enabled(provider: str) -> bool:
 
 def unavailable_reason(qualified_name: str) -> str | None:
     root = qualified_name.split(" ", 1)[0]
+    if root in BUILD_COMMANDS:
+        return None if enabled_flag("BUILD_ENABLED") else "Evolution Build est désactivé par le Staff."
     if root in EVO_COMMANDS:
         return None if enabled_flag("EVO_ENABLED") else "Evo est désactivé par le Staff."
     if root in RETIRED_COMMANDS:

@@ -71,6 +71,13 @@ class FakeConsole:
         self.after_write = None
         self.ignore_edits = False
         self.edits = self.sends = self.reads = 0
+        self.viewable = self.readable = True
+
+    def permissions_for(self, member):
+        return SimpleNamespace(
+            view_channel=self.viewable, read_message_history=self.readable,
+            send_messages=self.viewable,
+        )
 
     async def pins(self):
         if self.read_error:
@@ -86,10 +93,13 @@ class FakeConsole:
                 return message
         raise missing_message()
 
-    async def history(self, *, limit=None, **kwargs):
+    async def history(self, *, limit=None, before=None, **kwargs):
         if self.read_error:
             raise self.read_error
-        messages = list(reversed(self.messages))
+        messages = [
+            message for message in reversed(self.messages)
+            if before is None or message.id < before.id
+        ]
         for message in messages if limit is None else messages[:limit]:
             yield message
 

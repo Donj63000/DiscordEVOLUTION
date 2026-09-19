@@ -31,6 +31,8 @@ from utils.evo_web import EvoWeb
 from utils.exo_data import parse_effects
 from utils.exo_advice import fm_guide, requested_rune
 from utils.exo_engine import STATS
+from utils.build.ai_tools import definitions as build_tool_definitions, NAMES as BUILD_TOOL_NAMES
+from utils.build.config import flag as build_flag
 from utils.xixou_api import monster_drop_sources, monster_record
 
 log = logging.getLogger(__name__)
@@ -143,6 +145,7 @@ TOOLS = [
     tool("demander_precision", "Une seule question courte si une information indispensable manque.",
          {"question": text(maximum=250)}, "both"),
 ]
+TOOLS.extend(build_tool_definitions(tool, text, number, choice, array))
 BY_NAME = {spec["schema"]["name"]: spec for spec in TOOLS}
 MUTATING_TOOLS = frozenset({
     "poser_rune", "inscrire_activite", "desinscrire_activite", "definir_mon_metier", "supprimer_mon_metier",
@@ -190,6 +193,11 @@ def schemas_for(question: str, *, current_request: str | None = None) -> list[di
         selected.add("consulter_site")
     if not selected:
         selected = set(BY_NAME)
+    if build_flag("BUILD_ENABLED") and build_flag("BUILD_AI_ENABLED"):
+        if re.search(r"\b(?:builds?|stuffs?|dofusbook|equiper|equipements?)\b", key):
+            selected.update(BUILD_TOOL_NAMES)
+    else:
+        selected.difference_update(BUILD_TOOL_NAMES)
     selected.update({"aide_bot", "demander_precision", "rechercher_web"})
     log.debug("evo tool catalogue selected count=%s", len(selected))
     return [spec["schema"] for spec in TOOLS if spec["schema"]["name"] in selected]
@@ -423,7 +431,11 @@ class EvoTools:
         try:
             params = parse_arguments(raw, BY_NAME[name]["schema"]["parameters"])
             async with asyncio.timeout(65 if name == "rechercher_web" else 24):
-                value = await getattr(self, "do_" + name)(ctx, **params)
+                if name in BUILD_TOOL_NAMES:
+                    from utils.build.ai_tools import dispatch as dispatch_build
+                    value = await dispatch_build(name, ctx, **params)
+                else:
+                    value = await getattr(self, "do_" + name)(ctx, **params)
             if name not in {"consulter_site", "rechercher_web"}:
                 self._sources(ctx, value)
             return self.encode_result(name, value)

@@ -1,0 +1,1676 @@
+{
+  "schema_version": 1,
+  "version": "retro-beta-2026-09-19",
+  "sources": [
+    "https://xixou.io/guides/classes/"
+  ],
+  "allocations": [
+    {
+      "classe": "feca",
+      "stat": "fo",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 250,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "feca",
+      "stat": "ine",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 300,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 400,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "feca",
+      "stat": "cha",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "feca",
+      "stat": "age",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "feca",
+      "stat": "vi",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 1,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "feca",
+      "stat": "sa",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "osamodas",
+      "stat": "fo",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 250,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "osamodas",
+      "stat": "ine",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 300,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 400,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "osamodas",
+      "stat": "cha",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 300,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 400,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "osamodas",
+      "stat": "age",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "osamodas",
+      "stat": "vi",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 1,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "osamodas",
+      "stat": "sa",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "enutrof",
+      "stat": "fo",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 250,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 350,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "enutrof",
+      "stat": "ine",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 100,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 140,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "enutrof",
+      "stat": "cha",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 230,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 330,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "enutrof",
+      "stat": "age",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "enutrof",
+      "stat": "vi",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 1,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "enutrof",
+      "stat": "sa",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sram",
+      "stat": "fo",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 300,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 400,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sram",
+      "stat": "ine",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 250,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sram",
+      "stat": "cha",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sram",
+      "stat": "age",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 300,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 400,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sram",
+      "stat": "vi",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 1,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sram",
+      "stat": "sa",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "xelor",
+      "stat": "fo",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 250,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "xelor",
+      "stat": "ine",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 300,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 400,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "xelor",
+      "stat": "cha",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "xelor",
+      "stat": "age",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "xelor",
+      "stat": "vi",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 1,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "xelor",
+      "stat": "sa",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "ecaflip",
+      "stat": "fo",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 300,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 400,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "ecaflip",
+      "stat": "ine",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "ecaflip",
+      "stat": "cha",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "ecaflip",
+      "stat": "age",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 100,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "ecaflip",
+      "stat": "vi",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 1,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "ecaflip",
+      "stat": "sa",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "eniripsa",
+      "stat": "fo",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 250,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "eniripsa",
+      "stat": "ine",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 300,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 400,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "eniripsa",
+      "stat": "cha",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "eniripsa",
+      "stat": "age",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "eniripsa",
+      "stat": "vi",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 1,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "eniripsa",
+      "stat": "sa",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "iop",
+      "stat": "fo",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 300,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 400,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "iop",
+      "stat": "ine",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "iop",
+      "stat": "cha",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "iop",
+      "stat": "age",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "iop",
+      "stat": "vi",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 1,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "iop",
+      "stat": "sa",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "cra",
+      "stat": "fo",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 250,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 350,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "cra",
+      "stat": "ine",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 250,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 350,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "cra",
+      "stat": "cha",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "cra",
+      "stat": "age",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 100,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "cra",
+      "stat": "vi",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 1,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "cra",
+      "stat": "sa",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sadida",
+      "stat": "fo",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 250,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 300,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 400,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sadida",
+      "stat": "ine",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 300,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 400,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sadida",
+      "stat": "cha",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 300,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 400,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sadida",
+      "stat": "age",
+      "bands": [
+        {
+          "until": 20,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 40,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 60,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 80,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sadida",
+      "stat": "vi",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 1,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sadida",
+      "stat": "sa",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sacrieur",
+      "stat": "fo",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sacrieur",
+      "stat": "ine",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sacrieur",
+      "stat": "cha",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sacrieur",
+      "stat": "age",
+      "bands": [
+        {
+          "until": 100,
+          "cost": 3,
+          "gain": 1
+        },
+        {
+          "until": 150,
+          "cost": 4,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 5,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "sacrieur",
+      "stat": "vi",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 1,
+          "gain": 2
+        }
+      ]
+    },
+    {
+      "classe": "sacrieur",
+      "stat": "sa",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "pandawa",
+      "stat": "fo",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "pandawa",
+      "stat": "ine",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "pandawa",
+      "stat": "cha",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "pandawa",
+      "stat": "age",
+      "bands": [
+        {
+          "until": 50,
+          "cost": 1,
+          "gain": 1
+        },
+        {
+          "until": 200,
+          "cost": 2,
+          "gain": 1
+        },
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "pandawa",
+      "stat": "vi",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 1,
+          "gain": 1
+        }
+      ]
+    },
+    {
+      "classe": "pandawa",
+      "stat": "sa",
+      "bands": [
+        {
+          "until": 10000,
+          "cost": 3,
+          "gain": 1
+        }
+      ]
+    }
+  ],
+  "base_pa": 6,
+  "level_pa": 100,
+  "base_pm": 3,
+  "base_pp": 100,
+  "enutrof_pp": 120,
+  "base_pv": null,
+  "pv_per_level": null,
+  "base_verified": false,
+  "allocation_verified": false,
+  "derivatives_verified": false,
+  "restrictions_verified": false,
+  "stat_conditions": "unknown",
+  "set_count": "distinct_templates",
+  "fixtures": [],
+  "notes": [
+    "Paliers : tables publiques Xixou. Aucun personnage étalon observé en jeu fourni.",
+    "PA/PM/PP et calcul dérivé PP/VI : hypothèses de simulation non certifiées ; les métriques restent partielles.",
+    "Pas de formule de PV de base inventée. Initiative et pods complets non couverts.",
+    "Le mode déclaré permet de saisir les valeurs hors équipement ; ce n’est pas une preuve de légalité."
+  ]
+}

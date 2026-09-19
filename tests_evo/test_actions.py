@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+import job
 from activite import ActiviteCog, VALIDATED_ROLE_NAME
 from job import JobCog, JobPersistenceError
 from tests_evo.budget_helpers import FakeConsole
@@ -16,7 +17,8 @@ from utils.evo_config import EvoError
 
 
 @pytest.fixture
-def actions():
+def actions(monkeypatch, tmp_path):
+    monkeypatch.setattr(job, "DATA_FILE", str(tmp_path / "jobs_data.json"))
     ctx = context()
     ctx.bot.user = ctx.guild.me
     ctx.request_text = ""

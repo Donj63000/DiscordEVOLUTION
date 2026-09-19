@@ -12,6 +12,7 @@ import inspect
 import json
 import logging
 import math
+import os
 from pathlib import Path
 import re
 import sys
@@ -66,11 +67,21 @@ def modules(monkeypatch):
     stat_names = load_original(
         monkeypatch, "_exo_review_stats", "utils/evo_equipment.py", {"STAT_NAMES"},
     ).STAT_NAMES
+    build_flag = load_original(
+        monkeypatch, "_exo_review_build_config", "utils/build/config.py", {"flag"},
+        {"os": os},
+    ).flag
+    build_tool_names = load_original(
+        monkeypatch, "_exo_review_build_tools", "utils/build/ai_tools.py", {"NAMES"},
+    ).NAMES
+    monkeypatch.delenv("BUILD_ENABLED", raising=False)
+    monkeypatch.delenv("BUILD_AI_ENABLED", raising=False)
     tools = load_original(
         monkeypatch, "utils.evo_tools", "utils/evo_tools.py",
         {"text", "number", "choice", "array", "tool", "TOOLS", "BY_NAME", "MUTATING_TOOLS",
          "schemas_for", "requires_evidence"},
         {"STAT_NAMES": stat_names, "search_key": search_key, "re": re,
+         "build_flag": build_flag, "BUILD_TOOL_NAMES": build_tool_names,
          "requested_rune": requested_rune, "log": logging.getLogger(__name__)},
     )
     bridge = load_original(monkeypatch, "_exo_review_bridge", "utils/evo_exo.py", env={

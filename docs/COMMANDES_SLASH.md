@@ -395,3 +395,14 @@ modules optionnels effectivement démarrés sur votre hébergement.
 La réponse initiale d'une interaction doit être acquittée rapidement. Le caractère
 éphémère fixé au différé ne peut pas être changé en réutilisant simplement le premier
 followup. Les commandes de guilde et globales forment des périmètres distincts.
+
+## Evolution Build (optionnel)
+
+Le groupe natif `/build` est chargé lorsque `BUILD_ENABLED=true`, indépendamment de
+`EVO_ENABLED`. Ses 25 sous-commandes ne passent pas par une duplication préfixe/slash.
+Configuration, limites de couverture, persistance et procédure de recette :
+[EVOLUTION_BUILD.md](EVOLUTION_BUILD.md).
+
+Le builder ne démarre pas automatiquement une migration destructive et ne réutilise
+pas la variable `DATABASE_URL` des autres modules. Les builds sont privés par défaut ;
+les publications et suppressions nécessitent une confirmation du propriétaire.

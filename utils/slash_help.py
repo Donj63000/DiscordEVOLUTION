@@ -24,7 +24,7 @@ def category(command) -> str:
         return "Activités"
     if name in {"job", "membre", "profil", "ladder"}:
         return "Métiers et personnages"
-    if name in {"objet", "recette", "equipement", "monstre", "rune", "exo"}:
+    if name in {"objet", "recette", "equipement", "monstre", "rune", "exo", "build"}:
         return "Dofus Rétro"
     if name in {"ia", "iahelp", "iaend", "bot", "analyse", "pl", "iastaff"}:
         return "IA"

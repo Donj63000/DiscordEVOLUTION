@@ -229,9 +229,13 @@ async def test_fetch_history_retries_on_rate_limit(bot, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("evo_enabled", [False, True])
-async def test_setup_hook_loads_evo_before_slash_adapter_when_enabled(bot, monkeypatch, evo_enabled):
+@pytest.mark.parametrize("build_enabled", [False, True])
+async def test_setup_hook_loads_native_modules_before_slash_adapter(
+    bot, monkeypatch, evo_enabled, build_enabled,
+):
     monkeypatch.setenv("ENABLE_AI_COMMANDS", "0")
     monkeypatch.setenv("EVO_ENABLED", "1" if evo_enabled else "0")
+    monkeypatch.setenv("BUILD_ENABLED", "1" if build_enabled else "0")
     synced = []
 
     async def fake_sync():
@@ -242,12 +246,17 @@ async def test_setup_hook_loads_evo_before_slash_adapter_when_enabled(bot, monke
     await bot.setup_hook()
 
     assert ("evo" in bot._load_calls) is evo_enabled
+    assert ("build" in bot._load_calls) is build_enabled
     assert "job" in bot._load_calls
     assert "activite" in bot._load_calls
     assert "ia" not in bot._load_calls
     assert "iastaff" not in bot._load_calls
     if evo_enabled:
         assert bot._load_calls.index("evo") < bot._load_calls.index("slash_commands")
+    if build_enabled:
+        assert bot._load_calls.index("build") < bot._load_calls.index("slash_commands")
+        if evo_enabled:
+            assert bot._load_calls.index("build") < bot._load_calls.index("evo")
     assert synced == [True]
 
 
