@@ -15,6 +15,7 @@ import discord
 
 from utils.evo_config import resolve_console_channel
 from .models import Actor, Build, BuildError, Conflict, NotFound, canonical
+from .diagnostics import failure_summary, log_failure
 from .repository import MemoryRepository, SNAPSHOT_KINDS, op_key, require_owner, share_hash
 
 log = logging.getLogger(__name__)
@@ -25,6 +26,9 @@ MAX_BLOB_BYTES = 24 * 1024 * 1024
 MAX_ROOT_BYTES = 4 * 1024 * 1024
 PART_BYTES = 4 * 1024 * 1024
 IO_TIMEOUT = 30
+# Un inventaire paginé et plusieurs téléchargements ne sont pas une seule requête.
+HISTORY_TIMEOUT = 120
+INVENTORY_TIMEOUT = 180
 HASH = re.compile(r"[0-9a-f]{64}")
 
 
@@ -82,6 +86,7 @@ class ConsoleRepository:
         self._snapshot_payloads = {}
         self._deleted_garbage = set()
         self._opened = False
+        self.last_failure = ""
         pending = getattr(bot, "_build_console_pending", None)
         if pending is None:
             pending = {}
@@ -135,9 +140,14 @@ class ConsoleRepository:
         return min(PART_BYTES, getattr(self.channel.guild, "filesize_limit", PART_BYTES))
 
     async def _discover(self):
-        pins = await self._io(self.channel.pins())
+        pins = self.channel.pins()
+        if hasattr(pins, "__aiter__"):
+            async with asyncio.timeout(HISTORY_TIMEOUT):
+                pins = [message async for message in pins]
+        else:
+            pins = await self._io(pins)
         messages = {message.id: message for message in pins if self._module_message(message)}
-        async with asyncio.timeout(IO_TIMEOUT):
+        async with asyncio.timeout(HISTORY_TIMEOUT):
             async for message in self.channel.history(limit=None):
                 if self._module_message(message):
                     messages[message.id] = message
@@ -180,13 +190,15 @@ class ConsoleRepository:
                 log.debug("build console opened channel_id=%s revision=%s",
                           channel.id, self._root["revision"])
                 return self
-            except BuildError:
+            except BuildError as exc:
                 self._opened = False
+                self.last_failure = failure_summary(exc)
                 raise
             except Exception as exc:
                 self._opened = False
-                log.debug("build console open failed type=%s", type(exc).__name__, exc_info=True)
-                raise BuildError("Lecture ou épinglage Build impossible dans #console. Vérifie les permissions.") from None
+                self.last_failure = failure_summary(exc)
+                log_failure(log, "build console open failed", exc)
+                raise BuildError("Lecture ou épinglage Build impossible dans #console. Vérifie les permissions.") from exc
 
     async def close(self):
         self._opened = False
@@ -427,7 +439,7 @@ class ConsoleRepository:
         inventory, journals, positions, candidates = {}, [], {}, []
         pattern = re.compile(re.escape(MARKER) +
             r" blob sha256:([0-9a-f]{64}) part:(\d+)/(\d+) sha256:([0-9a-f]{64})")
-        async with asyncio.timeout(IO_TIMEOUT):
+        async with asyncio.timeout(INVENTORY_TIMEOUT):
             async for message in self.channel.history(limit=None):
                 if not self._owned(message):
                     continue
@@ -459,7 +471,7 @@ class ConsoleRepository:
                         or attachments[0].filename != PART_FILENAME
                         or not 0 < attachments[0].size <= PART_BYTES):
                     raise BuildError("Fragment d'envoi altéré : contrôle Staff requis.")
-                raw = await attachments[0].read()
+                raw = await self._io(attachments[0].read())
                 if len(raw) != attachments[0].size or _sha(raw) != match[4]:
                     raise BuildError("Empreinte d'un fragment retrouvé invalide.")
                 key = (match[1], position, count)
@@ -633,11 +645,13 @@ class ConsoleRepository:
                         "jusqu'à sa confirmation dans #console."
                     )
                 yield
-            except BuildError:
+            except BuildError as exc:
+                self.last_failure = failure_summary(exc)
                 raise
             except Exception as exc:
-                log.debug("build console operation failed type=%s", type(exc).__name__, exc_info=True)
-                raise BuildError("Accès Build incertain dans #console ; relecture obligatoire avant confirmation.") from None
+                self.last_failure = failure_summary(exc)
+                log_failure(log, "build console operation failed", exc)
+                raise BuildError("Accès Build incertain dans #console ; relecture obligatoire avant confirmation.") from exc
 
     def _active_ids(self, root):
         descriptors = list(root["members"].values())
@@ -654,6 +668,7 @@ class ConsoleRepository:
         self._validate_root(target)
         content, file = self._root_content(target)
         self._pending_roots[self.channel.id] = deepcopy(target)
+        write_error = None
         try:
             try:
                 await self._io(current.edit(
@@ -661,6 +676,8 @@ class ConsoleRepository:
                     allowed_mentions=discord.AllowedMentions.none(),
                 ))
             except Exception as exc:
+                write_error = exc
+                self.last_failure = failure_summary(exc)
                 if isinstance(exc, discord.HTTPException) and exc.status in {400, 401, 403, 404, 413}:
                     self._pending_roots.pop(self.channel.id, None)
                 log.debug("build console root acknowledgement uncertain revision=%s type=%s",
@@ -668,7 +685,9 @@ class ConsoleRepository:
             confirmed_message = await self._io(self.channel.fetch_message(current.id))
             confirmed = await self._read_root(confirmed_message)
             if confirmed != target or not confirmed_message.pinned:
-                raise BuildError("L'écriture Build n'a pas été confirmée ; consulte tes builds avant de réessayer.")
+                raise BuildError(
+                    "L'écriture Build n'a pas été confirmée ; consulte tes builds avant de réessayer."
+                ) from write_error
             await self._check_leadership()
             await self._refresh()
             self._pending_roots.pop(self.channel.id, None)
@@ -810,6 +829,90 @@ class ConsoleRepository:
 
     async def delete_price(self, actor, quote_id):
         return await self._mutate(actor, "delete_price", quote_id)
+
+    async def recover_catalog(self):
+        """Engager un unique catalogue intégral déjà transféré, jamais un build membre.
+
+        Aucun choix par date et aucune réparation d'empreinte. Les transferts
+        incomplets restent intacts ; la racine courante demeure l'autorité.
+        """
+        from .catalog import verify_snapshot
+        from .models import Catalog
+
+        def validate(raw):
+            payload = _json(raw)
+            # Les règles, sorts et états membres partagent le transport .part.
+            if not isinstance(payload, dict) or not {"items", "normalizer", "source_hash"} <= payload.keys():
+                return None
+            catalog = Catalog.model_validate(payload)
+            verify_snapshot(catalog)
+            if not catalog.items or canonical(catalog).encode("utf-8") != raw:
+                raise BuildError("Catalogue transféré vide ou non canonique : contrôle Staff requis.")
+            return catalog.id
+
+        async with self._guard(write=True):
+            current = self._root["latest"].get("catalog")
+            if current is not None:
+                return (await self._read_blob(self._root["snapshots"]["catalog"][current])).decode("utf-8")
+            if self._root["snapshots"].get("catalog"):
+                raise BuildError(
+                    "Des catalogues archivés existent sans version active : "
+                    "contrôle Staff requis, aucune sélection automatique."
+                )
+            inventory, journals = await self._upload_inventory(allow_missing=True)
+            recovered = {}
+            seen = set()
+            for _, journal in journals:
+                count = (journal["size"] + journal["chunk_size"] - 1) // journal["chunk_size"]
+                identity = journal["sha256"], journal["size"], journal["chunk_size"]
+                if journal["attempted"] != count or identity in seen:
+                    continue
+                seen.add(identity)
+                descriptor = {"sha256": journal["sha256"], "size": journal["size"], "parts": []}
+                for position in range(1, count + 1):
+                    prefix = (f"{MARKER} blob sha256:{journal['sha256']} "
+                              f"part:{position}/{count} sha256:")
+                    matches = [message for content, messages in inventory.items()
+                               if content.startswith(prefix) for message in messages]
+                    if not matches:
+                        break
+                    message = min(matches, key=lambda m: m.id)
+                    attachment = message.attachments[0]
+                    descriptor["parts"].append({
+                        "id": message.id, "attachment_id": attachment.id,
+                        "sha256": message.content.rsplit("sha256:", 1)[1],
+                        "size": attachment.size,
+                    })
+                if len(descriptor["parts"]) != count:
+                    continue
+                self._descriptor(descriptor)
+                raw = await self._read_blob(descriptor)
+                try:
+                    identifier = await asyncio.to_thread(validate, raw)
+                except (ValueError, TypeError, KeyError) as exc:
+                    # Un upload non-JSON n'est pas un catalogue récupérable.
+                    # Ne pas transformer un catalogue altéré en base vide.
+                    try:
+                        candidate = _json(raw)
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(candidate, dict) and "items" in candidate:
+                        raise BuildError("Catalogue transféré invalide : contrôle Staff requis.") from exc
+                    continue
+                if identifier is not None:
+                    recovered[identifier] = (descriptor, raw)
+            if not recovered:
+                return None
+            if len(recovered) != 1:
+                raise BuildError("Plusieurs catalogues non engagés existent : contrôle Staff requis, aucun choix automatique.")
+            identifier, (descriptor, raw) = next(iter(recovered.items()))
+            target = deepcopy(self._root)
+            target["snapshots"].setdefault("catalog", {})[identifier] = descriptor
+            target["latest"]["catalog"] = identifier
+            await self._commit_root(target)
+            log.info("build catalog recovered from verified console upload id=%s parts=%s",
+                     identifier, len(descriptor["parts"]))
+            return raw.decode("utf-8")
 
     async def put_snapshot(self, kind, identifier, payload):
         if (kind not in SNAPSHOT_KINDS or not isinstance(identifier, str)

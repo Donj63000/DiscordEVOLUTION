@@ -14,7 +14,7 @@ from discord.ext.commands.view import StringView
 
 from utils.command_policy import retired_slash_reason, unavailable_reason
 from utils.slash_errors import (
-    SlashInputError, error_message, log_command_error, send_interaction_error,
+    ERROR_HANDLED_KEY, SlashInputError, error_message, log_command_error, send_interaction_error,
 )
 
 log = logging.getLogger(__name__)
@@ -78,6 +78,10 @@ class EvolutionCommandTree(app_commands.CommandTree):
         return True
 
     async def on_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        # discord.py appelle aussi cet étage après les handlers du Cog.
+        # Ne déduire ni succès ni traitement d'un simple defer/is_done().
+        if getattr(interaction, "extras", {}).get(ERROR_HANDLED_KEY) is True:
+            return
         name = getattr(interaction.command, "qualified_name", (interaction.data or {}).get("name", "inconnue"))
         message = (
             retired_slash_reason(interaction_command_path(interaction))

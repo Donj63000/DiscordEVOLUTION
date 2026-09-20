@@ -42,3 +42,34 @@ def coverage_text(catalog):
             + ("Manquantes : " + ", ".join(missing[:8]) + (f" (+{len(missing)-8})" if len(missing)>8 else "")
                if missing else "Aucune table manquante parmi les panoplies référencées.")
             + "\nLes règles non qualifiées restent signalées, sans certification automatique.")
+
+
+def failure_summary(error):
+    """Chaîne de types/codes techniques, sans URL, jeton, profil ni valeur Pydantic."""
+    rows, seen = [], set()
+    while error is not None and id(error) not in seen and len(rows) < 6:
+        seen.add(id(error))
+        row = type(error).__name__
+        status = getattr(error, "status", None)
+        code = getattr(error, "code", None)
+        if type(status) is int:
+            row += f" HTTP {status}"
+        if type(code) is int:
+            row += f" code {code}"
+        rows.append(row)
+        error = error.__cause__ or error.__context__
+    return " <- ".join(rows)
+
+
+def log_failure(logger, context, error):
+    """Trace des emplacements de code, sans sérialiser les exceptions ni leurs entrées."""
+    import traceback
+
+    frames, seen, current = [], set(), error
+    while current is not None and id(current) not in seen and len(seen) < 6:
+        seen.add(id(current))
+        frames.append(type(current).__name__ + ":\n" + "\n".join(
+            f"  {frame.filename}:{frame.lineno} in {frame.name}"
+            for frame in traceback.extract_tb(current.__traceback__, limit=8)))
+        current = current.__cause__ or current.__context__
+    logger.error("%s causes=%s\n%s", context, failure_summary(error), "\n".join(frames))

@@ -74,7 +74,7 @@ class BuildService:
                 return build, calculate(build, catalog, rules), catalog
         catalog = self.catalogs.latest
         if catalog is None:
-            raise BuildError("Catalogue en cours de chargement ou indisponible. Consulte /build diagnostic.")
+            raise BuildError("Catalogue pas encore prêt. Le bot retente son chargement automatiquement ; le Staff peut consulter /build diagnostic ou relancer /build actualiser.")
         build = Build(guild_id=actor.guild_id, owner_id=actor.user_id, name=name, catalog_id=catalog.id, rules_id=self.rules.id, profile=profile)
         preview = await self.preview(actor, build, request)
         return await self.apply(actor, preview, operation) if operation else preview

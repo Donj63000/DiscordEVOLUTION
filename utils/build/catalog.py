@@ -8,8 +8,8 @@ import re
 import time
 from collections import defaultdict
 from types import SimpleNamespace
-from utils.dofus_wiki import WikiError
 from .conditions import norm, parse, recognized
+from .diagnostics import failure_summary, log_failure
 from .effects import parse_lines
 from .models import (Catalog, CatalogIssue, ItemTemplate, SetDefinition, WeaponMetadata,
                      BuildError, digest, canonical, SLOTS)
@@ -268,31 +268,75 @@ class CatalogService:
         self.lock = asyncio.Lock()
         self.last_error = ""
         self.refreshed_at = 0.0
+        self.phase = "non_demarre"
+        self._pending_candidate = None
 
     async def restore(self):
-        obj = await self.repository.latest_snapshot("catalog")
-        if obj:
-            catalog = Catalog.model_validate_json(obj)
-            verify_snapshot(catalog)
-            self.latest = catalog
-        return self.latest
+        self.phase = "restauration_console"
+        try:
+            obj = await self.repository.latest_snapshot("catalog")
+            if obj is None:
+                # Un transfert terminé n'est pas encore un snapshot engagé.
+                # Seul le repository peut valider et référencer ces fragments.
+                recover = getattr(self.repository, "recover_catalog", None)
+                if recover is not None:
+                    obj = await recover()
+            if obj is not None:
+                catalog = await asyncio.to_thread(Catalog.model_validate_json, obj)
+                await asyncio.to_thread(verify_snapshot, catalog)
+                self.latest = catalog
+                self.phase = "pret"
+                self.last_error = ""
+            return self.latest
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.last_error = ("Catalogue : échec à l'étape restauration_console. "
+                               + failure_summary(exc))
+            log_failure(log, "build catalog restore failed", exc)
+            if isinstance(exc, BuildError):
+                raise
+            raise BuildError(self.last_error) from exc
+
+    async def _persist_pending(self):
+        """Réessayer les mêmes octets ; ne pas créer une nouvelle génération source."""
+        candidate = self._pending_candidate
+        if candidate is None:
+            raise BuildError("Aucun catalogue préparé à archiver.")
+        self.phase = "archivage_console"
+        payload = await asyncio.to_thread(canonical, candidate)
+        await self.repository.put_snapshot("catalog", candidate.id, payload)
+        # L'accès aux créations n'est ouvert qu'après confirmation de la racine.
+        self.latest = candidate
+        self._pending_candidate = None
+        self.last_error = ""
+        self.phase = "pret"
+        self.refreshed_at = time.monotonic()
+        return candidate
 
     async def refresh(self):
         async with self.lock:
             try:
+                if self._pending_candidate is not None:
+                    return await self._persist_pending()
+                self.phase = "configuration"
                 wiki = self.wiki_provider()
                 if wiki is None or getattr(wiki, "_closed", False) or not getattr(getattr(wiki, "enrichment_client", None), "enabled", False):
                     raise BuildError("Catalogue indisponible : activer l'enrichissement Xixou dans le wiki.")
+                self.phase = "sources"
                 async with asyncio.timeout(45):
                     entries, payload = await asyncio.gather(wiki.client.items(), wiki.enrichment_client.catalog("equipements"))
                 if not payload:
                     raise BuildError("Catalogue Xixou indisponible ; copie précédente conservée.")
-                raw = self.overrides_path.read_bytes()
+                self.phase = "corrections"
+                raw = await asyncio.to_thread(self.overrides_path.read_bytes)
                 if len(raw) > 4 * 1024 * 1024:
                     raise BuildError("Corrections trop volumineuses.")
                 overrides = json.loads(raw)
+                self.phase = "normalisation"
                 candidate = await asyncio.to_thread(normalize, entries, payload, overrides)
                 if self.set_loader is not None:
+                    self.phase = "panoplies"
                     # Les corrections locales font autorité ; conserver les tables
                     # publiques archivées au lieu de les retélécharger à chaque clic.
                     previous = dict(self.latest.by_set) if self.latest else {}
@@ -306,13 +350,31 @@ class CatalogService:
                         diagnostics=candidate.diagnostics + notes,
                         audit=tuple(issue for issue in candidate.audit
                                     if issue.code != "SET_MISSING" or issue.text not in {d.ref for d in definitions}))
-                verify_snapshot(candidate)
-                await self.repository.put_snapshot("catalog", candidate.id, canonical(candidate))
-                self.latest, self.last_error = candidate, ""
-                self.refreshed_at = time.monotonic()
-            except (BuildError, WikiError, ValueError, OSError, TimeoutError) as exc:
-                log.debug("Build catalogue: refresh_failed reason=%s previous=%s", type(exc).__name__, self.latest is not None)
-                self.last_error = "Actualisation impossible ; vérifier le diagnostic et la configuration Xixou."
+                self.phase = "verification"
+                await asyncio.to_thread(verify_snapshot, candidate)
+                self._pending_candidate = candidate
+                return await self._persist_pending()
+            except asyncio.CancelledError:
+                # Si l'archivage a commencé, le candidat reste disponible pour la
+                # reprise. Au redémarrage, les fragments validés servent de relais.
+                raise
+            except Exception as exc:
+                hints = {
+                    "configuration": "Vérifier le wiki et la configuration XIXOU_API_KEY.",
+                    "sources": "Vérifier l'accès aux sources wiki/Xixou.",
+                    "corrections": "Vérifier le fichier BUILD_CATALOG_OVERRIDES.",
+                    "normalisation": "Vérifier le format et les identités du catalogue source.",
+                    "panoplies": "Vérifier l'enrichissement des panoplies.",
+                    "verification": "Vérifier les empreintes du catalogue normalisé.",
+                    "archivage_console": "Vérifier #console, le verrou et les permissions Discord.",
+                }
+                self.last_error = (
+                    f"Catalogue : échec à l'étape {self.phase}. "
+                    + hints.get(self.phase, "Consulter les logs techniques de l'hébergeur.")
+                    + (" Copie précédente conservée." if self.latest is not None else " Aucun catalogue engagé.")
+                    + " Cause : " + failure_summary(exc)
+                )
+                log_failure(log, f"build catalog refresh failed phase={self.phase}", exc)
                 if self.latest is None:
                     raise BuildError(self.last_error) from exc
-            return self.latest
+                return self.latest

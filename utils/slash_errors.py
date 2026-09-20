@@ -11,6 +11,9 @@ from discord import app_commands
 from discord.ext import commands
 
 
+ERROR_HANDLED_KEY = "evolution_error_handled"
+
+
 class SlashInputError(ValueError):
     """Erreur de validation dont le texte est destiné explicitement à l'utilisateur."""
 

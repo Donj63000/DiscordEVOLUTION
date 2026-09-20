@@ -5,6 +5,8 @@ on:
       - 'build.py'
       - 'utils/build/**'
       - 'utils/evo_tools.py'
+      - 'utils/slash_errors.py'
+      - 'utils/slash_support.py'
       - 'tests_build/**'
       - 'data/build/**'
       - 'requirements.txt'
@@ -33,7 +35,7 @@ jobs:
       - name: Offline catalogue and dependency preflight
         run: python tools/build_preflight.py
       - name: Compile modules
-        run: python -m compileall -q build.py utils/build tests_build
+        run: python -m compileall -q build.py utils/build utils/slash_errors.py utils/slash_support.py tests_build
       - name: Domain, simulated console storage and discord.py integration tests
         run: python -m pytest tests_build -q --junitxml=build-tests.xml
       - name: Existing bot non-regression suites

@@ -19,7 +19,8 @@ from utils.build.catalog import CatalogService, search
 from utils.build.set_source import PublicSetLoader
 from utils.build.panels import BuildListView, ProfileEditorView
 from utils.build.sharing import SharedBuildAction, SharedBuildView
-from utils.build.diagnostics import coverage_text
+from utils.build.diagnostics import coverage_text, log_failure
+from utils.slash_errors import ERROR_HANDLED_KEY, send_interaction_error
 from utils.build.service import BuildService
 from utils.build.embeds import card, safe
 from utils.build.renderer import render, text_report
@@ -56,6 +57,8 @@ class BuildCog(commands.Cog):
         self.last_refresh_request = 0.0
         self.init_lock = asyncio.Lock()
         self.storage_open = False
+        self.startup_attempts = 0
+        self.next_retry_at = 0.0
 
     def wiki(self):
         return self.bot.get_cog("DofusWikiCog")
@@ -65,14 +68,20 @@ class BuildCog(commands.Cog):
         self.task = asyncio.create_task(self.start_when_ready(), name="evolution-build-start")
 
     async def start_when_ready(self):
-        """J'attends Discord et je retente une restauration refusée au démarrage."""
+        """Stockage ouvert != catalogue prêt : reprendre aussi les échecs tardifs."""
         await self.bot.wait_until_ready()
+        delay = 30
         while not self.closed:
+            self.next_retry_at = 0.0
+            self.startup_attempts = getattr(self, "startup_attempts", 0) + 1
             await self.initialize()
-            if self.ready:
+            if self.ready and self.catalogs.latest is not None:
                 return
-            log.debug("build startup pending reason=%s", self.start_error)
-            await asyncio.sleep(30)
+            log.warning("build startup pending attempt=%s; retry in %ss",
+                        self.startup_attempts, delay)
+            self.next_retry_at = time.monotonic() + delay
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 300)
 
     async def initialize(self, *, refresh_equipment=True):
         """Je restaure la console avant d'ouvrir les parcours des membres."""
@@ -84,8 +93,10 @@ class BuildCog(commands.Cog):
                     if not self.storage_open:
                         await self.repository.open()
                         self.storage_open = True
-                    await self.service.start()
+                    # Récupérer un catalogue transféré avant qu'une autre écriture
+                    # puisse nettoyer ses fragments encore non référencés.
                     await self.catalogs.restore()
+                    await self.service.start()
                     self.ready = True
                 self.start_error = ""
                 if refresh_equipment:
@@ -94,7 +105,7 @@ class BuildCog(commands.Cog):
                 raise
             except Exception as exc:
                 self.start_error = str(exc) if isinstance(exc, BuildError) else "Initialisation impossible. Vérifier le salon #console, ses permissions et le verrou du bot."
-                log.warning("build initialize failed type=%s", type(exc).__name__)
+                log_failure(log, "build initialize failed", exc)
 
     async def cog_unload(self):
         self.closed, self.ready = True, False
@@ -141,12 +152,12 @@ class BuildCog(commands.Cog):
         elif isinstance(error, (ValidationError, ValueError, TypeError)):
             message = "Paramètres incohérents. Vérifie le profil, les références et les jets saisis."
         else:
-            log.warning("build operation failed type=%s", type(error).__name__)
+            log_failure(log, "build operation failed", error)
             message = "Opération interrompue ou affichage indisponible. Consulte /build mes avant de réessayer : une écriture déjà confirmée reste sauvegardée."
-        if interaction.response.is_done():
-            await interaction.followup.send(message[:1800], ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-        else:
-            await interaction.response.send_message(message[:1800], ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        # Termine le defer privé ; ne laisse pas le gestionnaire global ajouter
+        # une seconde erreur générique. Ne marque que la livraison confirmée.
+        if await send_interaction_error(interaction, message[:1800]):
+            interaction.extras[ERROR_HANDLED_KEY] = True
 
     async def cog_app_command_error(self, interaction, error):
         await self.error(interaction, error)
@@ -653,9 +664,24 @@ class BuildCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         self.require_staff(interaction)
         catalog = self.catalogs.latest
-        text = [f"Module initialisé : {self.ready}", f"Backend : {self.config.backend} · durable : {self.repository.durable}",
-                f"Règles : {self.rules.version}", f"Vues : {len(self.views)}", f"Optimiseur actif : {self.worker.lock.locked()}",
-                self.start_error, self.catalogs.last_error]
+        wiki = self.wiki()
+        root = getattr(self.repository, "_root", None) or {}
+        retry = max(0, int(getattr(self, "next_retry_at", 0) - time.monotonic()))
+        text = [
+            f"Stockage initialisé : {self.ready} · catalogue utilisable : {catalog is not None}",
+            f"Backend : {self.config.backend} · durable : {self.repository.durable}",
+            f"Initialisation/actualisation en cours : {self.init_lock.locked() or self.catalogs.lock.locked()}",
+            f"Étape catalogue : {self.catalogs.phase}",
+            f"Catalogue en attente d'archivage : {self.catalogs._pending_candidate is not None}",
+            f"Racine console connue : révision {root.get('revision', 'inconnue')} · catalogue référencé : {'catalog' in root.get('latest', {})}",
+            f"Wiki chargé : {wiki is not None} · Xixou activé : {bool(getattr(getattr(wiki, 'enrichment_client', None), 'enabled', False))}",
+            f"Tentatives de démarrage : {self.startup_attempts} · prochaine reprise : {retry}s" if retry else "",
+            f"Règles : {self.rules.version} · vues : {len(self.views)}",
+            f"Optimiseur actif : {self.worker.lock.locked()}",
+            self.start_error, self.catalogs.last_error,
+            ("Dernier incident console : " + self.repository.last_failure)
+                if getattr(self.repository, "last_failure", "") else "",
+        ]
         if catalog:
             text.append(coverage_text(catalog))
             text.extend(catalog.diagnostics)
