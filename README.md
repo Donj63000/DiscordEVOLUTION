@@ -110,28 +110,206 @@ Les données absentes restent signalées. Les taux personnalisés excluent les c
 [Guide des fiches enrichies](docs/XIXOU.md) · [Comprendre la prospection](docs/PROSPECTION.md)
 
 <a id="forgemagie"></a>
-### 🔨 Atelier exo et runes
+### 🔨 `/exo` — Ton atelier de forgemagie Rétro
 
-Le moteur FM Rétro v3 distingue règles sourcées, hypothèses et observations.
-L'historique complet et les outils de validation sont décrits dans
-[FM-RETRO-V3.md](docs/FM-RETRO-V3.md). Les distributions livrées restent non
-calibrées sur un corpus de jeu ; les tests Monte-Carlo ne constituent pas une
-certification serveur.
+Prépare tes exos et expérimente la forgemagie directement dans Discord :
+choisis un équipement, pose des runes et observe l’évolution de ses jets,
+de ses pertes et de son puits, tentative après tentative.
 
+L’atelier est **personnel, affiché dans un panneau privé et utilisable sans IA**.
+Il propose deux modes distincts : une simulation pour expérimenter et un suivi
+déclaratif pour consigner manuellement tes résultats obtenus en jeu.
 
-Travaille le jet d’un objet **d’une tentative à l’autre** : pose de runes, gains et
-pertes, suivi du puits, objectifs et historique. Exporte ton atelier pour le reprendre
-plus tard avec l’option `reprise` de `/exo`.
+#### Commencer
+
+```text
+/exo
+/exo objet:Gelano
+```
+
+Sans objet, `/exo` ouvre un **Gelano de démonstration**, sans téléchargement
+de catalogue. Avec l’option `objet`, sélectionne l’équipement à travailler.
+L’option facultative `objectif` permet de viser un exo PA, PM ou Portée.
+
+Depuis le panneau, choisis une caractéristique et une rune, puis utilise
+**Poser ×1** ou les lots de tentatives. Les boutons permettent de définir
+les minimums à conserver, modifier le jet de départ, consulter l’historique
+et renseigner les prix de tes runes.
+
+**Exemple :** pour un Gelano PA/PM, obtenir le PM ne suffit pas si le PA a sauté.
+L’atelier distingue le bonus obtenu de l’objet réellement terminé et conserve
+les pertes entre les essais : il ne remonte pas gratuitement ton équipement.
 
 | Commande | Utilité |
 | --- | --- |
-| `/exo` | Ouvrir un atelier personnel : Gelano de démonstration, objet choisi ou reprise d’un export. |
+| `/exo` | Ouvrir le Gelano de démonstration. |
+| `/exo objet:…` | Rechercher un équipement et ouvrir son atelier. |
+| `/exo reprise:…` | Reprendre une session en joignant un export JSON personnel. |
 | `/rune calculer` | Estimer les probabilités d’obtention de runes au brisage à partir d’un jet et d’une statistique. |
 
-L’atelier exo est un **simulateur pédagogique** : ses résultats ne garantissent pas
-les probabilités ou les coûts réels en jeu. Les estimations de brisage sont indicatives.
+**Pour reprendre plus tard :** utilise **Exporter**, conserve le fichier JSON,
+puis joins-le à l’option `reprise` de `/exo`.
 
-[Découvrir l’atelier et ses objectifs](docs/EXO.md)
+> **À savoir :** l’atelier est un simulateur pédagogique, pas une connexion au
+> jeu. Les probabilités, répartitions de pertes et estimations de budget reposent
+> sur les hypothèses du moteur ; elles ne garantissent ni le résultat ni le coût
+> réel d’un exo. Les prix sont saisis par le joueur, sans récupération des prix HDV.
+
+[Guide de l’atelier exo](docs/EXO.md) · [Règles et limites du moteur FM](docs/FM-RETRO-V3.md)
+
+<a id="builds"></a>
+### 🧩 `/build` — Construis ton stuff dans Discord
+
+Crée un personnage et prépare son équipement **dans l’esprit d’un builder
+comme DofusBook**, avec une interface adaptée à Discord.
+
+Choisis ta classe et ton niveau, règle tes caractéristiques et ton parchottage,
+puis équipe les différents emplacements. Personnalise les jets, ajoute des exos
+déclarés et consulte les statistiques calculées : PA, PM, portée, caractéristiques,
+résistances, prospection et bonus de panoplie lorsque les données sont disponibles.
+
+**Le builder manuel fonctionne sans IA.** Les menus, boutons et formulaires
+permettent de construire un stuff sans écrire de JSON.
+
+#### Créer ton premier stuff
+
+Ouvre `/build mes`, puis clique sur **Nouveau personnage**, ou utilise :
+
+```text
+/build creer nom:Mon Enutrof classe:enutrof niveau:200
+```
+
+Le parcours guidé est le suivant :
+
+**Personnage → caractéristiques → Équipement → emplacement → recherche d’un objet
+→ aperçu → confirmation.**
+
+Le panneau permet ensuite de modifier les jets, consulter les détails et retrouver
+l’historique du build. Restaurer une ancienne version crée une nouvelle révision
+sans effacer les modifications intermédiaires conservées.
+
+#### Les commandes principales
+
+| Commande | Utilité |
+| --- | --- |
+| `/build aide` | Découvrir le parcours guidé. |
+| `/build mes` | Retrouver tes builds et créer un nouveau personnage. |
+| `/build creer` | Créer un build avec un nom, une classe et un niveau. |
+| `/build ouvrir` | Ouvrir ton build ou consulter un code de partage du serveur. |
+| `/build comparer` | Comparer les statistiques de deux de tes builds. |
+| `/build degats` | Ouvrir le simulateur d’une attaque de sort ou d’arme contre une cible. |
+| `/build optimiser` | Rechercher des combinaisons selon tes objectifs et contraintes, si l’optimiseur est activé par le Staff. |
+| `/build recettes` | Exporter les besoins de craft issus des recettes connues du stuff. |
+| `/build image` | Générer une fiche PNG accompagnée d’un rapport texte. |
+| `/build partager` | Publier une copie figée après confirmation. |
+| `/build copier` | Copier un build partagé dans ton espace personnel. |
+| `/build depublier` | Révoquer un code de partage. |
+| `/build exporter` / `/build importer` | Exporter ou importer un build au format JSON Evolution. |
+
+Les commandes `/build profil`, `/build equiper`, `/build retirer` et `/build jets`
+offrent aussi des accès directs à l’édition. `/build renommer` et `/build supprimer`
+permettent de gérer tes builds.
+
+#### Faire le lien avec l’atelier exo
+
+**`/build vers-exo`** ouvre un atelier à partir des jets d’un équipement de ton
+build, après saisie séparée du puits et confirmation.
+
+**`/build depuis-exo`** prépare la copie des jets de ta session `/exo` vers
+l’équipement correspondant du build, avec aperçu avant enregistrement.
+Ce transfert ne modifie pas ta session exo.
+
+Tu peux ainsi préparer ton stuff, tester un équipement en forgemagie, puis
+réintégrer ses jets pour observer l’effet sur l’ensemble du personnage.
+
+#### Sauvegarde, partage et limites
+
+Les builds et leur historique sont sauvegardés dans le salon `#console` du bot
+et peuvent être retrouvés après redémarrage. Ils ne sont pas publiés
+automatiquement aux autres membres.
+
+Un partage crée une **copie figée valable 7 jours** : les modifications suivantes
+de ton build ne changent pas cette copie. La révocation du partage ne supprime
+pas les copies ou fichiers déjà récupérés.
+
+Les versions de catalogue et de règles utilisées par les builds sont conservées.
+`/build migrer` permet de prévisualiser une mise à jour explicite plutôt que de
+modifier silencieusement les anciens calculs.
+
+> **À savoir :** le builder reste en bêta. Les totaux incomplets sont signalés
+> par `*`, les règles non validées restent indiquées et le simulateur porte sur
+> une attaque isolée, pas sur un combat complet. L’optimiseur ne garantit pas
+> le meilleur stuff possible. Les prix du carnet personnel sont déclarés par
+> le joueur, pas récupérés en HDV.
+>
+> Le salon `#console` doit rester réservé aux personnes autorisées :
+> ses lecteurs peuvent accéder aux sauvegardes.
+
+**Administration :** `/build diagnostic` affiche l’état du stockage et des
+catalogues. `/build actualiser` permet de retenter leur chargement.
+Ces deux commandes nécessitent la permission **Gérer le serveur**.
+
+[Guide complet du builder](docs/EVOLUTION_BUILD.md)
+
+<a id="evo"></a>
+### 💬 `/evo` — Pose tes questions en langage naturel
+
+Evo est l’assistant conversationnel du bot. Pose ta question en français :
+il peut s’appuyer sur les outils du projet pour consulter des objets, recettes,
+monstres, sources de drop, équipements et informations de guilde autorisées.
+
+```text
+/evo question:Quelle est la recette du Gelano ?
+/evo question:Quels équipements donnent de la prospection pour un Enutrof niveau 150 ?
+```
+
+Pour poursuivre, utilise **Répondre** sur la dernière réponse qu’Evo t’a adressée
+dans le même salon, tant que la session est active. Tu peux aussi mentionner
+directement le bot avec ta question.
+
+Sur demande explicite et selon tes permissions, Evo peut également mettre à jour
+tes métiers, t’inscrire ou te désinscrire d’une activité et créer une activité.
+Les règles d’accès des commandes natives restent applicables.
+
+| Commande | Utilité |
+| --- | --- |
+| `/evo question:…` | Poser une question à l’assistant dans le salon courant. |
+| `/evo question:… approfondir:true` | Autoriser une analyse supplémentaire, dans les limites du budget de la demande. |
+| `/evo-exo partager:true` | Autoriser Evo à consulter l’état courant de ton atelier exo dans ce salon. |
+| `/evo-exo partager:false` | Révoquer ce partage. |
+| `/evo-oublier` | Effacer ton contexte conversationnel côté bot et révoquer tes partages exo. |
+| `/evo-budget` | **Gérer le serveur** : consulter l’état du budget IA sans génération. |
+
+#### Ton atelier exo reste sous ton contrôle
+
+Evo n’accède pas automatiquement à ton panneau `/exo`. Le partage est explicite,
+lié à sa version courante et valable **15 minutes au maximum**. Une modification
+dans le panneau privé nécessite un nouveau partage.
+
+Après autorisation, Evo peut commenter cet état et, sur demande explicite,
+poser une rune dans ta **simulation personnelle**. Il n’effectue aucune action
+dans le client Dofus.
+
+#### Confidentialité et disponibilité
+
+**Les réponses d’Evo sont visibles par les personnes ayant accès au salon.**
+Évite d’y transmettre des secrets ou des informations personnelles sensibles.
+Les questions et les données utiles à leur traitement peuvent être envoyées
+au fournisseur IA configuré.
+
+`/evo-oublier` efface le contexte côté bot, mais ne supprime ni les messages déjà
+publiés sur Discord ni les données déjà transmises au fournisseur.
+
+Evo nécessite une activation et une configuration par le Staff. Son utilisation
+est encadrée par des limites de fréquence et un budget partagé. La recherche web
+et l’intégration avancée avec Build sont des options distinctes, non activées
+automatiquement.
+
+> **À savoir :** une réponse IA peut contenir des erreurs. Les données absentes
+> et les règles non vérifiées ne deviennent pas certaines avec le mode approfondi.
+> `/exo` et le builder manuel `/build` restent utilisables indépendamment d’Evo.
+
+[Guide de l’assistant Evo](docs/EVO.md)
 
 <a id="metiers"></a>
 ### 🛠️ Métiers et artisans
