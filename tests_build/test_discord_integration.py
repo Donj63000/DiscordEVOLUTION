@@ -13,6 +13,34 @@ from utils.build.ai_tools import NAMES
 from utils.evo_tools import BY_NAME, schemas_for
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setting,expected", [(None, True), ("", True), ("true", True), ("false", False)])
+async def test_builder_registration_and_policy_agree(monkeypatch, setting, expected):
+    from discord.ext import commands
+    from build import setup
+    from utils.command_policy import unavailable_slash_roots
+
+    if setting is None:
+        monkeypatch.delenv("BUILD_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("BUILD_ENABLED", setting)
+    monkeypatch.delenv("BUILD_AI_ENABLED", raising=False)
+    monkeypatch.delenv("BUILD_OPTIMIZER_ENABLED", raising=False)
+    monkeypatch.setattr(BuildCog, "cog_load", AsyncMock())
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+    try:
+        await setup(bot)
+        assert (bot.tree.get_command("build") is not None) is expected
+        assert ("build" not in unavailable_slash_roots()) is expected
+        assert not ({s["name"] for s in schemas_for("mon build")} & NAMES)
+        if expected:
+            cog = bot.get_cog("BuildCog")
+            cog.ready = True
+            cog.ensure_ready()
+    finally:
+        await bot.close()
+
+
 def test_real_command_tree_serializes():
     client=discord.Client(intents=discord.Intents.none())
     tree=app_commands.CommandTree(client)

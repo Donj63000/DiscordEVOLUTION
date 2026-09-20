@@ -229,13 +229,17 @@ async def test_fetch_history_retries_on_rate_limit(bot, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("evo_enabled", [False, True])
-@pytest.mark.parametrize("build_enabled", [False, True])
+@pytest.mark.parametrize("build_enabled", [False, True, None])
 async def test_setup_hook_loads_native_modules_before_slash_adapter(
     bot, monkeypatch, evo_enabled, build_enabled,
 ):
     monkeypatch.setenv("ENABLE_AI_COMMANDS", "0")
     monkeypatch.setenv("EVO_ENABLED", "1" if evo_enabled else "0")
-    monkeypatch.setenv("BUILD_ENABLED", "1" if build_enabled else "0")
+    if build_enabled is None:
+        monkeypatch.delenv("BUILD_ENABLED", raising=False)
+        build_enabled = True
+    else:
+        monkeypatch.setenv("BUILD_ENABLED", "1" if build_enabled else "0")
     synced = []
 
     async def fake_sync():
@@ -258,6 +262,24 @@ async def test_setup_hook_loads_native_modules_before_slash_adapter(
         if evo_enabled:
             assert bot._load_calls.index("build") < bot._load_calls.index("evo")
     assert synced == [True]
+
+
+@pytest.mark.asyncio
+async def test_setup_hook_does_not_sync_when_enabled_build_fails(bot, monkeypatch):
+    monkeypatch.delenv("BUILD_ENABLED", raising=False)
+    sync = AsyncMock()
+    monkeypatch.setattr(bot, "_sync_app_commands", sync)
+    original_load = bot.load_extension
+
+    async def failing_load(name):
+        if name == "build":
+            raise RuntimeError("Échec synthétique du builder")
+        await original_load(name)
+
+    monkeypatch.setattr(bot, "load_extension", failing_load)
+    with pytest.raises(RuntimeError, match="Extensions critiques non chargées: build"):
+        await bot.setup_hook()
+    sync.assert_not_awaited()
 
 
 def prepare_evo_leadership(bot, monkeypatch):

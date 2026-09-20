@@ -44,7 +44,7 @@ async def dispatch(name, ctx, **params):
     from .optimizer import Constraints
     from io import BytesIO
     import discord
-    if name not in NAMES or not flag("BUILD_ENABLED") or not flag("BUILD_AI_ENABLED"):
+    if name not in NAMES or not flag("BUILD_ENABLED", True) or not flag("BUILD_AI_ENABLED"):
         raise EvoError("Les outils Luna du builder sont désactivés. Utilise /build directement.")
     await ctx.ensure_access()
     cog = ctx.bot.get_cog("BuildCog")

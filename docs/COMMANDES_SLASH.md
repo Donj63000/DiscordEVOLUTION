@@ -396,10 +396,12 @@ La réponse initiale d'une interaction doit être acquittée rapidement. Le cara
 éphémère fixé au différé ne peut pas être changé en réutilisant simplement le premier
 followup. Les commandes de guilde et globales forment des périmètres distincts.
 
-## Evolution Build (optionnel)
+## Evolution Build
 
-Le groupe natif `/build` est chargé lorsque `BUILD_ENABLED=true`, indépendamment de
-`EVO_ENABLED`. Ses 25 sous-commandes ne passent pas par une duplication préfixe/slash.
+Le groupe natif `/build` est chargé par défaut, indépendamment de `EVO_ENABLED`.
+`BUILD_ENABLED=false` le désactive explicitement. Après modification, redémarrer le
+bot avec `SYNC_SLASH_COMMANDS=true` pour publier le catalogue Discord actualisé.
+Ses 25 sous-commandes ne passent pas par une duplication préfixe/slash.
 Configuration, limites de couverture, persistance et procédure de recette :
 [EVOLUTION_BUILD.md](EVOLUTION_BUILD.md).
 

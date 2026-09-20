@@ -193,7 +193,7 @@ def schemas_for(question: str, *, current_request: str | None = None) -> list[di
         selected.add("consulter_site")
     if not selected:
         selected = set(BY_NAME)
-    if build_flag("BUILD_ENABLED") and build_flag("BUILD_AI_ENABLED"):
+    if build_flag("BUILD_ENABLED", True) and build_flag("BUILD_AI_ENABLED"):
         if re.search(r"\b(?:builds?|stuffs?|dofusbook|equiper|equipements?)\b", key):
             selected.update(BUILD_TOOL_NAMES)
     else:

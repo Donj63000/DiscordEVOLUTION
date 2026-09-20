@@ -192,8 +192,11 @@ class EvoBot(commands.Bot):
             await self._load_iastaff_anywhere()
 
         # Charger les commandes natives Evo avant l'adaptateur des anciennes commandes.
-        if enabled_flag("BUILD_ENABLED"):
-            await self._safe_load("build")
+        if enabled_flag("BUILD_ENABLED", True):
+            if not await self._safe_load("build"):
+                failed_required.append("build")
+        else:
+            log.debug("Build : chargement désactivé par BUILD_ENABLED.")
 
         if enabled_flag("EVO_ENABLED"):
             await self._safe_load("evo")

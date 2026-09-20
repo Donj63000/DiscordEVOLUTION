@@ -65,7 +65,7 @@ def ai_service_enabled(provider: str) -> bool:
 def unavailable_reason(qualified_name: str) -> str | None:
     root = qualified_name.split(" ", 1)[0]
     if root in BUILD_COMMANDS:
-        return None if enabled_flag("BUILD_ENABLED") else "Evolution Build est désactivé par le Staff."
+        return None if enabled_flag("BUILD_ENABLED", True) else "Evolution Build est désactivé par le Staff."
     if root in EVO_COMMANDS:
         return None if enabled_flag("EVO_ENABLED") else "Evo est désactivé par le Staff."
     if root in RETIRED_COMMANDS:

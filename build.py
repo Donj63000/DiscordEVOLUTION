@@ -123,7 +123,7 @@ class BuildCog(commands.Cog):
         return Actor(guild_id=guild_id, user_id=member.id)
 
     def ensure_ready(self):
-        if self.closed or not flag("BUILD_ENABLED"):
+        if self.closed or not flag("BUILD_ENABLED", True):
             raise BuildError("Evolution Build est désactivé.")
         if not self.ready:
             raise BuildError(self.start_error or "Stockage Build indisponible.")
@@ -607,7 +607,7 @@ class BuildCog(commands.Cog):
                          catalogue: Literal["equipements", "sorts", "tous"] = "equipements"):
         await interaction.response.defer(ephemeral=True, thinking=True)
         self.require_staff(interaction)
-        if self.closed or not flag("BUILD_ENABLED"):
+        if self.closed or not flag("BUILD_ENABLED", True):
             raise BuildError("Evolution Build est désactivé.")
         if (time.monotonic() - self.last_refresh_request < 60 or self.catalogs.lock.locked()
                 or self.spells.lock.locked() or self.init_lock.locked()):
@@ -689,5 +689,5 @@ class BuildCog(commands.Cog):
 
 
 async def setup(bot):
-    if flag("BUILD_ENABLED"):
+    if flag("BUILD_ENABLED", True):
         await bot.add_cog(BuildCog(bot))
