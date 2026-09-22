@@ -2,6 +2,12 @@
 
 Version du moteur : `1.2.0-beta.1`, avec le stockage console, un simulateur d'attaque, des prix personnels et des échanges natifs avec `/exo`. Les règles gardent leur propre version et leurs indicateurs de validation.
 
+## Maintenance du 22 septembre 2026
+
+`/build` est retirée pour tous, Staff compris. Le verrou `BUILD_MAINTENANCE` de la politique des commandes empêche aussi le chargement du module, les interactions et les outils Build de Luna, même avec `BUILD_ENABLED=true`. Les sauvegardes dans `#console` restent intactes. La réactivation nécessite un correctif explicite.
+
+Après déploiement et redémarrage, laisser `SYNC_SLASH_COMMANDS` et `SLASH_CLEANUP_RETIRED` actifs pour retirer les inscriptions globales et celles des serveurs. Vérifier les journaux de synchronisation ; un push GitHub seul ne confirme pas le retrait sur Discord.
+
 ## Portée et statut
 
 Cette livraison intègre le builder manuel, la sauvegarde durable dans le canal Discord `#console`, les vues Discord, les jets personnalisés, la comparaison, les images, les échanges de jets avec `/exo`, les recettes et un optimiseur borné. Luna utilise le service métier, sans choisir un propriétaire et sans faire les calculs. Evolution Build n'utilise aucune base de données externe.

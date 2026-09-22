@@ -250,22 +250,18 @@ async def test_setup_hook_loads_native_modules_before_slash_adapter(
     await bot.setup_hook()
 
     assert ("evo" in bot._load_calls) is evo_enabled
-    assert ("build" in bot._load_calls) is build_enabled
+    assert "build" not in bot._load_calls
     assert "job" in bot._load_calls
     assert "activite" in bot._load_calls
     assert "ia" not in bot._load_calls
     assert "iastaff" not in bot._load_calls
     if evo_enabled:
         assert bot._load_calls.index("evo") < bot._load_calls.index("slash_commands")
-    if build_enabled:
-        assert bot._load_calls.index("build") < bot._load_calls.index("slash_commands")
-        if evo_enabled:
-            assert bot._load_calls.index("build") < bot._load_calls.index("evo")
     assert synced == [True]
 
 
 @pytest.mark.asyncio
-async def test_setup_hook_does_not_sync_when_enabled_build_fails(bot, monkeypatch):
+async def test_setup_hook_syncs_without_loading_broken_build(bot, monkeypatch):
     monkeypatch.delenv("BUILD_ENABLED", raising=False)
     sync = AsyncMock()
     monkeypatch.setattr(bot, "_sync_app_commands", sync)
@@ -277,9 +273,9 @@ async def test_setup_hook_does_not_sync_when_enabled_build_fails(bot, monkeypatc
         await original_load(name)
 
     monkeypatch.setattr(bot, "load_extension", failing_load)
-    with pytest.raises(RuntimeError, match="Extensions critiques non chargées: build"):
-        await bot.setup_hook()
-    sync.assert_not_awaited()
+    await bot.setup_hook()
+    sync.assert_awaited_once()
+    assert "build" not in bot._load_calls
 
 
 def prepare_evo_leadership(bot, monkeypatch):

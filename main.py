@@ -16,7 +16,7 @@ from utils.runtime_memory import log_memory, start_memory_monitor
 from collections import deque
 from utils.discord_history import fetch_channel_history
 from utils.slash_support import EvolutionCommandTree
-from utils.command_policy import ai_service_enabled, enabled_flag
+from utils.command_policy import ai_service_enabled, enabled_flag, build_available
 from utils.slash_sync import sync_application_commands, cleanup_retired_guild_commands
 from utils.bot_branding import sync_bot_branding
 from utils.evo_config import EvoError, resolve_console_channel
@@ -198,11 +198,11 @@ class EvoBot(commands.Bot):
             await self._load_iastaff_anywhere()
 
         # Charger les commandes natives Evo avant l'adaptateur des anciennes commandes.
-        if enabled_flag("BUILD_ENABLED", True):
+        if build_available():
             if not await self._safe_load("build"):
                 failed_required.append("build")
         else:
-            log.debug("Build : chargement désactivé par BUILD_ENABLED.")
+            log.debug("Build : chargement désactivé par la politique de maintenance ou BUILD_ENABLED.")
 
         if enabled_flag("EVO_ENABLED"):
             await self._safe_load("evo")

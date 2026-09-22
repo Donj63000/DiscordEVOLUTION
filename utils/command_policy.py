@@ -15,6 +15,8 @@ GEMINI_COMMANDS = frozenset({"ia", "iahelp", "iaend", "bot", "analyse", "pl", "e
 OPENAI_COMMANDS = frozenset({
     "iastaff", "annonce", "annonce-model", "annonce-config", "organisation-model",
 })
+BUILD_MAINTENANCE = True
+BUILD_MAINTENANCE_REASON = "Evolution Build est temporairement indisponible pour maintenance."
 BUILD_COMMANDS = frozenset({"build"})
 EVO_COMMANDS = frozenset({"evo", "evo-oublier", "evo-budget"})
 RETIRED_COMMANDS = frozenset({"event-rapide"})
@@ -62,10 +64,15 @@ def ai_service_enabled(provider: str) -> bool:
     raise ValueError("Fournisseur IA inconnu.")
 
 
+def build_available() -> bool:
+    """Je bloque le builder en maintenance, même avec une ancienne configuration active."""
+    return not BUILD_MAINTENANCE and enabled_flag("BUILD_ENABLED", True)
+
+
 def unavailable_reason(qualified_name: str) -> str | None:
     root = qualified_name.split(" ", 1)[0]
     if root in BUILD_COMMANDS:
-        return None if enabled_flag("BUILD_ENABLED", True) else "Evolution Build est désactivé par le Staff."
+        return None if build_available() else BUILD_MAINTENANCE_REASON
     if root in EVO_COMMANDS:
         return None if enabled_flag("EVO_ENABLED") else "Evo est désactivé par le Staff."
     if root in RETIRED_COMMANDS:

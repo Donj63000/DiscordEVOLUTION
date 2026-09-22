@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 from pydantic import ValidationError
 from utils.build.config import Config, flag
+from utils.command_policy import build_available, BUILD_MAINTENANCE_REASON
 from utils.build.models import Actor, Profile, Build, BuildError, Conflict, SLOTS, CLASSES, STAT_LABELS, values, canonical, revised
 from utils.build.rules import load_rules
 from utils.build.console_repository import ConsoleRepository
@@ -134,8 +135,9 @@ class BuildCog(commands.Cog):
         return Actor(guild_id=guild_id, user_id=member.id)
 
     def ensure_ready(self):
-        if self.closed or not flag("BUILD_ENABLED", True):
-            raise BuildError("Evolution Build est désactivé.")
+        if self.closed or not build_available():
+            log.debug("build access denied: maintenance or disabled")
+            raise BuildError(BUILD_MAINTENANCE_REASON)
         if not self.ready:
             raise BuildError(self.start_error or "Stockage Build indisponible.")
 
@@ -618,8 +620,9 @@ class BuildCog(commands.Cog):
                          catalogue: Literal["equipements", "sorts", "tous"] = "equipements"):
         await interaction.response.defer(ephemeral=True, thinking=True)
         self.require_staff(interaction)
-        if self.closed or not flag("BUILD_ENABLED", True):
-            raise BuildError("Evolution Build est désactivé.")
+        if self.closed or not build_available():
+            log.debug("build access denied: maintenance or disabled")
+            raise BuildError(BUILD_MAINTENANCE_REASON)
         if (time.monotonic() - self.last_refresh_request < 60 or self.catalogs.lock.locked()
                 or self.spells.lock.locked() or self.init_lock.locked()):
             raise BuildError("Actualisation déjà en cours ou trop récente.")
@@ -715,5 +718,7 @@ class BuildCog(commands.Cog):
 
 
 async def setup(bot):
-    if flag("BUILD_ENABLED", True):
+    if build_available():
         await bot.add_cog(BuildCog(bot))
+    else:
+        log.debug("build setup skipped: maintenance or disabled")

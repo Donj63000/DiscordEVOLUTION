@@ -5,6 +5,7 @@ Le propriétaire/serveur sont issus de ToolContext, absents du schéma modèle.
 """
 from .models import Actor, Profile, CLASSES, SLOTS, BuildError, canonical, values
 from .config import flag
+from utils.command_policy import build_available
 
 NAMES = frozenset({"build_lire", "build_lister", "build_rechercher_objets", "build_creer_brouillon",
                    "build_preparer_modification", "build_comparer", "build_optimiser",
@@ -44,8 +45,8 @@ async def dispatch(name, ctx, **params):
     from .optimizer import Constraints
     from io import BytesIO
     import discord
-    if name not in NAMES or not flag("BUILD_ENABLED", True) or not flag("BUILD_AI_ENABLED"):
-        raise EvoError("Les outils Luna du builder sont désactivés. Utilise /build directement.")
+    if name not in NAMES or not build_available() or not flag("BUILD_AI_ENABLED"):
+        raise EvoError("Les outils Luna du builder sont indisponibles pendant sa désactivation.")
     await ctx.ensure_access()
     cog = ctx.bot.get_cog("BuildCog")
     if cog is None:

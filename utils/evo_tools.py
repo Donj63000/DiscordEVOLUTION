@@ -33,6 +33,7 @@ from utils.exo_advice import fm_guide, requested_rune
 from utils.exo_engine import STATS
 from utils.build.ai_tools import definitions as build_tool_definitions, NAMES as BUILD_TOOL_NAMES
 from utils.build.config import flag as build_flag
+from utils.command_policy import build_available
 from utils.xixou_api import monster_drop_sources, monster_record
 
 log = logging.getLogger(__name__)
@@ -193,7 +194,7 @@ def schemas_for(question: str, *, current_request: str | None = None) -> list[di
         selected.add("consulter_site")
     if not selected:
         selected = set(BY_NAME)
-    if build_flag("BUILD_ENABLED", True) and build_flag("BUILD_AI_ENABLED"):
+    if build_flag("BUILD_AI_ENABLED") and build_available():
         if re.search(r"\b(?:builds?|stuffs?|dofusbook|equiper|equipements?)\b", key):
             selected.update(BUILD_TOOL_NAMES)
     else:

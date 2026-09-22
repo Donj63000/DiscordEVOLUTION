@@ -71,3 +71,9 @@ async def service(catalog, rules):
     service = BuildService(repo, SimpleNamespace(latest=catalog), rules)
     await service.start()
     return service
+
+
+@pytest.fixture(autouse=True)
+def builder_without_maintenance(monkeypatch):
+    """Je conserve les tests métier pour la future remise en service du builder."""
+    monkeypatch.setattr("utils.command_policy.BUILD_MAINTENANCE", False)

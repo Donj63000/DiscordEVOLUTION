@@ -193,8 +193,7 @@ async def test_active_sync_removes_legacy_root_even_with_ai_enabled(
     expected = {"annonce-config", "event-rapide"}
     if not evo_enabled:
         expected.update({"evo", "evo-budget", "evo-oublier"})
-    if not build_enabled:
-        expected.add("build")
+    expected.add("build")
     assert names == expected
     sync_bot.tree.sync.assert_awaited_once_with(guild=discord.Object(id=100))
 
