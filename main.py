@@ -11,6 +11,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 from alive import keep_alive
+from utils.runtime_memory import log_memory, start_memory_monitor
 from collections import deque
 from utils.discord_history import fetch_channel_history
 from utils.slash_support import EvolutionCommandTree
@@ -102,6 +103,8 @@ class EvoBot(commands.Bot):
         except Exception as e:
             logging.warning("Impossible de charger %s: %s", ext_name, e, exc_info=True)
             return False
+        finally:
+            log_memory(f"extension:{ext_name}")
 
     async def _load_iastaff_anywhere(self):
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -594,5 +597,6 @@ async def on_command_error(ctx: commands.Context, error: Exception):
 
 
 if __name__ == "__main__":
+    start_memory_monitor()
     keep_alive()
     bot.run(bot.token)

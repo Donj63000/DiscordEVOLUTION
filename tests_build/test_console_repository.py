@@ -837,3 +837,51 @@ async def test_memory_supports_price_contract_and_extra_snapshot_families(actor,
     for kind in ("spells", "attacks"):
         await repo.put_snapshot(kind, digest(kind), "{}")
         assert await repo.latest_snapshot(kind) == "{}"
+
+
+# Régressions mémoire Render : les copies intégrales restent dans #console,
+# pas dans le cache des archives vérifiées.
+@pytest.mark.asyncio
+async def test_archive_cache_only_keeps_fingerprints_and_restores_all_versions(discord_store):
+    import hashlib
+
+    repo = await reopen(discord_store)
+    payloads = [canonical({"version": n, "texte": "Évolution 😀" * 2048})
+                for n in range(12)]
+    for payload in payloads:
+        await repo.put_snapshot("catalog", digest(payload), payload)
+    assert len(repo._snapshot_hashes) == len(payloads)
+    assert all(len(value) == 64 for value in repo._snapshot_hashes.values())
+    for payload in payloads:
+        key = ("catalog", digest(payload))
+        assert repo._snapshot_hashes[key] == hashlib.sha256(payload.encode()).hexdigest()
+        assert await repo.snapshot(*key) == payload
+
+    restarted = await reopen(discord_store)
+    assert restarted._snapshot_hashes == repo._snapshot_hashes
+    assert await restarted.latest_snapshot("catalog") == payloads[-1]
+    assert await restarted.snapshot("catalog", digest(payloads[0])) == payloads[0]
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_cache_still_rejects_identifier_collision(discord_store):
+    repo = await reopen(discord_store)
+    payload = '{"texte":"Évolution 😀"}'
+    identifier = digest(payload)
+    await repo.put_snapshot("catalog", identifier, payload)
+    with pytest.raises(BuildError, match="Collision"):
+        await repo.put_snapshot("catalog", identifier, '{"texte":"autre contenu"}')
+    assert await repo.latest_snapshot("catalog") == payload
+
+
+@pytest.mark.asyncio
+async def test_verified_archive_cache_keeps_utf8_validation(discord_store):
+    repo = await reopen(discord_store)
+    # Une archive peut être hachée correctement mais ne pas être du texte UTF-8.
+    descriptor = await repo._write_blob(b"\xff\xfe\xff")
+    invalid_root = deepcopy(repo._root)
+    invalid_root["snapshots"].setdefault("catalog", {})["a" * 64] = descriptor
+    invalid_root["latest"]["catalog"] = "a" * 64
+    # Le lecteur doit toujours refuser de charger ce contenu.
+    with pytest.raises((BuildError, UnicodeDecodeError)):
+        await repo._commit_root(invalid_root)

@@ -168,14 +168,19 @@ Choisissez Python 3.11 ou 3.12 pour ce service, puis appliquez les réglages sui
 | Build Command | `python -m pip install -r requirements.txt` |
 | Start Command | `python main.py` |
 | `ALIVE_IN_PROCESS` | `1` |
-| `ALIVE_SERVER` | `gunicorn` |
+| `ALIVE_SERVER` | `aiohttp` |
 | `ALIVE_WORKERS` | `1` |
-| `ALIVE_THREADS` | `4` |
+| `ALIVE_THREADS` | `4` (utilisé seulement en mode Gunicorn) |
+| `MEMORY_LOG_INTERVAL` | `60` |
 | Secrets | Variables d'environnement Render, notamment `DISCORD_TOKEN`. |
 
 Le serveur écoute sur `0.0.0.0` et utilise la variable `PORT` fournie par Render.
-La configuration d'exemple utilise `wsgiref` pour le local ; choisissez explicitement
-`gunicorn` sur Render. Voir le [guide des Web Services Render](https://render.com/docs/web-services).
+Le mode `aiohttp` sert le suivi HTTP dans un thread du processus du bot,
+sans processus Gunicorn supplémentaire. C'est le réglage recommandé pour 512 Mo.
+Les modes `gunicorn` et `wsgiref` restent disponibles. `ALIVE_WORKERS` et
+`ALIVE_THREADS` ne concernent que Gunicorn.
+Voir le [guide mémoire](RENDER_MEMOIRE_512.md) et le
+[guide des Web Services Render](https://render.com/docs/web-services).
 
 Configurez dans UptimeRobot un moniteur HTTP(S) vers `https://votre-service.onrender.com/`.
 Le choix de l'intervalle et la disponibilité continue dépendent de vos offres d'hébergement

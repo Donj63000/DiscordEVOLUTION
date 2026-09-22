@@ -83,7 +83,7 @@ class ConsoleRepository:
         self._root_message = None
         self._root = None
         self._members = {}
-        self._snapshot_payloads = {}
+        self._snapshot_hashes = {}
         self._deleted_garbage = set()
         self._opened = False
         self.last_failure = ""
@@ -203,7 +203,7 @@ class ConsoleRepository:
     async def close(self):
         self._opened = False
         self._members.clear()
-        self._snapshot_payloads.clear()
+        self._snapshot_hashes.clear()
 
     async def _create_root(self, payload):
         content, file = self._root_content(payload)
@@ -605,10 +605,15 @@ class ConsoleRepository:
                 for identifier, descriptor in versions.items():
                     key = kind, identifier
                     old = previous and previous["snapshots"].get(kind, {}).get(identifier)
-                    if not force and old == descriptor and key in self._snapshot_payloads:
-                        snapshots[key] = self._snapshot_payloads[key]
+                    if not force and old == descriptor and key in self._snapshot_hashes:
+                        snapshots[key] = self._snapshot_hashes[key]
                     else:
-                        snapshots[key] = (await self._read_blob(descriptor)).decode("utf-8")
+                        # Vérifier chaque archive, sans conserver tous les catalogues
+                        # historiques en RAM. Les octets restent dans #console.
+                        raw = await self._read_blob(descriptor)
+                        raw.decode("utf-8")  # Même contrôle UTF-8 qu'avant.
+                        snapshots[key] = _sha(raw)
+                        del raw
             for key, descriptor in root["members"].items():
                 old = previous and previous["members"].get(key)
                 if not force and old == descriptor and key in self._members:
@@ -621,7 +626,7 @@ class ConsoleRepository:
             self._root = previous
             raise
         self._root_message = current
-        self._members, self._snapshot_payloads = members, snapshots
+        self._members, self._snapshot_hashes = members, snapshots
 
     @asynccontextmanager
     async def _guard(self, actor=None, *, write=False):
@@ -920,9 +925,9 @@ class ConsoleRepository:
                 or not payload or len(payload.encode("utf-8")) > MAX_BLOB_BYTES):
             raise BuildError("Instantané de calcul invalide.")
         async with self._guard(write=True):
-            previous = self._snapshot_payloads.get((kind, identifier))
+            previous = self._snapshot_hashes.get((kind, identifier))
             if previous is not None:
-                if previous != payload:
+                if previous != _sha(payload.encode("utf-8")):
                     raise BuildError("Collision d'empreinte d'instantané.")
                 descriptor = self._root["snapshots"][kind][identifier]
                 if (await self._read_blob(descriptor)).decode("utf-8") != payload:
