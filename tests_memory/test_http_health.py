@@ -10,6 +10,33 @@ from aiohttp.test_utils import TestClient, TestServer
 import alive
 
 
+@pytest.mark.asyncio
+async def test_readiness_tracks_state_without_changing_home():
+    alive.set_ready(False)
+    try:
+        async with TestClient(TestServer(alive.create_aiohttp_app())) as client:
+            for ready, status in [(False, 503), (True, 200), (False, 503)]:
+                alive.set_ready(ready)
+                response = await client.get("/ready")
+                assert response.status == status
+                assert await response.text() == ("ready" if ready else "not ready")
+                home = await client.get("/")
+                assert home.status == 200
+                assert await home.text() == alive.HOME_TEXT
+    finally:
+        alive.set_ready(False)
+
+
+def test_wsgi_readiness():
+    client = alive.create_app().test_client()
+    try:
+        for ready, status in [(False, 503), (True, 200), (False, 503)]:
+            alive.set_ready(ready)
+            assert client.get("/ready").status_code == status
+    finally:
+        alive.set_ready(False)
+
+
 def test_original_port_and_command_contract(monkeypatch):
     monkeypatch.delenv("PORT", raising=False)
     assert alive.resolve_port() == 8080

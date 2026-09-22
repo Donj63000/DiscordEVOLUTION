@@ -4,11 +4,20 @@
 import os
 import sys
 import subprocess
-from threading import Thread
+from threading import Event, Thread
 from wsgiref.simple_server import make_server
 
 HOME_TEXT = "Le bot est en ligne ! (keep-alive)"
 _wsgi_app = None
+_ready = Event()
+
+
+def set_ready(value):
+    """Je partage uniquement l'état de disponibilité avec le thread HTTP."""
+    if value:
+        _ready.set()
+    else:
+        _ready.clear()
 
 
 def create_app():
@@ -21,6 +30,11 @@ def create_app():
     @app.get("/")
     def home():
         return HOME_TEXT
+
+    @app.get("/ready")
+    def ready():
+        available = _ready.is_set()
+        return ("ready" if available else "not ready"), (200 if available else 503)
 
     return app
 
@@ -48,6 +62,15 @@ def create_aiohttp_app():
         return web.Response(text=HOME_TEXT)
 
     app.router.add_get("/", home)
+
+    async def ready(request):
+        available = _ready.is_set()
+        return web.Response(
+            text="ready" if available else "not ready",
+            status=200 if available else 503,
+        )
+
+    app.router.add_get("/ready", ready)
     return app
 
 

@@ -24,6 +24,7 @@ async def test_real_startup_loads_only_explicitly_enabled_ai(monkeypatch, provid
     # Seule la frontière du serveur de santé est isolée ; setup_hook est le code réel.
     fake_alive = ModuleType("alive")
     fake_alive.keep_alive = Mock()
+    fake_alive.set_ready = Mock()
     monkeypatch.setitem(sys.modules, "alive", fake_alive)
     monkeypatch.setenv("DISCORD_TOKEN", "test-token")
     monkeypatch.setenv("IASTAFF_BACKEND", "openai")

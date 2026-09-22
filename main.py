@@ -10,7 +10,8 @@ import logging
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-from alive import keep_alive
+from alive import keep_alive, set_ready
+from utils.discord_startup import run_with_shutdown
 from utils.runtime_memory import log_memory, start_memory_monitor
 from collections import deque
 from utils.discord_history import fetch_channel_history
@@ -65,6 +66,7 @@ class EvoBot(commands.Bot):
         self.token = token
         self.INSTANCE_ID = os.getenv("RENDER_INSTANCE_ID") or os.getenv("INSTANCE_ID") or uuid.uuid4().hex
         self._singleton_ready = False
+        self._startup_setup_started = False
         self._lock_channel_id = None
         self._lock_message_id = None
         self._seen_ids = set()
@@ -148,6 +150,7 @@ class EvoBot(commands.Bot):
         return False
 
     async def setup_hook(self):
+        self._startup_setup_started = True
         self.remove_command("help")
 
         required_exts = [
@@ -491,11 +494,13 @@ class EvoBot(commands.Bot):
             await asyncio.sleep(15)
 
     async def on_disconnect(self):
+        set_ready(False)
         self._evo_connected = False
         await self._suspend_evo("disconnect")
 
     async def on_resumed(self):
         self._evo_connected = True
+        set_ready(self._singleton_ready and not self.is_closed())
         logging.debug("Evo Discord connection resumed; leadership recheck required")
 
     async def on_ready(self):
@@ -512,21 +517,21 @@ class EvoBot(commands.Bot):
                 os._exit(0)
             self._singleton_ready = True
             asyncio.create_task(self.heartbeat_loop())
+        set_ready(self._singleton_ready and self._evo_connected and not self.is_closed())
         if not self._branding_attempted and env_bool("SYNC_BOT_IDENTITY", True):
             self._branding_attempted = True
             await sync_bot_branding(self)
         await cleanup_retired_guild_commands(self)
 
+    async def close(self):
+        set_ready(False)
+        await super().close()
 
-bot = EvoBot()
 
-
-@bot.command(name="ping")
 async def ping_cmd(ctx):
     await ctx.send("Pong!")
 
 
-@bot.event
 async def on_command_error(ctx: commands.Context, error: Exception):
     if getattr(ctx, "slash_error_handled", False):
         return
@@ -596,7 +601,21 @@ async def on_command_error(ctx: commands.Context, error: Exception):
         pass
 
 
+def create_bot():
+    """Je réinstalle les mêmes commandes et événements sur chaque nouveau client."""
+    client = EvoBot()
+    client.command(name="ping")(ping_cmd)
+    client.event(on_command_error)
+    return client
+
+
+bot = create_bot()
+
+
 if __name__ == "__main__":
     start_memory_monitor()
     keep_alive()
-    bot.run(bot.token)
+    try:
+        asyncio.run(run_with_shutdown(create_bot, bot))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logging.info("Arrêt du bot demandé.")

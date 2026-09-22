@@ -126,6 +126,29 @@ déployée par le service puis vérifier le déploiement.
 
 ## Vérification après déploiement
 
+### Blocage Discord au démarrage
+
+Si Discord renvoie HTTP 429 avant le chargement des extensions, le processus
+reste actif et ferme le client ayant échoué. Il recrée un client après 15 minutes,
+puis 30 minutes, puis une heure entre les tentatives suivantes, avec une marge
+aléatoire de 1 à 10 secondes. Un en-tête `Retry-After` supérieur est respecté.
+Les erreurs d'identifiants, de permissions et de chargement des extensions ne
+sont pas reprises par ce mécanisme. SIGTERM interrompt aussi l'attente.
+
+`/` conserve sa réponse historique de suivi HTTP. `/ready` renvoie 503 pendant
+l'attente ou une déconnexion, puis 200 après connexion et acquisition du verrou
+d'instance. Ce dernier indicateur fonctionne dans les serveurs intégrés aiohttp
+et wsgiref ; un processus Gunicorn séparé ne partage pas l'état du bot.
+Conserver le contrôle de vie Render existant : utiliser `/ready` pour le
+diagnostic, pas pour provoquer des redémarrages pendant un blocage Discord.
+
+Le statut Render « Live » ne prouve donc pas que Discord est connecté.
+Vérifier aussi `/ready`, le journal de connexion et l'acquisition du verrou.
+Si le blocage persiste après une heure observée, réunir pour le support Render
+l'identifiant du service et du déploiement, les horaires UTC, l'IP sortante et
+les identifiants Cloudflare Ray présents dans les anciens logs. Ne pas joindre
+les tokens. La reprise espacée ne lève pas elle-même un blocage Cloudflare.
+
 Vérifier le chargement de toutes les extensions critiques, la connexion
 Discord et la présence de lignes `MEMORY phase=...` dans les logs.
 Tester `!ping`, la page HTTP, un build existant et un ancien build utilisant
