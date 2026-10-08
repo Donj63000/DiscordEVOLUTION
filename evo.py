@@ -25,6 +25,7 @@ NO_MENTIONS = discord.AllowedMentions.none()
 MAX_ACTIVE_REQUESTS = 2
 MAX_WAITING_REQUESTS = 2
 REQUEST_WAIT_SECONDS = 120
+MAX_REPLY_PARTS = 16
 
 
 class EvoCog(commands.Cog):
@@ -116,11 +117,13 @@ class EvoCog(commands.Cog):
             if now - updated >= lifetime:
                 self._last_messages.pop(key, None)
 
-    def _remember_reply(self, ctx, message):
+    def _remember_reply(self, ctx, message, *, previous_parts=()):
+        """Conserve les morceaux du dernier tour, sans rouvrir les tours précédents."""
         if message is None:
-            return
+            return previous_parts
         key = (ctx.guild.id, ctx.channel.id, ctx.member.id)
-        self._last_messages[key] = (message.id, time.monotonic())
+        parts = (*previous_parts, message.id)[-MAX_REPLY_PARTS:]
+        self._last_messages[key] = (parts, time.monotonic())
         self._last_messages.move_to_end(key)
         while len(self._last_messages) > ctx.config.max_sessions:
             self._last_messages.popitem(last=False)
@@ -128,6 +131,7 @@ class EvoCog(commands.Cog):
             memory = self.agent.sessions.items.get(key)
             if memory is not None:
                 memory.last_message_id = message.id
+        return parts
 
     def _local_answer(self, question, prompt_if_empty):
         normalized = clean(question, 1200).strip().casefold().rstrip(" !?.")
@@ -245,13 +249,16 @@ class EvoCog(commands.Cog):
                 await ctx.ensure_access()
                 if ctx.before_publish:
                     ctx.before_publish()
-                for part in split_messages(output_text(answer, ctx.sources, ctx.config.response_chars)):
+                reply_parts = ()
+                for part in split_messages(output_text(
+                    answer, ctx.sources | ctx.text_links, ctx.config.response_chars,
+                )):
                     await self.bot.ensure_evo_leadership()
                     await ctx.ensure_access()
                     if ctx.before_publish:
                         ctx.before_publish()
                     message = await send(part)
-                    self._remember_reply(ctx, message)
+                    reply_parts = self._remember_reply(ctx, message, previous_parts=reply_parts)
         except EvoError as exc:
             if ctx.action_receipt and ctx.action_receipt.get("action_effectuee"):
                 await send("Ton action a été enregistrée. Son détail n'est plus partagé ici ; ne relance pas l'action.")
@@ -315,7 +322,7 @@ class EvoCog(commands.Cog):
         previous = self._last_messages.get(key)
         replied = (
             previous is not None and message.reference is not None
-            and message.reference.message_id == previous[0]
+            and message.reference.message_id in previous[0]
         )
         if not mentioned and not replied:
             return

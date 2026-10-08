@@ -147,6 +147,7 @@ class ToolContext:
     web_links: set[str] = field(default_factory=set)
     web_search: object | None = None
     web_sources: set[str] = field(default_factory=set)
+    text_links: set[str] = field(default_factory=set)
     job_directory: object | None = None
 
     def check(self) -> None:
@@ -231,6 +232,25 @@ class ToolContext:
             self.sources.add(url)
             return url
         return ""
+
+
+def supplied_text_links(text: str) -> set[str]:
+    """Autorisation de recopier un lien fourni, sans le qualifier de source vérifiée.
+
+    Ces liens restent séparés des résultats consultés par les outils. Aucun accès
+    réseau n'est effectué et les identifiants/secrets ne sont jamais recopiés.
+    """
+    links = set()
+    for match in _URL.finditer(clean(text, 12000)):
+        url = match.group().rstrip(".,;!")
+        try:
+            parts = urlsplit(url)
+            if (parts.scheme in {"http", "https"} and parts.hostname
+                    and not parts.username and not parts.password and len(url) <= 500):
+                links.add(url)
+        except ValueError:
+            continue
+    return links
 
 
 def output_text(text: str, sources: set[str], limit: int = 1800) -> str:

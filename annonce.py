@@ -20,7 +20,12 @@ from utils.openai_config import (
     resolve_staff_model,
     build_async_openai_client,
     normalise_staff_model,
-    resolve_reasoning_effort,
+)
+from utils.openai_generation import (
+    OpenAIGenerationError,
+    extract_generated_text,
+    generate_openai_text,
+    generation_options,
 )
 
 try:
@@ -100,89 +105,6 @@ QUESTIONS: list[str] = [
     "Faut-il mentionner des récompenses, avantages ou conséquences ?",
     "Autre chose à ajouter pour aider à rédiger l'annonce parfaite ?",
 ]
-
-
-# =========================
-# Helpers OpenAI extraction
-# =========================
-
-def _to_dict(obj) -> dict:
-    """Convertit un objet OpenAI SDK en dict sans casser si SDK change."""
-    for attr in ("model_dump", "to_dict", "dict"):
-        try:
-            fn = getattr(obj, attr, None)
-            if callable(fn):
-                d = fn()
-                if isinstance(d, dict):
-                    return d
-        except Exception:
-            pass
-    try:
-        d = getattr(obj, "__dict__", None)
-        if isinstance(d, dict):
-            return d
-    except Exception:
-        pass
-    return {}
-
-def _gather_text_nodes(node) -> list[str]:
-    out: list[str] = []
-    if isinstance(node, str):
-        if node.strip():
-            out.append(node.strip())
-        return out
-
-    if isinstance(node, dict):
-        # Responses API
-        ot = node.get("output_text")
-        if isinstance(ot, str) and ot.strip():
-            out.append(ot.strip())
-
-        # content blocks
-        content = node.get("content")
-        if isinstance(content, list):
-            for part in content:
-                out.extend(_gather_text_nodes(part))
-
-        # common keys that may hold nested structures
-        for k in ("output", "outputs", "choices", "message", "data", "response", "result", "delta"):
-            v = node.get(k)
-            if v is not None:
-                out.extend(_gather_text_nodes(v))
-        return out
-
-    if isinstance(node, list):
-        for it in node:
-            out.extend(_gather_text_nodes(it))
-        return out
-
-    return out
-
-def extract_generated_text(resp_obj) -> str:
-    """Extraction robuste du texte généré, compatible Responses et ChatCompletions."""
-    if not resp_obj:
-        return ""
-    try:
-        direct = getattr(resp_obj, "output_text", None)
-        if isinstance(direct, str) and direct.strip():
-            return direct.strip()
-    except Exception:
-        pass
-
-    data = _to_dict(resp_obj)
-    texts = _gather_text_nodes(data)
-
-    # Fallback chat.completions: choices[0].message.content
-    if not texts and isinstance(data.get("choices"), list):
-        for ch in data["choices"]:
-            m = ch.get("message") if isinstance(ch, dict) else None
-            if isinstance(m, dict):
-                c = m.get("content")
-                if isinstance(c, str) and c.strip():
-                    texts.append(c.strip())
-
-    joined = "\n".join(t for t in texts if isinstance(t, str) and t.strip())
-    return joined.strip()
 
 
 # =========================
@@ -436,7 +358,7 @@ class AnnonceCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.model = DEFAULT_MODEL
-        self.client = build_async_openai_client(AsyncOpenAI, timeout=OPENAI_TIMEOUT)
+        self.client = build_async_openai_client(AsyncOpenAI, timeout=OPENAI_TIMEOUT, max_retries=0)
 
         # 1 annonce DM à la fois par user
         self._user_locks: dict[int, asyncio.Lock] = {}
@@ -548,42 +470,22 @@ class AnnonceCog(commands.Cog):
         if not self.client or not os.environ.get("OPENAI_API_KEY"):
             raise RuntimeError("OPENAI_API_KEY manquante ou client OpenAI indisponible.")
 
-        # 1) Chemin principal: Responses API
         req = {
             "model": self.model,
             "input": self._messages_for_responses_api(system_prompt, user_prompt),
-            "max_output_tokens": MAX_OUTPUT_TOKENS,
-            "temperature": ANNONCE_TEMPERATURE,
-            "store": False,
+            **generation_options(self.model, MAX_OUTPUT_TOKENS, ANNONCE_TEMPERATURE),
         }
-        reasoning = resolve_reasoning_effort(self.model)
-        if reasoning:
-            req["reasoning"] = reasoning
-
-        try:
-            resp = await self.client.responses.create(**req)
-            text = extract_generated_text(resp).strip()
-            if text:
-                return text
-        except Exception as exc:
-            log.warning("Annonce: Responses API failed, fallback ChatCompletions. err=%s", exc, exc_info=True)
-
-        # 2) Fallback: ChatCompletions (utile si OPENAI_BASE_URL proxy ne supporte pas responses)
-        try:
-            chat_req = {
-                "model": self.model,
-                "messages": self._messages_for_chat_api(system_prompt, user_prompt),
-                "max_tokens": MAX_OUTPUT_TOKENS,
-                "temperature": ANNONCE_TEMPERATURE,
-            }
-            resp2 = await self.client.chat.completions.create(**chat_req)
-            text2 = extract_generated_text(resp2).strip()
-            if text2:
-                return text2
-        except Exception as exc2:
-            raise RuntimeError(f"Erreur OpenAI (Responses + Chat fallback): {exc2}") from exc2
-
-        raise RuntimeError("Réponse OpenAI vide.")
+        chat_req = {
+            "model": self.model,
+            "messages": self._messages_for_chat_api(system_prompt, user_prompt),
+            **generation_options(self.model, MAX_OUTPUT_TOKENS, ANNONCE_TEMPERATURE, chat=True),
+        }
+        return await generate_openai_text(
+            self.client,
+            response_request=req,
+            chat_request=chat_req,
+            timeout=OPENAI_TIMEOUT,
+        )
 
     async def _dm_send_long(self, dm: discord.DMChannel, text: str):
         chunks = split_message_for_discord(text, limit=2000)
@@ -809,7 +711,8 @@ class AnnonceCog(commands.Cog):
                 try:
                     generated = await self._call_openai(system_prompt=system_prompt, user_prompt=user_prompt)
                 except Exception as exc:
-                    await dm.send(f"❌ Erreur génération OpenAI: {exc}")
+                    error = str(exc) if isinstance(exc, OpenAIGenerationError) else "La génération IA a échoué. Fais vérifier la configuration par le staff."
+                    await dm.send(f"❌ {error}")
                     return
 
                 generated = _strip_leading_everyone_here(generated)

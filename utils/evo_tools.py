@@ -26,6 +26,7 @@ from utils.evo_equipment import (
     EquipmentIndex, STAT_NAMES, compare_equipment, equipment_search, exo_candidates,
 )
 from utils.evo_memory import has_stat_unit_nearby
+from utils.evo_routing import is_general_question, is_writing_request
 from utils.evo_safety import ToolContext, bounded_json, clean, compact, parse_arguments
 from utils.evo_web import EvoWeb
 from utils.exo_data import parse_effects
@@ -156,6 +157,9 @@ MUTATING_TOOLS = frozenset({
 
 def schemas_for(question: str, *, current_request: str | None = None) -> list[dict]:
     """Je fournis les outils du sujet courant et garde un repli lorsque le sujet est inconnu."""
+    request = question if current_request is None else current_request
+    if is_writing_request(request):
+        return []
     key = search_key(question)
     topics = (
         (r"drop|drops|prospection|pp|ressource|ressources|monstre|monstres|mobs?|boss|resistances?|sources_drop",
@@ -192,7 +196,7 @@ def schemas_for(question: str, *, current_request: str | None = None) -> list[di
         r"\b(?:site|sites|web|source|sources|officiel|officielles|actualite|actualites|mise a jour)\b", key,
     ):
         selected.add("consulter_site")
-    if not selected:
+    if not selected and (requires_evidence(request) or not is_general_question(request)):
         selected = set(BY_NAME)
     if build_flag("BUILD_AI_ENABLED") and build_available():
         if re.search(r"\b(?:builds?|stuffs?|dofusbook|equiper|equipements?)\b", key):
@@ -206,6 +210,8 @@ def schemas_for(question: str, *, current_request: str | None = None) -> list[di
 
 def requires_evidence(question):
     """Conservative routing for operational/game/current facts, not general writing."""
+    if is_writing_request(question):
+        return False
     if requested_rune(question) is not None:
         return True
     key = search_key(question)
@@ -269,6 +275,8 @@ def equipment_constraints(ctx, minimum, maximum, name):
 
 def prepared_tools(question):
     """Lectures simples certaines : rendu direct ou faits préparés pour la rédaction."""
+    if is_writing_request(question):
+        return []
     artisan = artisan_question(question)
     if artisan is not None:
         return [("artisans", artisan)]

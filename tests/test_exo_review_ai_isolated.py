@@ -22,6 +22,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from utils.dofus_wiki import search_key
+from utils.evo_routing import is_general_question, is_writing_request
 from utils.exo_advice import RUNE_NAMES, fm_guide, requested_rune, session_advice
 from utils.exo_data import demo_item
 from utils.exo_engine import DISCLAIMER, STATS, Item, normalized, weight_text
@@ -82,6 +83,7 @@ def modules(monkeypatch):
          "schemas_for", "requires_evidence"},
         {"STAT_NAMES": stat_names, "search_key": search_key, "re": re,
          "build_flag": build_flag, "BUILD_TOOL_NAMES": build_tool_names,
+         "is_writing_request": is_writing_request, "is_general_question": is_general_question,
          "requested_rune": requested_rune, "log": logging.getLogger(__name__)},
     )
     bridge = load_original(monkeypatch, "_exo_review_bridge", "utils/evo_exo.py", env={

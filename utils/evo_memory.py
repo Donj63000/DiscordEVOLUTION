@@ -7,6 +7,7 @@ import re
 import unicodedata
 
 from utils.evo_safety import clean
+from utils.evo_routing import is_writing_request
 
 log = logging.getLogger(__name__)
 STAT_UNITS = frozenset({
@@ -15,6 +16,30 @@ STAT_UNITS = frozenset({
     "dommages", "do", "soins", "resistance", "resistances", "puissance", "initiative", "pods",
     "critique", "critiques", "cc", "kamas", "runes",
 })
+CLASSES = frozenset({
+    "cra", "iop", "sacrieur", "eniripsa", "enutrof", "osamodas", "sadida", "sram",
+    "ecaflip", "feca", "xelor", "pandawa",
+})
+ELEMENTS = frozenset({"terre", "feu", "eau", "air", "multi"})
+_EQUIPMENT_WORDS = frozenset({
+    "coiffe", "coiffes", "cape", "capes", "anneau", "anneaux", "bottes", "ceinture",
+    "ceintures", "amulette", "amulettes", "equipement", "equipements", "item", "items",
+    "stuff", "build", "chapeau", "chapeaux", "plage",
+})
+_PREFERENCE_WORDS = CLASSES | ELEMENTS | _EQUIPMENT_WORDS | STAT_UNITS | frozenset({
+    "pvm", "pvp", "niveau", "niveaux", "lv", "lvl", "nv", "pa", "pm", "entre",
+    "un", "une", "le", "la", "les", "des", "du", "de", "d", "en", "sur", "pour",
+    "mon", "ma", "avec", "et", "a", "mode", "objectif", "oriente", "toujours",
+    "plutot", "minimum", "maximum", "exactement", "strictement", "uniquement",
+    "points", "point", "pts", "maintenant", "desormais", "perso", "personnage", "profil", "est",
+})
+_PREFERENCE_PREFIX = re.compile(
+    r"^(?:(?:salut|bonjour|evo|stp|svp|maintenant|desormais|finalement|approfondis) )*"
+    r"(?:(?:je (?:suis|joue|reste|passe|prefere|vise|veux|cherche)|j ai|"
+    r"pour|mon|ma|(?:peux tu |pourrais tu |tu peux )?(?:me )?"
+    r"(?:trouve|trouver|cherche|chercher|propose|proposer|conseille|conseiller|"
+    r"fais|faire|optimise|optimiser)(?: moi)?) )?"
+)
 
 
 def normalized(text):
@@ -251,47 +276,115 @@ def _remember_drop(brief, previous, question, evidence):
         log.debug("evo memory verified_drop_context reference=%s", result["reference"])
 
 
+def _preference_fragments(question):
+    """Je retiens les déclarations et contraintes directes, jamais une simple mention.
+
+    Les fragments s'arrêtent dès que le message repart sur une explication. Un
+    texte cité, une hypothèse ou deux choix concurrents restent dans l'historique
+    brut : ils ne doivent pas remplacer silencieusement le personnage mémorisé.
+    """
+    if is_writing_request(question):
+        return []
+    introduction, separator, _ = question.partition(":")
+    if separator and re.search(r"\b(?:texte|message|citation|exemple|brouillon|extrait|traduction|correction)\b",
+                               normalized(introduction)):
+        question = introduction
+    text = re.sub(r"```[\s\S]*?(?:```|$)|`[^`\n]*(?:`|$)", " ", question)
+    text = re.sub(r'"[^"\n]*(?:"|$)|«[^»]*(?:»|$)|“[^”]*(?:”|$)|‘[^\n]*’', " ", text)
+    text = re.sub(r"(?<!\w)'(?:[^'\n]|(?<=\w)'(?=\w))*'(?!\w)", " ", text)
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith((">", "'")))
+    if re.match(r"^(?:si|supposons|imaginons)\b", normalized(text)):
+        return []
+    fragments = []
+    for clause in re.split(r"[,;.!?\n]+|\bmais\b", normalized(text)):
+        words = _words(re.sub(r"(?<=\d)\s*-\s*(?=\d)", " a ", clause))
+        if not words or re.search(r"\b(?:ou|vs|versus|si|compar\w*)\b", words):
+            continue
+        words = re.sub(r"\b(lvl|lv|nv|niveau)(?=\d)", r"\1 ", words)
+        words = re.sub(r"(?<=\d)(?=pa\b|pm\b)", " ", words)
+        prefix = _PREFERENCE_PREFIX.match(words)
+        body = words[prefix.end():]
+        tokens = body.split()
+        accepted = []
+        for token in tokens:
+            if token not in _PREFERENCE_WORDS and not re.fullmatch(r"\d{1,3}", token):
+                break
+            accepted.append(token)
+        # Sans déclaration ni demande explicite, seule une réponse courte dont
+        # tous les mots décrivent des contraintes est suffisamment certaine.
+        if not accepted or (prefix.end() == 0 and len(accepted) != len(tokens)):
+            continue
+        fragment = " ".join(accepted)
+        if not any(token in CLASSES | ELEMENTS | _EQUIPMENT_WORDS | {
+            "pvm", "pvp", "niveau", "niveaux", "lv", "lvl", "nv", "pa", "pm", "entre",
+        } for token in accepted):
+            continue
+        fragments.append(fragment)
+    return fragments
+
+
+def _explicit_preferences(previous, question):
+    preferences = dict(previous.get("preferences", {}))
+    values = {name: set() for name in ("classe", "element", "usage", "niveau", "pa", "pm")}
+    ranges = set()
+    for text in _preference_fragments(question):
+        equipment_range = re.search(
+            r"\b(?:entre|niveaux?|lv|lvl)\s*(\d{1,3})\s*(?:et|a|-)\s*(\d{1,3})\b", text,
+        )
+        if equipment_range and has_stat_unit_nearby(text, equipment_range.start(), equipment_range.end()):
+            equipment_range = None
+        equipment_range = equipment_range if equipment_range and (
+            set(text.split()).intersection(_EQUIPMENT_WORDS)
+            or previous.get("sujet") in {"chercher_equipements", "comparer_objets", "fiche_objet"}
+        ) else None
+        tokens = set(text.split())
+        values["classe"].update(tokens & CLASSES)
+        values["element"].update(tokens & ELEMENTS)
+        values["usage"].update(tokens & {"pvm", "pvp"})
+        for name, pattern in {
+            "niveau": r"\b(?:lv|lvl|niveau|nv)\s*(\d{1,3})\b",
+            "pa": r"\b(\d{1,2})\s*pa\b",
+            "pm": r"\b(\d{1,2})\s*pm\b",
+        }.items():
+            if name == "niveau" and equipment_range:
+                continue
+            values[name].update(match[1] for match in re.finditer(pattern, text)
+                                if 1 <= int(match[1]) <= (200 if name == "niveau" else 99)
+                                and (name != "niveau" or not has_stat_unit_nearby(
+                                    text, match.start(), match.end())))
+        character = re.search(
+            r"\b(?:" + "|".join(sorted(CLASSES)) + r")\s+(?:(?:"
+            + "|".join(sorted(ELEMENTS)) + r")\s+)?(\d{1,3})\b", text,
+        )
+        if character and 1 <= int(character[1]) <= 200 and not has_stat_unit_nearby(
+            text, character.start(), character.end(),
+        ):
+            values["niveau"].add(character[1])
+        if equipment_range and 1 <= int(equipment_range[1]) <= int(equipment_range[2]) <= 200:
+            ranges.add((int(equipment_range[1]), int(equipment_range[2])))
+    # Plusieurs personnages ou éléments décrits ne désignent pas un profil
+    # unique. Le modèle peut demander lequel utiliser, sans écraser l'ancien.
+    if len(values["classe"]) > 1 or len(values["element"]) > 1:
+        return preferences
+    if len(values["classe"]) == 1 and preferences.get("classe") not in (None, *values["classe"]):
+        for name in ("element", "niveau", "pa", "pm", "niveau_min_equipement", "niveau_max_equipement"):
+            preferences.pop(name, None)
+    for name, candidates in values.items():
+        if len(candidates) == 1:
+            preferences[name] = next(iter(candidates))
+    if len(values["niveau"]) == 1:
+        preferences.pop("niveau_min_equipement", None)
+        preferences.pop("niveau_max_equipement", None)
+    if len(ranges) == 1:
+        low, high = next(iter(ranges))
+        preferences.update(niveau_min_equipement=low, niveau_max_equipement=high)
+    return preferences
+
+
 def update_brief(previous, question, evidence, answer):
     """Les références viennent des outils et l'ordre vient de la réponse publiée."""
     brief = dict(previous)
-    text = normalized(question)
-    preferences = dict(brief.get("preferences", {}))
-    equipment_range = re.search(
-        r"\b(?:entre|niveaux?|lv|lvl)\s*(\d{1,3})\s*(?:et|a|à|-)\s*(\d{1,3})\b", text,
-    )
-    if equipment_range and has_stat_unit_nearby(text, equipment_range.start(), equipment_range.end()):
-        equipment_range = None
-    equipment_range = equipment_range if equipment_range and (
-        re.search(r"\b(?:coiffes?|capes?|anneaux?|bottes?|equipements?|items?|stuff|chapeaux?|plage)\b", text)
-        or previous.get("sujet") in {"chercher_equipements", "comparer_objets", "fiche_objet"}
-    ) else None
-    player_level = False
-    for name, pattern in {
-        "classe": r"\b(cra|iop|sacrieur|eniripsa|enutrof|osamodas|sadida|sram|ecaflip|feca|xelor|pandawa)\b",
-        "element": r"\b(terre|feu|eau|air|multi)\b",
-        "usage": r"\b(pvm|pvp)\b",
-        "niveau": r"\b(?:lv|lvl|niveau|nv)\s*(\d{1,3})\b",
-        "pa": r"\b(\d{1,2})\s*pa\b",
-        "pm": r"\b(\d{1,2})\s*pm\b",
-    }.items():
-        match = re.search(pattern, text)
-        if match and not (name == "niveau" and equipment_range):
-            preferences[name] = match.group(1)
-            player_level = player_level or name == "niveau"
-    character = re.search(
-        r"\b(?:je suis|je joue|mon|ma)\s+(?:un |une )?"
-        r"(?:cra|iop|sacrieur|eniripsa|enutrof|osamodas|sadida|sram|ecaflip|feca|xelor|pandawa)"
-        r"\s+(?:(?:terre|feu|eau|air|multi)\s+)?(\d{1,3})\b", text,
-    )
-    if character and 1 <= int(character[1]) <= 200:
-        preferences["niveau"] = character[1]
-        player_level = True
-    if player_level:
-        preferences.pop("niveau_min_equipement", None)
-        preferences.pop("niveau_max_equipement", None)
-    if equipment_range and 1 <= int(equipment_range[1]) <= int(equipment_range[2]) <= 200:
-        preferences.update(niveau_min_equipement=int(equipment_range[1]),
-                           niveau_max_equipement=int(equipment_range[2]))
+    preferences = _explicit_preferences(previous, question)
     if preferences:
         brief["preferences"] = preferences
     rendered = normalized(answer)

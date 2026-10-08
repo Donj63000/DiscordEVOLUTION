@@ -19,7 +19,9 @@ Aucun panneau, bouton ou formulaire n'est nécessaire. Exemple :
 ```
 
 Pour continuer sans `/evo`, utiliser **Répondre** sur la dernière réponse d'Evo
-adressée à soi, dans le même salon et dans les 15 minutes. Les messages ordinaires
+adressée à soi, dans le même salon et dans les 15 minutes. Si cette réponse est
+découpée en plusieurs messages, chacun de ses morceaux accepte le suivi. Une
+nouvelle réponse remplace les références du tour précédent. Les messages ordinaires
 du salon et les réponses aux conversations d'un autre membre ne sont pas analysés.
 Une mention directe fonctionne également : `@Evolution Où drop cette ressource ?`.
 Elle peut démarrer la première conversation, sans `/evo` préalable. Une mention seule
@@ -47,6 +49,23 @@ illisible ne peut pas être remplacé. Les confirmations administratives restent
 éphémères, tout comme celle de `/evo-oublier`.
 
 ### Rédaction et mode approfondi
+
+Les demandes de rédaction simples (« reformule ce message », « crée un poème »,
+« supprime les répétitions dans mon texte ») utilisent une seule génération avec
+un prompt court, sans catalogue d'outils. Une demande portant sur des données à
+consulter, par exemple le bilan des sorties ou la liste des artisans, conserve
+le parcours de vérification. Les questions générales explicitement reconnues,
+comme la programmation et l'arithmétique, reçoivent un petit catalogue ; un nom
+de membre ou d'objet inconnu garde les recherches disponibles.
+
+Le dernier brouillon reste disponible jusqu'à la limite d'affichage configurée
+pour « change la fin », « plus court » ou « ajoute des emojis ». « Le premier »
+après plusieurs formulations désigne ce texte, pas un ancien équipement. Un
+lien fourni dans le texte peut être recopié ; il n'est pas mémorisé comme source
+vérifiée et les liens inventés restent filtrés. La classe, l'élément, le niveau
+et les objectifs du personnage sont mémorisés à partir de déclarations ou de
+contraintes explicites. Un personnage cité, une comparaison ou une négation ne
+remplace pas silencieusement le profil.
 
 L'IA rédige les réponses, y compris les salutations. Les outils calculent les taux,
 quantités et comparaisons. Les suivis reconnus, comme « avec 600 PP » ou « j'en veux
@@ -157,6 +176,19 @@ Evo réutilise `aiohttp`, `rapidfuzz` et `discord.py`, déjà déclarés. Les d�
 SQL utilisées par d'autres modules restent installées. Evo emploie les endpoints HTTP officiels Responses
 avec `aiohttp` pour maîtriser les relances, sans dépendre d'une version particulière
 du SDK OpenAI.
+
+Les assistants OpenAI historiques Staff et annonces partagent les paramètres et
+la validation de `utils/openai_generation.py`. Leurs clients désactivent les
+retries SDK ; un délai dépassé, un quota atteint ou une sortie vide/incomplète
+ne déclenche pas une deuxième génération. Un repli Chat est réservé aux anciens
+SDK ou à un endpoint Responses explicitement indisponible, sans supprimer les
+outils de recherche configurés. Les réponses utilisent `store=False` et les
+plafonds de tokens existants. Le texte déjà reçu du routeur Staff est réutilisé
+lorsqu'aucune recherche Web/documentaire n'est activée. Le message facultatif du
+matin tente une seule génération OpenAI puis utilise son repli local existant.
+
+Ces améliorations ne modifient ni le stockage `#console`, ni ses formats, ni les
+compteurs et réservations du budget Evo. Aucun nouveau paramètre n'est nécessaire.
 
 Aucune génération OpenAI n'est lancée par ces tests. Les tests d'enregistrement
 Discord n'établissent pas de connexion Discord, mais nécessitent `discord.py`.

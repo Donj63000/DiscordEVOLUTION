@@ -14,7 +14,15 @@ from utils.openai_config import (
     build_async_openai_client,
     resolve_openai_model,
     resolve_staff_model,
-    resolve_reasoning_effort,
+)
+from utils.openai_generation import (
+    OpenAIGenerationError,
+    extract_generated_text,
+    generate_openai_text,
+    generation_options,
+    public_openai_error,
+    require_generated_text,
+    validate_response,
 )
 
 try:
@@ -371,25 +379,6 @@ def _gather_text_nodes(node) -> list[str]:
             out += _gather_text_nodes(it)
     return out
 
-def extract_generated_text(resp_obj) -> str:
-    try:
-        t = getattr(resp_obj, "output_text", None)
-        if isinstance(t, str) and t.strip():
-            return t.strip()
-    except Exception:
-        pass
-    data = _to_dict(resp_obj)
-    texts = _gather_text_nodes(data)
-    if not texts and isinstance(data.get("choices"), list):
-        for ch in data["choices"]:
-            m = ch.get("message") if isinstance(ch, dict) else None
-            if isinstance(m, dict):
-                c = m.get("content")
-                if isinstance(c, str) and c.strip():
-                    texts.append(c.strip())
-    joined = "\n".join([s for s in texts if s.strip()])
-    return joined.strip()
-
 def _content_to_string(content_parts: list[dict]) -> str:
     if not isinstance(content_parts, list):
         return ""
@@ -489,10 +478,10 @@ class IAStaff(commands.Cog):
             log.warning("IAStaff indisponible: %s", self._load_error)
             return False
         try:
-            self.client = build_async_openai_client(AsyncOpenAI, timeout=OPENAI_TIMEOUT)
+            self.client = build_async_openai_client(AsyncOpenAI, timeout=OPENAI_TIMEOUT, max_retries=0)
         except Exception as exc:
-            self._load_error = f"Impossible d'initialiser openai.AsyncOpenAI: {exc}"
-            log.error("IAStaff: initialisation du client OpenAI impossible: %s", exc, exc_info=True)
+            self._load_error = "Impossible d'initialiser le client OpenAI. Vérifie la configuration."
+            log.error("IAStaff: initialisation du client OpenAI impossible: %s", type(exc).__name__)
             self.client = None
             return False
         if self.client is None:
@@ -621,7 +610,10 @@ class IAStaff(commands.Cog):
         prompt = self._render_morning_prompt(now).strip()
         if not prompt:
             return ""
-        for attempt in range(3):
+        # En cas d'échec OpenAI, morning_greeting dispose déjà d'un message local.
+        # Ne pas multiplier les générations payantes pour ce message facultatif.
+        attempts = 3 if self.backend == "gemini" else 1
+        for attempt in range(attempts):
             try:
                 if self.backend == "gemini":
                     combined_prompt = (
@@ -642,20 +634,32 @@ class IAStaff(commands.Cog):
                     req = {
                         "model": self.morning_model,
                         "input": messages,
-                        "max_output_tokens": self.morning_max_tokens,
-                        "store": False,
-                        "temperature": min(1.2, self.morning_temperature + (attempt * 0.1)),
+                        **generation_options(
+                            self.morning_model, self.morning_max_tokens, self.morning_temperature
+                        ),
                     }
-                    self._maybe_attach_reasoning(req, model=self.morning_model)
-                    resp = await self.client.responses.create(**req)
-                    text = extract_generated_text(resp).strip()
+                    chat_req = {
+                        "model": self.morning_model,
+                        "messages": self._to_chat_messages(messages),
+                        **generation_options(
+                            self.morning_model, self.morning_max_tokens, self.morning_temperature, chat=True
+                        ),
+                    }
+                    text = await generate_openai_text(
+                        self.client,
+                        response_request=req,
+                        chat_request=chat_req,
+                        timeout=OPENAI_TIMEOUT,
+                    )
             except Exception as exc:
                 log.warning("IAStaff: génération du message du matin échouée (tentative %d): %s", attempt + 1, exc)
+                if self.backend == "openai":
+                    return ""
                 await asyncio.sleep(2)
                 continue
             if not text:
                 continue
-            if self._last_morning_content and text == self._last_morning_content and attempt < 2:
+            if self._last_morning_content and text == self._last_morning_content and attempt < attempts - 1:
                 continue
             self._last_morning_content = text
             self._last_morning_date = today_key
@@ -870,28 +874,16 @@ class IAStaff(commands.Cog):
         base = {
             "model": self.model,
             "input": messages,
-            "max_output_tokens": MAX_OUTPUT_TOKENS,
-            "store": False,
-            "temperature": IASTAFF_TEMPERATURE,
+            **generation_options(self.model, MAX_OUTPUT_TOKENS, IASTAFF_TEMPERATURE),
         }
         tools = []
         if ENABLE_WEB_SEARCH:
             tools.append({"type": "web_search"})
         if VECTOR_STORE_ID:
-            tools.append({"type": "file_search"})
-            base["tool_resources"] = {"file_search": {"vector_store_ids": [VECTOR_STORE_ID]}}
+            tools.append({"type": "file_search", "vector_store_ids": [VECTOR_STORE_ID]})
         if tools:
             base["tools"] = tools
-        self._maybe_attach_reasoning(base)
         return base
-
-    def _maybe_attach_reasoning(self, request: dict, *, model: str | None = None):
-        target = model or request.get("model") or self.model
-        if not target:
-            return
-        options = resolve_reasoning_effort(target)
-        if options:
-            request["reasoning"] = options
 
     def _command_tools(self) -> list[dict]:
         """Describe the Discord commands that can be invoked via OpenAI tool-calling."""
@@ -1987,21 +1979,33 @@ class IAStaff(commands.Cog):
             },
         )
         try:
-            resp = await self.client.chat.completions.create(
-                model=self.model,
-                messages=chat_messages,
-                tools=tool_specs,
-                tool_choice="auto",
-            )
+            async with asyncio.timeout(OPENAI_TIMEOUT):
+                resp = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=chat_messages,
+                    tools=tool_specs,
+                    tool_choice="auto",
+                    **generation_options(
+                        self.model, MAX_OUTPUT_TOKENS, IASTAFF_TEMPERATURE,
+                        chat=True, tool_calling=True,
+                    ),
+                )
+        except OpenAIGenerationError:
+            raise
         except Exception as exc:
-            log.warning("IAStaff: Chat Completions tool-calling indisponible: %s", exc)
-            return None
+            raise public_openai_error(exc) from exc
+        validate_response(resp)
         choices = getattr(resp, "choices", None)
         if not choices:
-            return None
+            raise OpenAIGenerationError("Le service IA a renvoyé une réponse vide. Reformule ta demande.")
         message = getattr(choices[0], "message", None)
         tool_calls = getattr(message, "tool_calls", None)
         if not tool_calls:
+            text = require_generated_text(resp)
+            # Le texte déjà payé suffit sans recherche; sinon préserver le parcours
+            # Responses qui peut consulter le web et les documents configurés.
+            if not ENABLE_WEB_SEARCH and not VECTOR_STORE_ID:
+                return text
             return None
         ack_parts: list[str] = []
         for call in tool_calls:
@@ -2067,45 +2071,17 @@ class IAStaff(commands.Cog):
         if not self._ensure_client():
             raise RuntimeError(self._load_error or "Client OpenAI indisponible.")
         req = self._build_request(messages)
-        try:
-            resp = await self.client.responses.create(**req)
-            txt = extract_generated_text(resp)
-            if not txt.strip() and req.get("tools"):
-                safe_req = dict(req)
-                safe_req.pop("tools", None)
-                safe_req.pop("tool_resources", None)
-                resp2 = await self.client.responses.create(**safe_req)
-                txt = extract_generated_text(resp2)
-            if txt.strip():
-                return txt
-        except Exception as e:
-            try:
-                safe_req = dict(req)
-                safe_req.pop("tools", None)
-                safe_req.pop("tool_resources", None)
-                resp = await self.client.responses.create(**safe_req)
-                txt = extract_generated_text(resp)
-                if txt.strip():
-                    return txt
-            except Exception as ee:
-                raise RuntimeError(f"Erreur API OpenAI: {ee}") from ee
-            raise RuntimeError(f"Erreur API OpenAI: {e}") from e
-        try:
-            cc_messages = self._to_chat_messages(messages)
-            resp = await self.client.chat.completions.create(model=self.model, messages=cc_messages, max_tokens=MAX_OUTPUT_TOKENS)
-            data = _to_dict(resp)
-            choice = None
-            if isinstance(data.get("choices"), list) and data["choices"]:
-                choice = data["choices"][0]
-            if isinstance(choice, dict):
-                msg = choice.get("message")
-                if isinstance(msg, dict):
-                    cont = msg.get("content")
-                    if isinstance(cont, str) and cont.strip():
-                        return cont.strip()
-        except Exception:
-            return ""
-        return ""
+        chat_req = {
+            "model": self.model,
+            "messages": self._to_chat_messages(messages),
+            **generation_options(self.model, MAX_OUTPUT_TOKENS, IASTAFF_TEMPERATURE, chat=True),
+        }
+        return await generate_openai_text(
+            self.client,
+            response_request=req,
+            chat_request=chat_req,
+            timeout=OPENAI_TIMEOUT,
+        )
 
     def _make_embed(self, page_text: str, idx: int, total: int) -> tuple[discord.Embed, list[discord.File]]:
         palette = [
@@ -2215,22 +2191,23 @@ class IAStaff(commands.Cog):
             async with typing_target.typing():
                 channel_ctx = await self._build_channel_context(channel, origin_message if origin_message is not None else (ctx.message if ctx is not None else None))
                 messages = self._make_messages(channel_ctx, channel_id, content)
-                tool_ack: str | None = None
-                if ctx is not None:
-                    tool_ack = await self._try_chat_with_tools(ctx, messages)
-                if tool_ack:
-                    text = tool_ack
-                else:
-                    try:
+                try:
+                    tool_ack: str | None = None
+                    if ctx is not None:
+                        tool_ack = await self._try_chat_with_tools(ctx, messages)
+                    if tool_ack:
+                        text = tool_ack
+                    else:
                         text = await self._ask_model(messages)
-                    except Exception as e:
-                        if ctx is not None:
-                            await ctx.reply(f"❌ {e}", mention_author=False)
-                        elif origin_message is not None:
-                            await origin_message.reply(f"❌ {e}", mention_author=False)
-                        else:
-                            await channel.send(f"❌ {e}")
-                        return
+                except Exception as exc:
+                    error = str(exc) if isinstance(exc, OpenAIGenerationError) else "Le service IA est indisponible. Réessaie plus tard."
+                    if ctx is not None:
+                        await ctx.reply(f"❌ {error}", mention_author=False)
+                    elif origin_message is not None:
+                        await origin_message.reply(f"❌ {error}", mention_author=False)
+                    else:
+                        await channel.send(f"❌ {error}")
+                    return
             if not text.strip():
                 if ctx is not None:
                     await ctx.reply("La réponse de l'IA est vide. Réessaie en reformulant (ou `!iastaff reset`).", mention_author=False)

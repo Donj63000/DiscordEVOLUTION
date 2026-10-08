@@ -77,7 +77,12 @@ def normalise_staff_model(value: str, default: str | None = None) -> str:
     return resolved or (default or "")
 
 
-def build_async_openai_client(client_cls: Any, *, timeout: float | None = None) -> Any:
+def build_async_openai_client(
+    client_cls: Any,
+    *,
+    timeout: float | None = None,
+    max_retries: int | None = None,
+) -> Any:
     if client_cls is None:
         return None
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
@@ -102,6 +107,8 @@ def build_async_openai_client(client_cls: Any, *, timeout: float | None = None) 
         kwargs["base_url"] = base_url
     if timeout is not None:
         kwargs["timeout"] = timeout
+    if max_retries is not None:
+        kwargs["max_retries"] = max_retries
     removed_org_env: list[tuple[str, str]] = []
     try:
         if organization_raw:
