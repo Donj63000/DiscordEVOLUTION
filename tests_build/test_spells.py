@@ -112,6 +112,7 @@ async def test_explicit_refresh_replaces_catalog_but_preserves_selected_attack()
 async def test_refresh_command_routes_catalogs(scope, monkeypatch):
     import build as module
     monkeypatch.setenv("BUILD_ENABLED", "1")
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: 10))
     cog = SimpleNamespace(closed=False, ready=True, last_refresh_request=0,
         require_staff=lambda interaction: None, ensure_ready=lambda: None,
         initialize=AsyncMock(), init_lock=asyncio.Lock(), start_error="",
@@ -124,6 +125,25 @@ async def test_refresh_command_routes_catalogs(scope, monkeypatch):
     content = interaction.edit_original_response.call_args.kwargs["content"]
     if scope == "tous":
         assert "Source équipements indisponible" in content and "Sorts" in content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("last_refresh", [5, 10])
+async def test_refresh_command_rejects_recent_request_with_low_monotonic_clock(monkeypatch, last_refresh):
+    import build as module
+    monkeypatch.setenv("BUILD_ENABLED", "1")
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: 10))
+    cog = SimpleNamespace(closed=False, ready=True, last_refresh_request=last_refresh,
+        require_staff=lambda interaction: None, initialize=AsyncMock(), init_lock=asyncio.Lock(),
+        catalogs=SimpleNamespace(lock=asyncio.Lock()),
+        spells=SimpleNamespace(lock=asyncio.Lock(), refresh=AsyncMock()))
+    interaction = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock()), edit_original_response=AsyncMock())
+    with pytest.raises(BuildError, match="trop récente"):
+        await module.BuildCog.refreshing.callback(cog, interaction, "sorts")
+    assert cog.last_refresh_request == last_refresh
+    cog.initialize.assert_not_awaited()
+    cog.spells.refresh.assert_not_awaited()
+    interaction.edit_original_response.assert_not_awaited()
 
 
 @pytest.mark.asyncio
