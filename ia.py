@@ -56,6 +56,7 @@ class IASession:
     start_ts: datetime
     last_activity: datetime
     history: list = field(default_factory=list)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     @property
     def expired(self) -> bool:
         now = discord.utils.utcnow()
@@ -70,8 +71,22 @@ CONSOLE_CHANNEL_NAME = "console"
 QUEUE_PROCESS_INTERVAL = 5
 
 def chunk_list(txt, size=2000):
-    for i in range(0, len(txt), size):
-        yield txt[i:i+size]
+    if size <= 0:
+        raise ValueError("La taille doit être positive.")
+    chunk = []
+    units = 0
+    for char in txt:
+        width = 2 if ord(char) > 0xFFFF else 1
+        if width > size:
+            raise ValueError("La taille ne permet pas de conserver ce caractère.")
+        if units + width > size:
+            yield "".join(chunk)
+            chunk = []
+            units = 0
+        chunk.append(char)
+        units += width
+    if chunk:
+        yield "".join(chunk)
 
 def normalize_profanity(text: str) -> str:
     nfkd = unicodedata.normalize("NFKD", text.casefold())
@@ -191,15 +206,18 @@ class IACog(commands.Cog):
         self.model_flash = "gemini-1.5-flash"
         self.model_g25 = "gemini-2.5-pro"
 
-    def _new_chat(self, model_name: str, system_prompt: str):
+    def _new_chat(self, model_name: str, system_prompt: str, *, history=None):
         if not self._genai_client:
             raise RuntimeError("Client Gemini non initialisé")
         config = None
         if genai_types is not None:
             config = genai_types.GenerateContentConfig(system_instruction=system_prompt)
+        kwargs = {"model": model_name}
         if config:
-            return self._genai_client.chats.create(model=model_name, config=config)
-        return self._genai_client.chats.create(model=model_name)
+            kwargs["config"] = config
+        if history is not None:
+            kwargs["history"] = history
+        return self._genai_client.chats.create(**kwargs)
 
     async def _ask_gemini(self, chat, prompt: str) -> str:
         loop = asyncio.get_running_loop()
@@ -443,14 +461,19 @@ class IACog(commands.Cog):
 
     async def _handle_quota_and_retry(self, session: IASession, message: discord.Message):
         if session.model_name.endswith("-pro"):
-            flash_chat = self._new_chat("gemini-1.5-flash", "Tu es l'assistant de la guilde Evolution sur Dofus retro")
-            flash_chat.history = session.chat.history
+            flash_chat = self._new_chat(
+                "gemini-1.5-flash",
+                "Tu es l'assistant de la guilde Evolution sur Dofus retro",
+                history=session.chat.get_history(curated=True),
+            )
             session.model_name = "gemini-1.5-flash"
             session.chat = flash_chat
             self.quota_exceeded_until = time.time() + self.quota_block_duration
             try:
                 resp = await self._ask_gemini(flash_chat, message.content)
-                await message.reply(f"⚠️ Quota Pro atteint → passage sur **Flash**.\n\n{resp}", mention_author=False)
+                text = f"⚠️ Quota Pro atteint → passage sur **Flash**.\n\n{resp}"
+                for chunk in chunk_list(text):
+                    await message.reply(chunk, mention_author=False)
             except Exception as exc:
                 await message.reply(f"Erreur lors de la bascule : {exc}", mention_author=False)
         else:
@@ -632,29 +655,32 @@ class IACog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
+        if isinstance(message.channel, discord.DMChannel) and message.author.id in self._wizard_users:
+            return
         ctx = await self.bot.get_context(message)
         if ctx.valid and ctx.command is not None:
             return
         key = message.author.id if isinstance(message.channel, discord.DMChannel) else message.channel.id
         session = self.sessions.get(key)
         if session and not session.expired:
-            session.last_activity = discord.utils.utcnow()
-            try:
-                async with message.channel.typing():
-                    response = await self._ask_gemini(session.chat, message.content)
-
-
-
-
-
-            except Exception as e:
-                t = str(e).lower()
-                if any(x in t for x in ["429","quota","rate","resourceexhausted","exceeded"]):
-                    await self._handle_quota_and_retry(session, message)
+            # Le chat Gemini contient un historique mutable : deux messages d'une
+            # même session ne doivent pas envoyer des requêtes simultanément.
+            async with session.lock:
+                if self.sessions.get(key) is not session or session.expired:
                     return
-                await message.reply(f"Erreur IA: {e}", mention_author=False)
-                return
-            await message.reply(response, mention_author=False)
+                session.last_activity = discord.utils.utcnow()
+                try:
+                    async with message.channel.typing():
+                        response = await self._ask_gemini(session.chat, message.content)
+                except Exception as e:
+                    t = str(e).lower()
+                    if any(x in t for x in ["429", "quota", "rate", "resourceexhausted", "exceeded"]):
+                        await self._handle_quota_and_retry(session, message)
+                        return
+                    await message.reply(f"Erreur IA: {e}", mention_author=False)
+                    return
+                for chunk in chunk_list(response):
+                    await message.reply(chunk, mention_author=False)
             return
         if isinstance(message.channel, discord.DMChannel):
             # 🔒 si un wizard est en cours pour cet utilisateur → ne RIEN faire

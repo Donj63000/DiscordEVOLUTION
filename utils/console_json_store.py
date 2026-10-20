@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
+import io
 import json
 import logging
 import os
-import tempfile
 from datetime import timezone
 from typing import Any, Optional
 
@@ -86,7 +87,7 @@ class ConsoleJSONSnapshotStore:
         return None
 
     def _message_sort_key(self, message: discord.Message) -> tuple[float, int]:
-        created_at = getattr(message, "created_at", None)
+        created_at = getattr(message, "edited_at", None) or getattr(message, "created_at", None)
         if created_at is None:
             return 0.0, int(getattr(message, "id", 0) or 0)
         if created_at.tzinfo is None:
@@ -96,10 +97,10 @@ class ConsoleJSONSnapshotStore:
     def _is_snapshot_message(self, message: discord.Message) -> bool:
         author = getattr(message, "author", None)
         bot_user = getattr(self.bot, "user", None)
-        if bot_user is not None and author is not None and author != bot_user:
+        if bot_user is None or author != bot_user or getattr(message, "webhook_id", None):
             return False
         content = getattr(message, "content", "") or ""
-        if self.marker in content:
+        if content.lstrip().startswith(self.marker):
             return True
         for attachment in getattr(message, "attachments", []) or []:
             if getattr(attachment, "filename", None) == self.filename:
@@ -164,7 +165,7 @@ class ConsoleJSONSnapshotStore:
                 add_candidate(current)
 
         try:
-            pins = await channel.pins()
+            pins = await self._pinned_messages(channel)
         except Exception:
             pins = []
         for message in pins:
@@ -180,6 +181,12 @@ class ConsoleJSONSnapshotStore:
 
         candidates.sort(key=self._message_sort_key, reverse=True)
         return candidates
+
+    async def _pinned_messages(self, channel: discord.TextChannel) -> list[discord.Message]:
+        # discord.py 2.6+ paginates pins; awaiting it only retrieves the first 50.
+        if inspect.iscoroutinefunction(channel.pins):
+            return await channel.pins()
+        return [message async for message in channel.pins(limit=None)]
 
     async def load_latest(
         self,
@@ -208,7 +215,7 @@ class ConsoleJSONSnapshotStore:
             log.debug("Unable to pin snapshot message for %s.", self.marker, exc_info=True)
 
     def _dump_payload(self, payload: dict[str, Any]) -> str:
-        return json.dumps(payload, indent=4, ensure_ascii=False, sort_keys=True)
+        return json.dumps(payload, indent=4, ensure_ascii=False, sort_keys=True).replace("`", "\\u0060")
 
     def _etag(self, payload: dict[str, Any]) -> str:
         body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -233,58 +240,45 @@ class ConsoleJSONSnapshotStore:
         data_str = self._dump_payload(payload)
         header = f"{self.marker} etag:{self._etag(payload)}"
 
-        if len(data_str) < 1900:
-            content = f"{header}\n```json\n{data_str}\n```"
-            try:
-                if existing is not None:
-                    await existing.edit(content=content, attachments=[])
-                    await self._ensure_pinned(existing)
-                    return existing
-                message = await target_channel.send(content)
-                await self._ensure_pinned(message)
-                return message
-            except Exception:
-                log.debug("Inline snapshot save failed for %s; retrying with new message.", self.marker, exc_info=True)
-                if existing is not None:
-                    try:
-                        await existing.delete()
-                    except Exception:
-                        pass
-                message = await target_channel.send(content)
-                await self._ensure_pinned(message)
-                return message
-
-        tmp = tempfile.NamedTemporaryFile(delete=False, mode="w", encoding="utf-8", suffix=".json")
+        content = f"{header}\n```json\n{data_str}\n```"
+        file = None
+        if len(content.encode("utf-16-le")) // 2 > 2000:
+            file = discord.File(io.BytesIO(data_str.encode("utf-8")), filename=self.filename)
+            content = f"{header} (fichier)"
         try:
-            tmp.write(data_str)
-            tmp.flush()
-            tmp.close()
             if existing is not None:
                 try:
-                    await existing.edit(
-                        content=f"{header} (fichier)",
-                        attachments=[discord.File(tmp.name, filename=self.filename)],
+                    edited = await existing.edit(
+                        content=content, attachments=[file] if file else [],
                     )
-                    await self._ensure_pinned(existing)
-                    return existing
                 except Exception:
                     log.debug(
-                        "File snapshot edit failed for %s; retrying with new message.",
+                        "Snapshot edit failed for %s; retrying with new message.",
                         self.marker,
                         exc_info=True,
                     )
-                    try:
-                        await existing.delete()
-                    except Exception:
-                        pass
+                    if file:
+                        # Discord File wrappers are single use: edit() restores
+                        # the stream's close method even when the request fails.
+                        file.close()
+                        file.fp.close()
+                        file = discord.File(io.BytesIO(data_str.encode("utf-8")), filename=self.filename)
+                else:
+                    message = edited or existing
+                    await self._ensure_pinned(message)
+                    return message
             message = await target_channel.send(
-                f"{header} (fichier)",
-                file=discord.File(tmp.name, filename=self.filename),
+                content, **({"file": file} if file else {}),
             )
             await self._ensure_pinned(message)
+            # Never discard the only durable copy before its replacement exists.
+            if existing is not None:
+                try:
+                    await existing.delete()
+                except Exception:
+                    log.debug("Unable to remove replaced snapshot for %s.", self.marker, exc_info=True)
             return message
         finally:
-            try:
-                os.remove(tmp.name)
-            except OSError:
-                pass
+            if file:
+                file.close()
+                file.fp.close()

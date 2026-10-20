@@ -185,7 +185,8 @@ async def test_staff_handles_router_error_without_a_second_generation():
     cog._ask_model = AsyncMock()
     ctx = SimpleNamespace(message=None, typing=Typing, reply=AsyncMock())
 
-    await cog.handle_staff_message(SimpleNamespace(id=42), SimpleNamespace(id=7), "Bonjour", ctx=ctx)
+    author = SimpleNamespace(id=7, roles=[SimpleNamespace(name=iastaff.STAFF_ROLE_NAME)])
+    await cog.handle_staff_message(SimpleNamespace(id=42), author, "Bonjour", ctx=ctx)
 
     client.chat.completions.create.assert_awaited_once()
     cog._ask_model.assert_not_awaited()

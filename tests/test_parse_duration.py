@@ -27,3 +27,9 @@ def test_parse_duration_seconds_only():
 def test_parse_duration_invalid():
     with pytest.raises(ValueError):
         parse_duration("abc")
+
+
+@pytest.mark.parametrize("value", ["-1h", "-30m", "1h -30m", "1:60", "1:00:60", "0:00", "999999999999999999999h"])
+def test_parse_duration_rejects_invalid_or_unrepresentable_values(value):
+    with pytest.raises(ValueError):
+        parse_duration(value)

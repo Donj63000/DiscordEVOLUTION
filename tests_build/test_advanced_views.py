@@ -91,6 +91,17 @@ async def test_price_saved_only_after_explicit_confirmation(cog, actor, build, c
 
 
 @pytest.mark.asyncio
+async def test_exo_transfer_sink_uses_native_session_limit(cog, actor):
+    modal = ExoSinkModal(cog, actor, {"reference": "item:1", "jets_declares": {"fo": 30}})
+    modal.sink._value = "100000.01"
+    interaction = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock()))
+    with pytest.raises(ValueError, match="100000"):
+        await modal.on_submit(interaction)
+    cog.send_view.assert_not_awaited()
+    modal.stop()
+
+
+@pytest.mark.asyncio
 async def test_damage_without_manual_values_opens_simulator(cog, actor, build):
     cog.begin = AsyncMock(return_value=actor)
     interaction = SimpleNamespace()

@@ -320,6 +320,7 @@ class OrganisationCog(commands.Cog):
         self._client: Optional[AsyncOpenAI] = build_async_openai_client(AsyncOpenAI, timeout=OPENAI_TIMEOUT)
         self._model: str = DEFAULT_MODEL
         self._drafts: Dict[int, OrganisationDraft] = {}
+        self._publication_locks: Dict[int, asyncio.Lock] = {}
         self._events: Dict[int, OrganisationEvent] = {}
         self._staff_role_ids, self._staff_role_names = _parse_staff_roles(STAFF_ROLE_ENV)
         self._supports_response_format = True
@@ -1115,11 +1116,17 @@ class OrganisationCog(commands.Cog):
                 await interaction.response.send_message('❌ Serveur requis.', ephemeral=True)
                 return
             await interaction.response.defer(ephemeral=True, thinking=True)
-            ok, reason = await self.parent._publish_draft(interaction, draft)
-            if not ok:
-                await interaction.followup.send(f'❌ Publication impossible: {reason}', ephemeral=True)
-                return
-            self.parent._drafts.pop(self.user_id, None)
+            # Plusieurs prévisualisations peuvent rester ouvertes pour le même brouillon.
+            async with self.parent._publication_locks.setdefault(self.user_id, asyncio.Lock()):
+                if self.parent._drafts.get(self.user_id) is not draft:
+                    await interaction.followup.send('Ce brouillon a déjà été publié ou remplacé.', ephemeral=True)
+                    return
+                ok, reason = await self.parent._publish_draft(interaction, draft)
+                if not ok:
+                    await interaction.followup.send(f'❌ Publication impossible: {reason}', ephemeral=True)
+                    return
+                if self.parent._drafts.get(self.user_id) is draft:
+                    self.parent._drafts.pop(self.user_id, None)
             await interaction.followup.send('✅ Sortie publiée dans #organisation.', ephemeral=True)
 
         @discord.ui.button(label='🗑️ Annuler', style=discord.ButtonStyle.danger)

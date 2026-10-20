@@ -4,6 +4,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from datetime import timezone
 from zoneinfo import ZoneInfo
+import pytest
 from utils import parse_fr_datetime, parse_french_datetime
 
 
@@ -20,3 +21,7 @@ def test_parse_french_datetime_alias():
     dt_ref = parse_fr_datetime("samedi 21h")
     assert dt_alias == dt_ref
 
+
+@pytest.mark.parametrize("value", ["samedi 24h", "lundi 99h"])
+def test_parse_french_datetime_invalid_hour_returns_none(value):
+    assert parse_french_datetime(value) is None

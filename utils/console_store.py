@@ -62,13 +62,22 @@ class ConsoleStore:
         if chan is None:
             return self._cache
 
-        messages = await fetch_channel_history(chan, limit=200, reason="console_store.load")
+        messages = await fetch_channel_history(
+            chan, limit=200, reason="console_store.load", raise_errors=True,
+        )
         for msg in messages:
+            if (
+                self.bot.user is None
+                or getattr(msg, "author", None) != self.bot.user
+                or getattr(msg, "webhook_id", None)
+            ):
+                continue
             if msg.content.startswith(CODEBLOCK):
                 try:
                     payload = json.loads(msg.content[len(CODEBLOCK):].strip("` \n"))
                     payload["_msg"] = msg                       # attache le Message
-                    self._cache[payload["event_id"]] = payload
+                    # L'historique est lu du plus récent au plus ancien.
+                    self._cache.setdefault(payload["event_id"], payload)
                 except Exception:
                     log.warning("Message #%s mal formé (id=%s)", self.channel_name, msg.id)
         return self._cache
@@ -118,6 +127,6 @@ class ConsoleStore:
         if event_id in cache:
             try:
                 await cache[event_id]["_msg"].delete()
-            except discord.HTTPException:
+            except discord.NotFound:
                 pass
             cache.pop(event_id, None)

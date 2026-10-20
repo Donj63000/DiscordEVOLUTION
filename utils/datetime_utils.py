@@ -29,7 +29,12 @@ def parse_duration(s: str) -> timedelta:
         hours = int(match.group(1))
         minutes = int(match.group(2))
         seconds = int(match.group(3) or 0)
-        return timedelta(hours=hours, minutes=minutes, seconds=seconds)
+        if minutes >= 60 or seconds >= 60 or hours == minutes == seconds == 0:
+            raise ValueError("Format de durée inconnu")
+        try:
+            return timedelta(hours=hours, minutes=minutes, seconds=seconds)
+        except OverflowError as exc:
+            raise ValueError("Durée trop grande") from exc
 
     normalized = s
     replacements = (
@@ -53,7 +58,7 @@ def parse_duration(s: str) -> timedelta:
         normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
 
     normalized = re.sub(r"\bet\b", " ", normalized)
-    normalized = re.sub(r"[+,/;\-]", " ", normalized)
+    normalized = re.sub(r"[+,/;]", " ", normalized)
 
     pattern = re.compile(r"(\d+)\s*([hms])")
     hours = minutes = seconds = 0
@@ -86,7 +91,10 @@ def parse_duration(s: str) -> timedelta:
     if hours == minutes == seconds == 0:
         raise ValueError("Format de durée inconnu")
 
-    return timedelta(hours=hours, minutes=minutes, seconds=seconds)
+    try:
+        return timedelta(hours=hours, minutes=minutes, seconds=seconds)
+    except OverflowError as exc:
+        raise ValueError("Durée trop grande") from exc
 
 
 PARIS = ZoneInfo("Europe/Paris")
@@ -113,6 +121,8 @@ def parse_french_datetime(text: str) -> datetime | None:
     if match:
         weekday_fr = match.group(1).lower()
         hour = int(match.group(2))
+        if hour > 23:
+            return None
         days = {
             "lundi": 0,
             "mardi": 1,

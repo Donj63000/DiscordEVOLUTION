@@ -34,7 +34,7 @@ def simulate(report: Report, lines: tuple[DamageLine, ...], scenario: Scenario):
             raise BuildError("Caractéristiques offensives incomplètes. Aucun dégât calculé sur un total incertain.")
         total = report.totals
         def damage(base):
-            increased = base * (100 + max(0, total[stat]) + total["pui"]) // 100
+            increased = base * max(0, 100 + max(0, total[stat]) + total["pui"]) // 100
             increased = increased * scenario.coefficient_percent // 100 + total["do"]
             reduced = max(0, increased - scenario.flat_resistance)
             return max(0, reduced * (100 - scenario.percent_resistance) // 100)

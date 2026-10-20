@@ -3,8 +3,9 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 import pytest
+from unittest.mock import AsyncMock, Mock
 
-from ia import IACog, IASession
+from ia import IACog, IASession, chunk_list
 
 class DummyChat:
     def __init__(self):
@@ -14,13 +15,18 @@ class DummyChat:
         self.history.append(content)
         self.last.text = "reply"
         return self.last
+    def get_history(self, *, curated=False):
+        return list(self.history)
 
 class DummyChannel:
     def __init__(self):
+        self.id = 1
         self.last_reply = None
+        self.replies = []
     async def send(self, content, mention_author=False):
         self.last_reply = content
-    async def typing(self):
+        self.replies.append(content)
+    def typing(self):
         class _T:
             async def __aenter__(self):
                 return None
@@ -54,6 +60,7 @@ class DummyMessage:
         self.channel = DummyChannel()
     async def reply(self, content, mention_author=False):
         self.channel.last_reply = content
+        self.channel.replies.append(content)
 
 @pytest.mark.asyncio
 async def test_dm_session_uses_pro_model(monkeypatch):
@@ -79,6 +86,99 @@ async def test_quota_bascule_to_flash(monkeypatch):
     await cog._handle_quota_and_retry(session, msg)
     assert session.model_name == "gemini-1.5-flash"
     assert "Flash" in msg.channel.last_reply
+
+
+@pytest.mark.asyncio
+async def test_quota_fallback_preserves_history_using_genai_sdk_interface(monkeypatch):
+    cog = IACog(bot=object())
+    history = [types.SimpleNamespace(role="user", parts=["Bonjour"])]
+    original_chat = types.SimpleNamespace(get_history=Mock(return_value=history))
+    session = IASession("gemini-2.5-pro", original_chat, datetime.utcnow(), datetime.utcnow())
+    replacement = Mock(return_value=DummyChat())
+    monkeypatch.setattr(cog, "_new_chat", replacement)
+
+    await cog._handle_quota_and_retry(session, DummyMessage())
+
+    original_chat.get_history.assert_called_once_with(curated=True)
+    assert replacement.call_args.kwargs["history"] is history
+
+
+def test_new_chat_passes_history_to_sdk():
+    cog = IACog(bot=object())
+    create = Mock()
+    cog._genai_client = types.SimpleNamespace(chats=types.SimpleNamespace(create=create))
+    history = [{"role": "user", "parts": [{"text": "Bonjour"}]}]
+
+    cog._new_chat("gemini-1.5-flash", "Assistant", history=history)
+
+    assert create.call_args.kwargs["history"] is history
+
+
+def message_cog(monkeypatch):
+    monkeypatch.setattr("ia.discord.DMChannel", DummyChannel)
+    bot = types.SimpleNamespace(get_context=AsyncMock(return_value=types.SimpleNamespace(valid=False, command=None)))
+    cog = IACog(bot)
+    cog.sessions[1] = IASession("gemini-2.5-pro", DummyChat(), datetime.utcnow(), datetime.utcnow())
+    return cog
+
+
+@pytest.mark.asyncio
+async def test_active_ia_session_ignores_wizard_responses(monkeypatch):
+    cog = message_cog(monkeypatch)
+    cog._ask_gemini = AsyncMock(return_value="secret")
+    await cog.on_wizard_started(1)
+
+    await cog.on_message(DummyMessage())
+
+    cog._ask_gemini.assert_not_awaited()
+    cog.bot.get_context.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", ["a" * 4500, "😀" * 2250], ids=["ascii", "emoji"])
+async def test_active_ia_session_chunks_long_responses(monkeypatch, response):
+    cog = message_cog(monkeypatch)
+    cog._ask_gemini = AsyncMock(return_value=response)
+    message = DummyMessage()
+
+    await cog.on_message(message)
+
+    assert "".join(message.channel.replies) == response
+    assert all(len(part.encode("utf-16-le")) // 2 <= 2000 for part in message.channel.replies)
+
+
+def test_chunk_list_preserves_astral_characters_within_discord_limit():
+    text = "⚠️ Réponse " + "😀" * 2000
+    chunks = list(chunk_list(text))
+    assert "".join(chunks) == text
+    assert all(len(part.encode("utf-16-le")) // 2 <= 2000 for part in chunks)
+
+
+@pytest.mark.asyncio
+async def test_active_ia_session_serializes_messages(monkeypatch):
+    cog = message_cog(monkeypatch)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    prompts = []
+
+    async def ask(chat, prompt):
+        prompts.append(prompt)
+        if prompt == "first":
+            entered.set()
+            await release.wait()
+        return prompt
+
+    cog._ask_gemini = ask
+    first, second = DummyMessage(), DummyMessage()
+    first.content, second.content = "first", "second"
+    first_task = asyncio.create_task(cog.on_message(first))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    second_task = asyncio.create_task(cog.on_message(second))
+    await asyncio.sleep(0)
+    assert prompts == ["first"]
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=1)
+    assert prompts == ["first", "second"]
 
 @pytest.mark.asyncio
 async def test_purge_expired_session_removes():

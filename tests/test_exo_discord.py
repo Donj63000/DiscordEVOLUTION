@@ -965,10 +965,11 @@ async def test_build_transfer_failure_keeps_previous_session_and_history_budget(
 
 
 @pytest.mark.asyncio
-async def test_build_transfer_rejects_invalid_sink_before_touching_previous_session(panel):
+@pytest.mark.parametrize("sink", [D(-1), D("100000.01"), D("1000000")])
+async def test_build_transfer_rejects_invalid_sink_before_touching_previous_session(panel, sink):
     configure_build_transfer(panel)
     with pytest.raises(ValueError):
-        await panel.cog.open_build_session(interaction(), "item:321", {"fo": 42}, D(-1))
+        await panel.cog.open_build_session(interaction(), "item:321", {"fo": 42}, sink)
     panel.cog.entries.assert_not_awaited()
     assert panel.cog.views[(100, 42)] is panel
     assert not panel.retired
