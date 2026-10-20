@@ -225,43 +225,49 @@ class RSVPView(discord.ui.View):
         self.parent = parent_cog
         self.store_data = store_data
         self._going: set[int] = set(store_data.get("going", []))
+        self._roster_lock = asyncio.Lock()
 
     @discord.ui.button(label="Je participe ✅", style=discord.ButtonStyle.success, custom_id="rsvp_yes")
     async def rsvp_yes(self, itx: discord.Interaction, button: discord.ui.Button):
-        if (
-            self.max_slots
-            and len(self._going) >= self.max_slots
-            and itx.user.id not in self._going
-        ):
-            return await itx.response.send_message("Désolé, il n’y a plus de place !", ephemeral=True)
+        # Acquitter avant le verrou et les requêtes réseau (délai Discord : 3 s).
+        await itx.response.defer(ephemeral=True, thinking=True)
+        async with self._roster_lock:
+            if (
+                self.max_slots
+                and len(self._going) >= self.max_slots
+                and itx.user.id not in self._going
+            ):
+                return await itx.followup.send("Désolé, il n’y a plus de place !", ephemeral=True)
 
-        try:
-            await itx.user.add_roles(self.role, reason="Inscription événement")
-        except discord.Forbidden:
-            return await itx.response.send_message("Je n'ai pas la permission d'ajouter le rôle.", ephemeral=True)
+            try:
+                await itx.user.add_roles(self.role, reason="Inscription événement")
+            except discord.HTTPException:
+                return await itx.followup.send("Impossible d'ajouter le rôle. L'inscription n'a pas été enregistrée.", ephemeral=True)
 
-        self._going.add(itx.user.id)
-        self.store_data["going"] = list(self._going)
-        if self.parent.console:
-            await self.parent.console.upsert(self.store_data)
-        await self.parent._persist_store_data(self.store_data)
+            self._going.add(itx.user.id)
+            self.store_data["going"] = list(self._going)
+            if self.parent.console:
+                await self.parent.console.upsert(self.store_data)
+            await self.parent._persist_store_data(self.store_data)
 
-        await itx.response.send_message("✅ Inscription enregistrée !", ephemeral=True)
+        await itx.followup.send("✅ Inscription enregistrée !", ephemeral=True)
 
     @discord.ui.button(label="Me désinscrire ❌", style=discord.ButtonStyle.danger, custom_id="rsvp_no")
     async def rsvp_no(self, itx: discord.Interaction, button: discord.ui.Button):
-        try:
-            await itx.user.remove_roles(self.role, reason="Désinscription événement")
-        except discord.Forbidden:
-            pass
+        await itx.response.defer(ephemeral=True, thinking=True)
+        async with self._roster_lock:
+            try:
+                await itx.user.remove_roles(self.role, reason="Désinscription événement")
+            except discord.HTTPException:
+                return await itx.followup.send("Impossible de retirer le rôle. Tu restes inscrit ; préviens le Staff.", ephemeral=True)
 
-        self._going.discard(itx.user.id)
-        self.store_data["going"] = list(self._going)
-        if self.parent.console:
-            await self.parent.console.upsert(self.store_data)
-        await self.parent._persist_store_data(self.store_data)
+            self._going.discard(itx.user.id)
+            self.store_data["going"] = list(self._going)
+            if self.parent.console:
+                await self.parent.console.upsert(self.store_data)
+            await self.parent._persist_store_data(self.store_data)
 
-        await itx.response.send_message("Désinscription effectuée.", ephemeral=True)
+        await itx.followup.send("Désinscription effectuée.", ephemeral=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -532,9 +538,7 @@ class EventConversationCog(commands.Cog):
     # ------------------------------------------------------------------ #
     async def _create_event_role(self, guild: discord.Guild, draft: EventDraft) -> discord.Role:
         role_name = f"Participe à l'event {draft.name}"[:100]
-        existing = discord.utils.get(guild.roles, name=role_name)
-        if existing:
-            return existing
+        # Un nom n'identifie pas un événement : son cleanup doit lui appartenir.
         return await guild.create_role(name=role_name, mentionable=True, reason="Rôle participants event")
 
     async def _create_event_channel(
@@ -544,9 +548,6 @@ class EventConversationCog(commands.Cog):
         category = discord.utils.get(guild.categories, name=EVENT_CAT_NAME)
         if category is None:
             category = await guild.create_category(EVENT_CAT_NAME, reason="Catégorie événements")
-        existing = discord.utils.get(category.text_channels, name=f"event-{slug}")
-        if existing:
-            return existing
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             role: discord.PermissionOverwrite(view_channel=True, send_messages=True),

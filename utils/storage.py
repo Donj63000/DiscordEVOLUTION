@@ -1,3 +1,5 @@
+import asyncio
+from io import BytesIO
 import os
 import json
 import logging
@@ -27,6 +29,7 @@ class EventStore:
         self.db = None
         self.events: Dict[str, EventData] = {}
         self.conversations: Dict[str, list] = {}
+        self._console_lock = asyncio.Lock()
         self._console_auto_create = (os.getenv("CONSOLE_AUTO_CREATE", "1") or "1").strip().lower() not in {
             "0",
             "false",
@@ -144,9 +147,9 @@ class EventStore:
 
     async def _load_db(self):
         rows = await self.db.fetch("SELECT id, data FROM events")
-        self.events = {r["id"]: EventData.from_dict(dict(r["data"])) for r in rows}
+        self.events = {r["id"]: EventData.from_dict(json.loads(r["data"])) for r in rows}
         rows = await self.db.fetch("SELECT id, data FROM conversations")
-        self.conversations = {r["id"]: dict(r["data"]) for r in rows}
+        self.conversations = {r["id"]: json.loads(r["data"]) for r in rows}
         logger.info("EventStore: data loaded from PostgreSQL.")
 
     async def _load_console(self):
@@ -192,13 +195,13 @@ class EventStore:
 
     async def save_event(self, event_id: str, payload: EventData):
         self.events[event_id] = payload
-        data_dict = payload.model_dump(mode="python", exclude_none=True)
+        data_dict = payload.model_dump(mode="json", exclude_none=True)
         if self.backend == "postgres" and self.db:
             await self.db.execute(
                 "INSERT INTO events(id, data) VALUES($1, $2)"
                 " ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data",
                 event_id,
-                data_dict,
+                json.dumps(data_dict, ensure_ascii=False),
             )
         else:
             await self._dump_console()
@@ -216,7 +219,7 @@ class EventStore:
                     "INSERT INTO conversations(id, data) VALUES($1, $2)"
                     " ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data",
                     conv_id,
-                    transcript,
+                    json.dumps(transcript, ensure_ascii=False),
                 )
         else:
             await self._dump_console()
@@ -232,36 +235,29 @@ class EventStore:
         return existed
 
     async def _dump_console(self):
-        channel = self.console_channel
-        if not channel:
-            channel = await self._resolve_console_channel()
-            self.console_channel = channel
-        if not channel:
-            return
-        data = {
-            "events": {eid: e.model_dump(mode="python", exclude_none=True) for eid, e in self.events.items()},
-            "conversations": self.conversations,
-        }
-        data_str = json.dumps(data, indent=4, ensure_ascii=False)
-        if len(data_str) < 1900:
-            await channel.send(f"{self.MARKER}\n```json\n{data_str}\n```")
-        else:
-            temp_path = "temp_event_store.json"
-            try:
-                with open(temp_path, "w", encoding="utf-8") as f:
-                    f.write(data_str)
-                await channel.send(
-                    f"{self.MARKER} (fichier)",
-                    file=discord.File(fp=temp_path, filename="event_store.json"),
-                )
-            finally:
-                try:
-                    os.remove(temp_path)
-                except FileNotFoundError:
-                    pass
-                except OSError as exc:
-                    logger.warning(
-                        "Failed to remove temporary event store file %s: %s",
-                        temp_path,
-                        exc,
-                    )
+        # Keep snapshots in publication order, including concurrent save/delete calls.
+        async with self._console_lock:
+            channel = self.console_channel
+            if not channel:
+                channel = await self._resolve_console_channel()
+                self.console_channel = channel
+            if not channel:
+                return
+            data = {
+                "events": {
+                    eid: event.model_dump(mode="json", exclude_none=True)
+                    for eid, event in self.events.items()
+                },
+                "conversations": self.conversations,
+            }
+            data_str = json.dumps(data, indent=4, ensure_ascii=False).replace("`", "\\u0060")
+            content = f"{self.MARKER}\n```json\n{data_str}\n```"
+            if len(content.encode("utf-16-le")) // 2 <= 2000:
+                await channel.send(content)
+            else:
+                with BytesIO(data_str.encode("utf-8")) as buffer:
+                    attachment = discord.File(buffer, filename="event_store.json")
+                    try:
+                        await channel.send(f"{self.MARKER} (fichier)", file=attachment)
+                    finally:
+                        attachment.close()

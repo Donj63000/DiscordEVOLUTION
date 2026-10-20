@@ -1056,7 +1056,7 @@ class ExoCog(commands.Cog):
             raise ValueError("Une ouverture est en cours ou le module se recharge.")
         if key not in self.views and len(self.views) + len(self.open_locks) >= MAX_SESSIONS:
             raise ValueError("Tous les ateliers sont occupés.")
-        declared_sink = decimal_value(str(sink), "1000000")
+        declared_sink = decimal_value(str(sink))
         self.open_locks[key] = asyncio.Lock()
         new_view = None
         committed = False

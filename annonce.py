@@ -113,9 +113,11 @@ QUESTIONS: list[str] = [
 
 def split_message_for_discord(text: str, limit: int = 2000) -> list[str]:
     """Split intelligent sans depasser 2000 chars."""
+    if type(limit) is not int or limit <= 0:
+        raise ValueError("La limite doit être un entier positif.")
     if not text:
         return []
-    if len(text) <= limit:
+    if len(text.encode("utf-16-le")) // 2 <= limit:
         return [text]
 
     parts: list[str] = []
@@ -124,13 +126,15 @@ def split_message_for_discord(text: str, limit: int = 2000) -> list[str]:
     preferred_breaks = ["\n\n", "\n", " "]
 
     while remaining:
-        if len(remaining) <= limit:
+        if len(remaining.encode("utf-16-le")) // 2 <= limit:
             parts.append(remaining)
             break
 
         cut = -1
         cut_len = 0
-        window = remaining[:limit]
+        window = remaining.encode("utf-16-le")[:limit * 2].decode("utf-16-le", errors="ignore")
+        if not window:
+            raise ValueError("Un caractère dépasse la limite du message.")
         for sep in preferred_breaks:
             idx = window.rfind(sep)
             if idx > cut:
@@ -138,7 +142,7 @@ def split_message_for_discord(text: str, limit: int = 2000) -> list[str]:
                 cut_len = len(sep)
 
         if cut <= 0:
-            cut = limit
+            cut = len(window)
         else:
             cut = cut + cut_len
 
@@ -254,7 +258,7 @@ def parse_mentions(raw: str, guild: discord.Guild) -> list[str]:
     """Accepte: @everyone, @here, <@&id>, @RoleName, RoleName, none/aucune."""
     cleaned = (raw or "").strip()
     if not cleaned:
-        cleaned = ANNOUNCE_DEFAULT_MENTIONS
+        cleaned = ANNONCE_DEFAULT_MENTIONS
 
     lowered = cleaned.strip().lower()
     if lowered in {"aucun", "aucune", "none", "no", "0"}:

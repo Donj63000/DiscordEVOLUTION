@@ -80,6 +80,20 @@ async def test_iastaff_forwards_regular_message(iastaff_cog):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("roles", [None, [], [SimpleNamespace(name="Membre")]])
+async def test_staff_handler_rejects_authors_without_staff_role(iastaff_cog, roles):
+    author = SimpleNamespace(id=42)
+    if roles is not None:
+        author.roles = roles
+    ctx = FakeContext()
+    iastaff_cog._ensure_client = lambda: pytest.fail("Un utilisateur non autorisé ne doit pas ouvrir le client IA")
+
+    await iastaff_cog.handle_staff_message(ctx.channel, author, "Lis le salon", ctx=ctx)
+
+    assert ctx.replies == ["Accès réservé au Staff."]
+
+
+@pytest.mark.asyncio
 async def test_send_long_reply_sanitizes_mentions(monkeypatch, iastaff_cog):
     allowed_mentions = object()
 

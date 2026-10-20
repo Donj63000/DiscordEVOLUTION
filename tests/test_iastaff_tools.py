@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from datetime import datetime, timezone
 
+from discord.ext import commands
 import pytest
 
 from iastaff import IAStaff
@@ -12,20 +14,34 @@ class FakeMember:
         self.display_name = display_name
         self.name = display_name
         self.roles = []
+        self.top_role = FakeRole(1000 + member_id, "Membre", position=1)
         self.add_roles = AsyncMock()
         self.remove_roles = AsyncMock()
 
 
 class FakeRole:
-    def __init__(self, role_id, name):
+    def __init__(self, role_id, name, position=10, managed=False):
         self.id = role_id
         self.name = name
+        self.position = position
+        self.managed = managed
+
+    def is_default(self):
+        return False
+
+    def __ge__(self, other):
+        return self.position >= other.position
 
 
 class FakeGuild:
     def __init__(self, members=None, roles=None):
         self._members = members or []
         self._roles = roles or []
+        self.owner_id = 99999
+        self.me = SimpleNamespace(
+            guild_permissions=SimpleNamespace(manage_roles=True),
+            top_role=FakeRole(99998, "Bot", position=100),
+        )
 
     def get_member(self, member_id):
         for member in self._members:
@@ -51,9 +67,22 @@ class FakeGuild:
 class FakeContext:
     def __init__(self, members=None, roles=None):
         self.channel = SimpleNamespace(id=777)
-        self.author = SimpleNamespace(id=111)
+        self.author = SimpleNamespace(
+            id=111,
+            guild_permissions=SimpleNamespace(manage_roles=True),
+            top_role=FakeRole(99997, "Modération", position=50),
+        )
         self.guild = FakeGuild(members or [], roles or [])
         self.invoke = AsyncMock()
+
+
+def fake_command(name="job", *, parents=(), allowed=True):
+    return SimpleNamespace(
+        qualified_name=name,
+        parents=parents,
+        can_run=AsyncMock(return_value=allowed),
+        _prepare_cooldowns=lambda ctx: None,
+    )
 
 
 class StubJobCog:
@@ -141,6 +170,7 @@ def iastaff_tools_cog(monkeypatch):
     bot.wait_until_ready = AsyncMock(return_value=None)
     bot.is_ready = lambda: True
     bot.get_command = lambda name: None
+    bot.can_run = AsyncMock(return_value=True)
     cog = IAStaff(bot)
     cog.backend = "openai"
     cog.enable_tools = True
@@ -161,7 +191,7 @@ def iastaff_tools_cog(monkeypatch):
 @pytest.mark.asyncio
 async def test_dispatch_command_tool_create_activity_invokes_command(iastaff_tools_cog):
     ctx = FakeContext()
-    dummy_command = object()
+    dummy_command = fake_command("activite")
     iastaff_tools_cog.bot.get_command = lambda name: dummy_command if name == "activite" else None
 
     ack = await iastaff_tools_cog._dispatch_command_tool(
@@ -209,7 +239,7 @@ async def test_try_chat_with_tools_runs_dispatch_when_tool_call_present(iastaff_
 async def test_dispatch_command_tool_show_warnings_resolves_member(iastaff_tools_cog):
     member = FakeMember(222, "ModZero")
     ctx = FakeContext(members=[member])
-    warnings_cmd = object()
+    warnings_cmd = fake_command("warnings")
     iastaff_tools_cog.bot.get_command = lambda name: warnings_cmd if name == "warnings" else None
 
     ack = await iastaff_tools_cog._dispatch_command_tool(
@@ -225,7 +255,7 @@ async def test_dispatch_command_tool_show_warnings_resolves_member(iastaff_tools
 @pytest.mark.asyncio
 async def test_dispatch_command_tool_stats_enable_handles_group_command(iastaff_tools_cog):
     ctx = FakeContext()
-    stats_on_cmd = object()
+    stats_on_cmd = fake_command("stats on")
     iastaff_tools_cog.bot.get_command = lambda name: stats_on_cmd if name == "stats on" else None
 
     ack = await iastaff_tools_cog._dispatch_command_tool(ctx, "stats_enable", {})
@@ -237,7 +267,7 @@ async def test_dispatch_command_tool_stats_enable_handles_group_command(iastaff_
 @pytest.mark.asyncio
 async def test_dispatch_command_tool_job_lookup_profession_passes_positionals(iastaff_tools_cog):
     ctx = FakeContext()
-    job_cmd = object()
+    job_cmd = fake_command("job")
     iastaff_tools_cog.bot.get_command = lambda name: job_cmd if name == "job" else None
     iastaff_tools_cog._summarize_job_profession = AsyncMock(return_value="Il y a 2 bijoutiers.")
 
@@ -255,7 +285,7 @@ async def test_dispatch_command_tool_job_lookup_profession_passes_positionals(ia
 @pytest.mark.asyncio
 async def test_dispatch_command_tool_start_event_requires_details(iastaff_tools_cog):
     ctx = FakeContext()
-    event_cmd = object()
+    event_cmd = fake_command("event")
     iastaff_tools_cog.bot.get_command = lambda name: event_cmd if name == "event" else None
 
     with pytest.raises(RuntimeError):
@@ -265,7 +295,7 @@ async def test_dispatch_command_tool_start_event_requires_details(iastaff_tools_
 @pytest.mark.asyncio
 async def test_dispatch_command_tool_start_event_formats_summary(iastaff_tools_cog):
     ctx = FakeContext()
-    event_cmd = object()
+    event_cmd = fake_command("event")
     iastaff_tools_cog.bot.get_command = lambda name: event_cmd if name == "event" else None
 
     ack = await iastaff_tools_cog._dispatch_command_tool(
@@ -399,7 +429,7 @@ async def test_remove_member_mule_updates_data(iastaff_tools_cog):
 @pytest.mark.asyncio
 async def test_run_bot_command_invokes_generic_command(iastaff_tools_cog):
     ctx = FakeContext()
-    dummy_command = object()
+    dummy_command = fake_command("job")
     iastaff_tools_cog.bot.get_command = lambda name: dummy_command if name == "job" else None
 
     ack = await iastaff_tools_cog._dispatch_command_tool(
@@ -416,7 +446,7 @@ async def test_run_bot_command_invokes_generic_command(iastaff_tools_cog):
 @pytest.mark.asyncio
 async def test_run_bot_command_requires_confirmation_by_default(iastaff_tools_cog):
     ctx = FakeContext()
-    dummy_command = object()
+    dummy_command = fake_command("job")
     iastaff_tools_cog.bot.get_command = lambda name: dummy_command if name == "job" else None
 
     ack = await iastaff_tools_cog._dispatch_command_tool(
@@ -476,3 +506,81 @@ async def test_revoke_role_handles_missing_role(iastaff_tools_cog):
 
     member.remove_roles.assert_awaited_once()
     assert "retiré" in ack
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denied_by", ["global", "parent", "command"])
+async def test_dispatch_preserves_command_checks(iastaff_tools_cog, denied_by):
+    ctx = FakeContext()
+    original_command = object()
+    ctx.command = original_command
+    parent = fake_command("restricted", allowed=denied_by != "parent")
+    command = fake_command("restricted child", parents=[parent], allowed=denied_by != "command")
+    iastaff_tools_cog.bot.get_command = lambda name: command
+    iastaff_tools_cog.bot.can_run.return_value = denied_by != "global"
+
+    with pytest.raises(commands.CheckFailure):
+        await iastaff_tools_cog._dispatch_command_tool(ctx, "list_activities", {})
+
+    ctx.invoke.assert_not_awaited()
+    assert ctx.command is original_command
+
+
+@pytest.mark.asyncio
+async def test_run_bot_command_cannot_bypass_blocklist_with_alias(iastaff_tools_cog):
+    ctx = FakeContext()
+    iastaff_tools_cog.bot.get_command = lambda name: fake_command("stats reset")
+
+    with pytest.raises(RuntimeError, match="Commande interdite"):
+        await iastaff_tools_cog._dispatch_command_tool(
+            ctx, "run_bot_command", {"command": "statistiques reset"}, skip_confirmation=True
+        )
+
+    ctx.invoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_preserves_discord_command_cooldown(iastaff_tools_cog):
+    async def callback(ctx):
+        pass
+
+    command = commands.Command(callback, name="activite")
+    command._buckets = commands.CooldownMapping.from_cooldown(1, 5, commands.BucketType.user)
+    command.can_run = AsyncMock(return_value=True)
+    ctx = FakeContext()
+    ctx.message = SimpleNamespace(edited_at=None, created_at=datetime.now(timezone.utc))
+    iastaff_tools_cog.bot.get_command = lambda name: command
+
+    await iastaff_tools_cog._dispatch_command_tool(ctx, "list_activities", {})
+    with pytest.raises(commands.CommandOnCooldown):
+        await iastaff_tools_cog._dispatch_command_tool(ctx, "list_activities", {})
+
+    ctx.invoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["grant_role", "revoke_role"])
+@pytest.mark.parametrize("restriction", ["permission", "role_hierarchy", "member_hierarchy", "bot_hierarchy", "managed"])
+async def test_role_tools_enforce_permissions_and_hierarchy(iastaff_tools_cog, operation, restriction):
+    member = FakeMember(888, "Clody")
+    role = FakeRole(999, "Validé")
+    member.roles.append(role)
+    ctx = FakeContext(members=[member], roles=[role])
+    if restriction == "permission":
+        ctx.author.guild_permissions.manage_roles = False
+    elif restriction == "role_hierarchy":
+        role.position = ctx.author.top_role.position
+    elif restriction == "member_hierarchy":
+        member.top_role.position = ctx.author.top_role.position
+    elif restriction == "bot_hierarchy":
+        role.position = ctx.guild.me.top_role.position
+    else:
+        role.managed = True
+
+    with pytest.raises(commands.CheckFailure):
+        await iastaff_tools_cog._dispatch_command_tool(
+            ctx, operation, {"member": "<@888>", "role": "<@&999>"}, skip_confirmation=True
+        )
+
+    member.add_roles.assert_not_awaited()
+    member.remove_roles.assert_not_awaited()

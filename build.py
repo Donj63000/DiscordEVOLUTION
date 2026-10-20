@@ -623,10 +623,12 @@ class BuildCog(commands.Cog):
         if self.closed or not build_available():
             log.debug("build access denied: maintenance or disabled")
             raise BuildError(BUILD_MAINTENANCE_REASON)
-        if (time.monotonic() - self.last_refresh_request < 60 or self.catalogs.lock.locked()
+        requested_at = time.monotonic()
+        if ((self.last_refresh_request != 0 and requested_at - self.last_refresh_request < 60)
+                or self.catalogs.lock.locked()
                 or self.spells.lock.locked() or self.init_lock.locked()):
             raise BuildError("Actualisation déjà en cours ou trop récente.")
-        self.last_refresh_request = time.monotonic()
+        self.last_refresh_request = requested_at
         if catalogue in {"equipements", "tous"}:
             await self.initialize()
         elif not self.ready:

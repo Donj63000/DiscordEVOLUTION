@@ -450,7 +450,7 @@ class ExoSinkModal(GuardedModal):
         from utils.exo_engine import decimal_value
         await interaction.response.defer(ephemeral=True)
         await self.guard(interaction)
-        sink = decimal_value(str(self.sink), "1000000")
+        sink = decimal_value(str(self.sink))
         async def open_session(i, operation):
             cog = self.cog.bot.get_cog("ExoCog")
             if cog is None:

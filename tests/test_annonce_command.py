@@ -123,6 +123,21 @@ def test_split_message_for_discord_prefers_newlines():
     assert parts[0].endswith("\n")
 
 
+def test_split_message_for_discord_counts_emojis_in_utf16_units():
+    text = "🎉" * 1500
+    parts = annonce.split_message_for_discord(text)
+
+    assert "".join(parts) == text
+    assert all(len(part.encode("utf-16-le")) // 2 <= 2000 for part in parts)
+
+
+@pytest.mark.parametrize("raw", ["", " ", None])
+def test_parse_mentions_uses_configured_default(monkeypatch, raw):
+    monkeypatch.setattr(annonce, "ANNONCE_DEFAULT_MENTIONS", "@here")
+
+    assert annonce.parse_mentions(raw, DummyGuild([])) == ["@here"]
+
+
 @pytest.mark.asyncio
 async def test_annonce_model_requires_identifier(monkeypatch):
     cog = make_cog(monkeypatch)

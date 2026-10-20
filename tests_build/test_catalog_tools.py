@@ -123,6 +123,15 @@ def test_damage_unknown_stats_refused(build,catalog,rules):
         simulate(report,(DamageLine(element="te",minimum=1,maximum=2),),Scenario())
 
 
+def test_damage_negative_power_does_not_reverse_bounds(build, catalog, rules):
+    stats = {row.stat: row.value for row in build.profile.naked_stats}
+    stats.update(pui=-150, do=20)
+    profile = revised(build.profile, naked_stats=values(stats))
+    report = calculate(revised(build, profile=profile), catalog, rules)
+    result = simulate(report, (DamageLine(element="te", minimum=10, maximum=20),), Scenario())
+    assert result["minimum"] == result["maximum"] == 20
+
+
 def test_config_uses_console_without_external_database(monkeypatch):
     monkeypatch.setenv("DATABASE_URL","secret-of-other-module")
     monkeypatch.delenv("BUILD_DATABASE_URL",raising=False)

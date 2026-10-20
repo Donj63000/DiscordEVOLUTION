@@ -45,7 +45,7 @@ class ActivitySnapshotStore(ConsoleJSONSnapshotStore):
 
     async def load(self, channel) -> dict | None:
         """Never interpret a refused history request or a damaged snapshot as an empty database."""
-        pins = await channel.pins()
+        pins = await self._pinned_messages(channel)
         recent = await fetch_channel_history(
             channel, limit=max(self._history_limit(), 200),
             reason="activities.restore", raise_errors=True,

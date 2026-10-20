@@ -1604,6 +1604,24 @@ class IAStaff(commands.Cog):
             f"Mule **{removed}** retirée pour **{display_name}**.",
         )
 
+    def _check_role_permissions(self, ctx: commands.Context, member, role) -> None:
+        guild = ctx.guild
+        actor = ctx.author
+        bot_member = getattr(guild, "me", None)
+        if not getattr(getattr(actor, "guild_permissions", None), "manage_roles", False):
+            raise commands.MissingPermissions(["manage_roles"])
+        if not getattr(getattr(bot_member, "guild_permissions", None), "manage_roles", False):
+            raise commands.BotMissingPermissions(["manage_roles"])
+        if role.is_default() or role.managed:
+            raise commands.CheckFailure("Ce rôle ne peut pas être modifié.")
+        if role >= bot_member.top_role:
+            raise commands.CheckFailure("Ce rôle est au-dessus de la hiérarchie du bot.")
+        if actor.id != guild.owner_id and (
+            role >= actor.top_role
+            or (member.id != actor.id and member.top_role >= actor.top_role)
+        ):
+            raise commands.CheckFailure("Ce rôle ou ce membre est au-dessus de ta hiérarchie.")
+
     async def _grant_role(self, ctx: commands.Context, member_raw: str, role_raw: str) -> str:
         member = self._resolve_member_argument(ctx, member_raw)
         if member is None:
@@ -1611,6 +1629,7 @@ class IAStaff(commands.Cog):
         role = self._resolve_role(ctx, role_raw)
         if role is None:
             raise RuntimeError("Rôle introuvable.")
+        self._check_role_permissions(ctx, member, role)
         if role in getattr(member, "roles", []):
             return self._format_command_summary(
                 ["[IA] roles.add"],
@@ -1632,6 +1651,7 @@ class IAStaff(commands.Cog):
         role = self._resolve_role(ctx, role_raw)
         if role is None:
             raise RuntimeError("Rôle introuvable.")
+        self._check_role_permissions(ctx, member, role)
         if role not in getattr(member, "roles", []):
             return self._format_command_summary(
                 ["[IA] roles.remove"],
@@ -1728,6 +1748,16 @@ class IAStaff(commands.Cog):
             if not command:
                 log.warning("IAStaff: commande %s introuvable pour tool %s", cmd_name, normalized)
                 raise RuntimeError(f"Commande inconnue: {cmd_name}")
+            if normalized == "run_bot_command":
+                canonical = command.qualified_name.lower()
+                root = canonical.split(" ", 1)[0]
+                if canonical in IASTAFF_RUN_COMMAND_BLOCKLIST or root in IASTAFF_RUN_COMMAND_BLOCKLIST:
+                    raise RuntimeError(f"Commande interdite via IA Staff: {cmd_name}")
+                if IASTAFF_RUN_COMMAND_WHITELIST and (
+                    canonical not in IASTAFF_RUN_COMMAND_WHITELIST
+                    and root not in IASTAFF_RUN_COMMAND_WHITELIST
+                ):
+                    raise RuntimeError(f"Commande non autorisée via IA Staff: {cmd_name}")
             log.debug(
                 "IAStaff tool dispatch command=%s tool=%s user=%s channel=%s payload=%s",
                 cmd_name,
@@ -1736,7 +1766,20 @@ class IAStaff(commands.Cog):
                 channel_id,
                 {"args": pos_args, "kwargs": kwargs},
             )
-            return await ctx.invoke(command, *pos_args, **kwargs)
+            original_command = getattr(ctx, "command", None)
+            ctx.command = command
+            try:
+                # Context.invoke appelle directement le callback et ignore les
+                # checks Discord, y compris is_owner et ceux des groupes.
+                if not await self.bot.can_run(ctx, call_once=True):
+                    raise commands.CheckFailure("Le contrôle global a refusé cette commande.")
+                for checked in [*reversed(command.parents), command]:
+                    if not await checked.can_run(ctx):
+                        raise commands.CheckFailure("Tu n'as pas accès à cette commande.")
+                command._prepare_cooldowns(ctx)
+                return await ctx.invoke(command, *pos_args, **kwargs)
+            finally:
+                ctx.command = original_command
 
         if normalized == "create_activity":
             title = (payload.get("title") or "").strip()
@@ -2145,6 +2188,18 @@ class IAStaff(commands.Cog):
         ctx: commands.Context | None = None,
         origin_message: discord.Message | None = None,
     ):
+        has_role = any(
+            (role.name or "").lower() == (STAFF_ROLE_NAME or "").lower()
+            for role in getattr(author, "roles", [])
+        )
+        if not has_role:
+            if ctx is not None:
+                await ctx.reply("Accès réservé au Staff.", mention_author=False)
+            elif origin_message is not None:
+                await origin_message.reply("Accès réservé au Staff.", mention_author=False)
+            else:
+                await channel.send("Accès réservé au Staff.")
+            return
         if not self._ensure_client():
             reason = self._load_error or "Client IA indisponible."
             if ctx is not None:
@@ -2163,19 +2218,6 @@ class IAStaff(commands.Cog):
             else:
                 await channel.send("Message vide ignoré.")
             return
-        if isinstance(author, discord.Member):
-            has_role = any(
-                (role.name or "").lower() == (STAFF_ROLE_NAME or "").lower()
-                for role in author.roles
-            )
-            if not has_role:
-                if ctx is not None:
-                    await ctx.reply("Accès réservé au Staff.", mention_author=False)
-                elif origin_message is not None:
-                    await origin_message.reply("Accès réservé au Staff.", mention_author=False)
-                else:
-                    await channel.send("Accès réservé au Staff.")
-                return
         channel_id = getattr(channel, "id", None)
         if channel_id is None:
             if ctx is not None:
