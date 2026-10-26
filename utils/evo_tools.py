@@ -5,6 +5,7 @@ aux avertissements, aux MP ou aux messages supprimés. Pas de client web arbitra
 """
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -800,7 +801,7 @@ class EvoTools:
 
     def legacy_available(self, ctx):
         # Jobs/Players historiques ne sont pas cloisonnés par guild_id.
-        return len(ctx.bot.guilds) == 1 and ctx.bot.guilds[0].id == ctx.guild.id
+        return len(allowed_guilds(ctx.bot)) == 1 and allowed_guilds(ctx.bot)[0].id == ctx.guild.id
 
     def members_matching(self, ctx, query):
         key = search_key(query)
@@ -811,7 +812,8 @@ class EvoTools:
             member = ctx.guild.get_member(int(mention.group(1) or mention.group(2)))
             return [member] if member else []
         players = ctx.bot.get_cog("PlayersCog") if self.legacy_available(ctx) else None
-        characters = getattr(players, "persos_data", {}) if getattr(players, "initialized", False) else {}
+        reader = getattr(players, "list_member_records", None)
+        characters = reader(ctx.guild.id) if getattr(players, "initialized", False) and callable(reader) else {}
         exact, approximate = [], []
         for member in list(getattr(ctx.guild, "members", ()))[:5000]:
             if member.bot:
@@ -839,7 +841,8 @@ class EvoTools:
         if self.legacy_available(ctx):
             players = ctx.bot.get_cog("PlayersCog")
             if getattr(players, "initialized", False):
-                data = players.persos_data.get(str(member.id), {})
+                reader = getattr(players, "get_member_record", None)
+                data = (reader(ctx.guild.id, member.id) or {}) if callable(reader) else {}
                 result["personnage"] = data.get("main")
                 result["mules_declarees"] = data.get("mules", [])[:8]
             jobs = ctx.bot.get_cog("JobCog")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 import logging
 import os
 
@@ -16,13 +17,12 @@ def sync_enabled() -> bool:
     return enabled_flag("SYNC_SLASH_COMMANDS", True)
 
 
-def configured_guild() -> discord.Object | None:
+def configured_guild() -> discord.Object:
+    guild_id = configured_guild_id()
     raw = os.getenv("SYNC_SLASH_GUILD_ID", "").strip()
-    if not raw:
-        return None
-    if not raw.isascii() or not raw.isdecimal() or not 0 < int(raw) < 2**64:
-        raise ValueError("SYNC_SLASH_GUILD_ID doit contenir un identifiant Discord positif.")
-    return discord.Object(id=int(raw))
+    if raw and (not raw.isascii() or not raw.isdecimal() or int(raw) != guild_id):
+        raise ValueError("SYNC_SLASH_GUILD_ID doit correspondre à BOT_GUILD_ID.")
+    return discord.Object(id=guild_id)
 
 
 async def remove_retired_remote_commands(tree, *, guild=None) -> bool:
@@ -113,7 +113,7 @@ async def cleanup_retired_guild_commands(bot) -> None:
     done = getattr(bot, "_slash_cleanup_done", None)
     if done is None:
         done = bot._slash_cleanup_done = set()
-    for guild in bot.guilds:
+    for guild in allowed_guilds(bot):
         if guild.id not in done:
             if await remove_retired_remote_commands(bot.tree, guild=guild):
                 done.add(guild.id)

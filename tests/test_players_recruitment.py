@@ -73,7 +73,7 @@ async def test_on_member_remove_persists_and_notifies(monkeypatch):
     cog.dump_data_to_console = AsyncMock()
 
     channel = DummyChannel("📌 Recrutement 📌")
-    guild = SimpleNamespace(text_channels=[channel])
+    guild = SimpleNamespace(id=1, text_channels=[channel])
     member = SimpleNamespace(id=123, guild=guild, display_name="TestRecruit")
 
     await cog.on_member_remove(member)
@@ -87,6 +87,7 @@ async def test_on_member_remove_persists_and_notifies(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_member_remove_persists_to_member_guild_console(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "2")
     monkeypatch.setattr(players, "sauvegarder_donnees", lambda _data: None)
 
     console_a = DummyConsoleChannel(channel_id=101)
@@ -122,7 +123,7 @@ async def test_on_member_remove_persists_to_member_guild_console(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_auto_register_member_merges_placeholder(monkeypatch):
+async def test_auto_register_member_preserves_placeholder_and_creates_own_record(monkeypatch):
     bot = MagicMock()
     cog = players.PlayersCog(bot)
     cog.initialized = True
@@ -137,17 +138,18 @@ async def test_auto_register_member_merges_placeholder(monkeypatch):
     cog.dump_data_to_console = AsyncMock()
 
     await cog.auto_register_member(
+        guild_id=1,
         discord_id=42,
         discord_display_name="Newbie-Alpha",
         dofus_pseudo="Newbie-Alpha",
     )
 
-    assert placeholder_id not in cog.persos_data
+    assert cog.persos_data[placeholder_id]["mules"] == ["CraMule"]
     assert "42" in cog.persos_data
     record = cog.persos_data["42"]
     assert record["discord_name"] == "Newbie-Alpha"
     assert record["main"] == "Newbie-Alpha"
-    assert record["mules"] == ["CraMule"]
+    assert record["mules"] == []
     cog.dump_data_to_console.assert_awaited_once()
 
 

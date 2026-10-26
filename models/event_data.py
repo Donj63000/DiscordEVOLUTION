@@ -33,6 +33,10 @@ if _HAS_PYDANTIC:
         announce_message_id: Optional[int] = None
         scheduled_event_id: Optional[int] = None
         going: Optional[list[int]] = None
+        event_uuid: Optional[str] = None
+        event_category_id: Optional[int] = None
+        provenance: Optional[dict] = None
+        cleanup_enabled: bool = False
 
         def model_dump_json(self, **kwargs) -> str:  # type: ignore[override]
             data = self.model_dump(mode="json", exclude_none=True)
@@ -40,6 +44,7 @@ if _HAS_PYDANTIC:
 
         @classmethod
         def from_dict(cls, data: dict) -> "EventData":
+            data = dict(data)
             if (mp := data.get("max_participants")) is not None:
                 try:
                     data["max_participants"] = min(int(mp), 8)
@@ -75,8 +80,16 @@ else:
         announce_message_id: Optional[int] = None
         scheduled_event_id: Optional[int] = None
         going: Optional[list[int]] = None
+        event_uuid: Optional[str] = None
+        event_category_id: Optional[int] = None
+        provenance: Optional[dict] = None
+        cleanup_enabled: bool = False
 
         def __post_init__(self) -> None:  # pragma: no cover - simple coercion
+            for field in ("starts_at", "ends_at"):
+                value = getattr(self, field)
+                if isinstance(value, str):
+                    setattr(self, field, datetime.fromisoformat(value))
             if self.max_participants is not None:
                 try:
                     self.max_participants = min(int(self.max_participants), 8)
@@ -90,12 +103,16 @@ else:
 
         def model_dump(self, mode: str = "python", *, exclude_none: bool = False):
             data = asdict(self)
+            if mode == "json":
+                for field in ("starts_at", "ends_at"):
+                    if isinstance(data.get(field), datetime):
+                        data[field] = data[field].isoformat()
             if exclude_none:
                 data = {k: v for k, v in data.items() if v is not None}
             return data
 
         def model_dump_json(self, **kwargs) -> str:  # type: ignore[override]
-            return json.dumps(self.model_dump(exclude_none=True), **kwargs)
+            return json.dumps(self.model_dump(mode="json", exclude_none=True), **kwargs)
 
         @classmethod
         def from_dict(cls, data: dict) -> "EventData":

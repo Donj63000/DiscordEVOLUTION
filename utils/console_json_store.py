@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 import hashlib
 import json
 import logging
@@ -70,8 +71,9 @@ class ConsoleJSONSnapshotStore:
     async def resolve_channel(self, guild: Optional[discord.Guild] = None) -> Optional[discord.TextChannel]:
         target_guilds: list[discord.Guild] = []
         if guild is not None:
+            require_guild(guild, self.bot)
             target_guilds.append(guild)
-        for existing in list(getattr(self.bot, "guilds", []) or []):
+        for existing in list(allowed_guilds(self.bot) or []):
             if existing not in target_guilds:
                 target_guilds.append(existing)
         for candidate_guild in target_guilds:
@@ -96,7 +98,7 @@ class ConsoleJSONSnapshotStore:
     def _is_snapshot_message(self, message: discord.Message) -> bool:
         author = getattr(message, "author", None)
         bot_user = getattr(self.bot, "user", None)
-        if bot_user is not None and author is not None and author != bot_user:
+        if bot_user is None or author != bot_user or getattr(message, "webhook_id", None):
             return False
         content = getattr(message, "content", "") or ""
         if self.marker in content:

@@ -24,6 +24,16 @@ secret.key
 
 __pycache__/
 tests/__pycache__/
+.venv/
+.venv-*/
+.pytest_cache/
+.coverage
+coverage.xml
+/artifacts/
+
+# Archives et exports privés ne doivent pas être republiés.
+/CODEX.ZIP
+/temp_players_data.json
 
 /AGENTS.md
 /PLAN.md

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, check_interaction_guild, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 import json
 import logging
@@ -250,6 +251,7 @@ class AnnounceAICog(commands.Cog):
         return False
 
     def _find_channel(self, guild: discord.Guild, name: str) -> Optional[discord.TextChannel]:
+        require_guild(guild, getattr(self, "bot", None))
         return resolve_text_channel(
             guild,
             id_env="ANNONCE_CHANNEL_ID",
@@ -258,6 +260,7 @@ class AnnounceAICog(commands.Cog):
         )
 
     async def _console_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
+        require_guild(guild, getattr(self, "bot", None))
         return resolve_text_channel(
             guild,
             id_env="CHANNEL_CONSOLE_ID",
@@ -566,6 +569,7 @@ class AnnounceAICog(commands.Cog):
         return embed
 
     def _parse_mentions(self, raw: str, guild: discord.Guild) -> List[str]:
+        require_guild(guild, getattr(self, "bot", None))
         tokens: List[str] = []
         seen = set()
         for part in re.split(r"[\s,]+", raw or ""):
@@ -601,6 +605,7 @@ class AnnounceAICog(commands.Cog):
     def _build_mentions_payload(
         self, guild: discord.Guild, tokens: List[str]
     ) -> Tuple[Optional[str], discord.AllowedMentions]:
+        require_guild(guild, getattr(self, "bot", None))
         content = " ".join(tokens) if tokens else None
         allow_everyone = any(token in ("@everyone", "@here") for token in tokens)
         role_ids = []
@@ -634,6 +639,7 @@ class AnnounceAICog(commands.Cog):
         return None
 
     async def _save_to_console(self, guild: discord.Guild, sched: ScheduledAnnounce) -> bool:
+        require_guild(guild, getattr(self, "bot", None))
         chan = await self._console_channel(guild)
         if not chan:
             return False
@@ -656,6 +662,7 @@ class AnnounceAICog(commands.Cog):
         )
 
     async def _load_all_from_console(self, guild: discord.Guild) -> None:
+        require_guild(guild, getattr(self, "bot", None))
         chan = await self._console_channel(guild)
         if not chan:
             return
@@ -673,12 +680,16 @@ class AnnounceAICog(commands.Cog):
         limit = self._console_history_limit or 200
         messages = await self._fetch_console_history(chan, limit=limit)
         for message in messages:
+            if message.author != self.bot.user or getattr(message, "webhook_id", None):
+                continue
             match = pattern.match(message.content or "")
             if not match:
                 continue
             try:
                 data = json.loads(match.group("body"))
             except Exception:
+                continue
+            if not is_allowed_guild(data.get("guild_id"), self.bot):
                 continue
             sid = data.get("id")
             if not sid:
@@ -709,6 +720,7 @@ class AnnounceAICog(commands.Cog):
             self._scheduled[scheduled.id] = scheduled
 
     async def _update_console_entry(self, guild: discord.Guild, sched: ScheduledAnnounce) -> None:
+        require_guild(guild, getattr(self, "bot", None))
         console = await self._console_channel(guild)
         if not console or not sched.console_message_id:
             return
@@ -722,6 +734,7 @@ class AnnounceAICog(commands.Cog):
         await msg.edit(content=f"```{ANNOUNCE_DB_BLOCK}\n{raw}\n```")
 
     async def _publish(self, sched: ScheduledAnnounce) -> bool:
+        require_guild(sched.guild_id, self.bot)
         guild = self.bot.get_guild(sched.guild_id)
         if not guild:
             return False
@@ -750,6 +763,8 @@ class AnnounceAICog(commands.Cog):
         return True
 
     async def _send_preview(self, interaction: discord.Interaction, draft: AnnounceDraft) -> None:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         variant = draft.variants[draft.chosen]
         embed = self._variant_to_embed(variant)
         content, _ = self._build_mentions_payload(interaction.guild, draft.mentions)
@@ -782,6 +797,8 @@ class AnnounceAICog(commands.Cog):
 
         @discord.ui.button(label="Ouvrir le formulaire", style=discord.ButtonStyle.primary)
         async def open_form(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             if interaction.user.id != self.author_id:
                 await interaction.response.send_message("❌ Réservé à l'auteur de la commande.", ephemeral=True)
                 return
@@ -865,6 +882,8 @@ class AnnounceAICog(commands.Cog):
                 self.add_item(comp)
 
         async def on_submit(self, interaction: discord.Interaction) -> None:
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             if not isinstance(interaction.user, discord.Member) or not self.parent._is_staff(interaction.user):
                 await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
                 return
@@ -903,9 +922,13 @@ class AnnounceAICog(commands.Cog):
             self.user_id = user_id
 
         async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             return interaction.user.id == self.user_id
 
         async def _edit_preview(self, interaction: discord.Interaction, draft: AnnounceDraft) -> None:
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             variant = draft.variants[draft.chosen]
             embed = self.parent._variant_to_embed(variant)
             content, _ = self.parent._build_mentions_payload(interaction.guild, draft.mentions)
@@ -919,6 +942,8 @@ class AnnounceAICog(commands.Cog):
 
         @discord.ui.button(label="◀️ Variante", style=discord.ButtonStyle.secondary)
         async def prev_var(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             draft = self.parent._drafts.get(self.user_id)
             if not draft:
                 await interaction.response.send_message("Brouillon introuvable.", ephemeral=True)
@@ -928,6 +953,8 @@ class AnnounceAICog(commands.Cog):
 
         @discord.ui.button(label="Variante ▶️", style=discord.ButtonStyle.secondary)
         async def next_var(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             draft = self.parent._drafts.get(self.user_id)
             if not draft:
                 await interaction.response.send_message("Brouillon introuvable.", ephemeral=True)
@@ -937,6 +964,8 @@ class AnnounceAICog(commands.Cog):
 
         @discord.ui.button(label="🔁 Régénérer", style=discord.ButtonStyle.secondary)
         async def regenerate(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             draft = self.parent._drafts.get(self.user_id)
             if not draft:
                 await interaction.response.send_message("Brouillon introuvable.", ephemeral=True)
@@ -953,6 +982,8 @@ class AnnounceAICog(commands.Cog):
 
         @discord.ui.button(label="✏️ Ajuster", style=discord.ButtonStyle.secondary)
         async def adjust(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             draft = self.parent._drafts.get(self.user_id)
             if not draft:
                 await interaction.response.send_message("Brouillon introuvable.", ephemeral=True)
@@ -965,6 +996,8 @@ class AnnounceAICog(commands.Cog):
 
         @discord.ui.button(label="📣 Publier", style=discord.ButtonStyle.success)
         async def publish(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             draft = self.parent._drafts.get(self.user_id)
             if not draft:
                 await interaction.response.send_message("Brouillon introuvable.", ephemeral=True)
@@ -994,6 +1027,8 @@ class AnnounceAICog(commands.Cog):
 
         @discord.ui.button(label="⏱️ Programmer", style=discord.ButtonStyle.primary)
         async def schedule(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             draft = self.parent._drafts.get(self.user_id)
             if not draft:
                 await interaction.response.send_message("Brouillon introuvable.", ephemeral=True)
@@ -1021,6 +1056,8 @@ class AnnounceAICog(commands.Cog):
 
         @discord.ui.button(label="🗑️ Annuler", style=discord.ButtonStyle.danger)
         async def cancel(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             self.parent._drafts.pop(self.user_id, None)
             await interaction.response.edit_message(content="Brouillon annulé.", embed=None, view=None)
 
@@ -1047,6 +1084,8 @@ class AnnounceAICog(commands.Cog):
             self.add_item(self.channel)
 
         async def on_submit(self, interaction: discord.Interaction) -> None:
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             draft = self.parent._drafts.get(self.user_id)
             if not draft:
                 await interaction.response.send_message("Brouillon expiré.", ephemeral=True)
@@ -1103,6 +1142,7 @@ class AnnounceAICog(commands.Cog):
 
     @commands.command(name="annonce", help="Lance le formulaire d'annonce IA.")
     async def annonce_prefix(self, ctx: commands.Context) -> None:
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if not isinstance(ctx.author, discord.Member) or not self._is_staff(ctx.author):
             await ctx.reply("❌ Commande réservée au staff.", mention_author=False)
             return
@@ -1114,6 +1154,8 @@ class AnnounceAICog(commands.Cog):
     @app_commands.guild_only()
     @app_commands.allowed_installs(guilds=True, users=False)
     async def annonce_slash(self, interaction: discord.Interaction) -> None:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if not isinstance(interaction.user, discord.Member) or not self._is_staff(interaction.user):
             await interaction.response.send_message("❌ Commande réservée au staff.", ephemeral=True)
             return
@@ -1122,6 +1164,7 @@ class AnnounceAICog(commands.Cog):
 
     @commands.command(name="annonce-model", help="Change le modèle IA pour l'annonce.")
     async def annonce_model(self, ctx: commands.Context, *, model: Optional[str] = None) -> None:
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if not isinstance(ctx.author, discord.Member) or not self._is_staff(ctx.author):
             await ctx.reply("❌ Commande réservée au staff.", mention_author=False)
             return
@@ -1133,6 +1176,7 @@ class AnnounceAICog(commands.Cog):
 
     @commands.command(name="annonce-list", help="Liste les annonces programmées.")
     async def annonce_list(self, ctx: commands.Context) -> None:
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if not isinstance(ctx.author, discord.Member) or not self._is_staff(ctx.author):
             await ctx.reply("❌ Commande réservée au staff.", mention_author=False)
             return
@@ -1158,6 +1202,7 @@ class AnnounceAICog(commands.Cog):
 
     @commands.command(name="annonce-cancel", help="Annule une annonce programmée.")
     async def annonce_cancel(self, ctx: commands.Context, announce_id: str) -> None:
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if not isinstance(ctx.author, discord.Member) or not self._is_staff(ctx.author):
             await ctx.reply("❌ Commande réservée au staff.", mention_author=False)
             return
@@ -1171,12 +1216,14 @@ class AnnounceAICog(commands.Cog):
 
     @tasks.loop(seconds=SCHEDULER_INTERVAL)
     async def scheduler_loop(self) -> None:
-        for guild in self.bot.guilds:
+        for guild in allowed_guilds(self.bot):
             await self._load_all_from_console(guild)
 
         now = datetime.now(timezone.utc)
         to_publish: List[ScheduledAnnounce] = []
         for scheduled in list(self._scheduled.values()):
+            if not is_allowed_guild(scheduled.guild_id, self.bot):
+                continue
             if scheduled.status != "scheduled":
                 continue
             try:

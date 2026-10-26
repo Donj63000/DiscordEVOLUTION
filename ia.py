@@ -41,6 +41,8 @@ except Exception:
 import discord
 from discord.ext import commands, tasks
 from utils.slash_support import delete_invocation_message, notify_private_workflow
+from utils.dm_sessions import get_dm_coordinator, passive_accepts, source_guild_id, DMFlowBusy, cancel_dm_flows
+from utils.guild_scope import is_allowed_guild
 try:
     from google import genai
     from google.genai import types as genai_types
@@ -243,7 +245,15 @@ class IACog(commands.Cog):
             self.pending_requests = False
         self.purge_sessions()
 
+    async def cog_check(self, ctx):
+        source_guild_id(ctx)
+        lease = get_dm_coordinator(self.bot).current(ctx.author.id)
+        if lease and not lease.passive and ctx.command.name != "iaend":
+            raise commands.CheckFailure("Un formulaire privé est en cours. Termine-le avant de solliciter l'IA.")
+        return True
+
     def cog_unload(self):
+        cancel_dm_flows(self.bot, "ia")
         self.process_queue.cancel()
         self.purge_expired_sessions.cancel()
 
@@ -316,45 +326,38 @@ class IACog(commands.Cog):
     @commands.command(name="ia")
     @commands.cooldown(1, 5, commands.BucketType.user)
     async def ia_start_command(self, ctx: commands.Context):
-        async with self.session_lock:
-            now = discord.utils.utcnow()
-            key = ctx.author.id
-            sess = self.sessions.get(key)
-            if sess and not sess.expired:
-                sess.last_activity = now
-                try:
-                    dm = ctx.author.dm_channel or await ctx.author.create_dm()
-                    await dm.send("✅ Session IA déjà active. Tu peux continuer ici en MP.")
-                    await notify_private_workflow(ctx)
-                except Exception:
-                    await ctx.reply("✅ Session IA déjà active (MP).", mention_author=False)
-                return
-            model_name = "gemini-2.5-pro"
-            system_prompt = "Tu es l'assistant de la guilde Evolution sur Dofus Retro."
-            chat = self._new_chat(model_name, system_prompt)
-            self.sessions[key] = IASession(model_name=model_name, chat=chat, start_ts=now, last_activity=now)
-            try:
-                dm = ctx.author.dm_channel or await ctx.author.create_dm()
-                await dm.send("🆕 Session IA **privée** démarrée pour 60 min.\nTu peux maintenant m’écrire directement ici.\n_Commande pour terminer_: `!iaend`.")
-            except Exception:
-                await ctx.reply("❗ Impossible de t’écrire en MP (DM fermés ?). Ouvre tes messages privés et retape `!ia`, ou réponds ici avec `!bot <message>`.", mention_author=False)
-                return
+        coordinator = get_dm_coordinator(self.bot)
+        try:
+            gid = source_guild_id(ctx)
+            lease = coordinator.acquire(ctx.author.id, gid, "ia", timeout=3600, passive=True)
+        except DMFlowBusy as exc:
+            await ctx.reply(str(exc), mention_author=False)
+            return
+        try:
+            dm = ctx.author.dm_channel or await ctx.author.create_dm()
+            coordinator.bind(lease, dm)
+            async with self.session_lock:
+                now = discord.utils.utcnow()
+                session = self.sessions.get(ctx.author.id)
+                if not session or session.expired:
+                    chat = self._new_chat("gemini-2.5-pro", "Tu es l'assistant de la guilde Evolution sur Dofus Retro.")
+                    session = IASession(model_name="gemini-2.5-pro", chat=chat, start_ts=now, last_activity=now)
+                await dm.send("✅ Session IA privée active. Tu peux écrire ici ; `!iaend` la termine. Après un formulaire, relance `!ia` pour reprendre.")
+                self.sessions[ctx.author.id] = session
             if ctx.guild:
-                try:
-                    await delete_invocation_message(ctx)
-                except Exception:
-                    pass
-                try:
-                    if getattr(ctx, "interaction", None) is not None:
-                        await notify_private_workflow(ctx)
-                    else:
-                        await ctx.channel.send(f"📩 {ctx.author.mention} je t’ai ouvert une **conversation privée**. Regarde tes MP.", delete_after=8)
-                except Exception:
-                    pass
+                await notify_private_workflow(ctx)
+        except BaseException:
+            coordinator.release(lease)
+            self.sessions.pop(ctx.author.id, None)
+            raise
 
     @commands.command(name="iaend")
     async def ia_end_command(self, ctx: commands.Context):
         key = ctx.author.id
+        coordinator = get_dm_coordinator(self.bot)
+        lease = coordinator.current(key)
+        if lease and lease.kind == "ia":
+            coordinator.release(lease)
         ended = self.sessions.pop(key, None) is not None
         try:
             dm = ctx.author.dm_channel or await ctx.author.create_dm()
@@ -384,6 +387,7 @@ class IACog(commands.Cog):
         await self.handle_ai_request(ctx, user_message)
 
     async def handle_ai_request(self, ctx, user_message: str):
+        source_guild_id(ctx)
         now = time.time()
         uid = ctx.author.id
         if uid not in self.user_contexts:
@@ -594,6 +598,8 @@ class IACog(commands.Cog):
                 await ctx.send(str(e))
 
     async def handle_dm(self, message):
+        if not passive_accepts(self.bot, message, "ia"):
+            return
         uid = message.author.id
         sess = self.sessions.get(uid)
         if sess and not sess.expired:
@@ -632,6 +638,11 @@ class IACog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
+        if isinstance(message.channel, discord.DMChannel):
+            if not passive_accepts(self.bot, message, "ia"):
+                return
+        elif not is_allowed_guild(message.guild, self.bot):
+            return
         ctx = await self.bot.get_context(message)
         if ctx.valid and ctx.command is not None:
             return
@@ -653,6 +664,8 @@ class IACog(commands.Cog):
                     await self._handle_quota_and_retry(session, message)
                     return
                 await message.reply(f"Erreur IA: {e}", mention_author=False)
+                return
+            if isinstance(message.channel, discord.DMChannel) and not passive_accepts(self.bot, message, "ia"):
                 return
             await message.reply(response, mention_author=False)
             return

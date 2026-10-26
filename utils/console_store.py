@@ -6,6 +6,7 @@ import discord
 
 from utils.channel_resolver import resolve_text_channel
 from utils.discord_history import fetch_channel_history
+from utils.guild_scope import allowed_guilds, require_guild, is_allowed_guild
 
 log = logging.getLogger(__name__)
 CODEBLOCK = "```event"
@@ -35,7 +36,7 @@ class ConsoleStore:
     # Helpers                                                            #
     # ------------------------------------------------------------------ #
     async def _channel(self) -> discord.TextChannel | None:
-        for guild in getattr(self.bot, "guilds", []):
+        for guild in allowed_guilds(self.bot):
             chan = resolve_text_channel(
                 guild,
                 id_env="CHANNEL_CONSOLE_ID",
@@ -57,18 +58,32 @@ class ConsoleStore:
     # ------------------------------------------------------------------ #
     async def load_all(self) -> dict[int, dict]:
         if self._cache:
+            for record in self._cache.values():
+                require_guild(record.get("guild_id"), self.bot)
             return self._cache
         chan = await self._channel()
         if chan is None:
             return self._cache
+        require_guild(getattr(chan, "guild", None), self.bot)
 
         messages = await fetch_channel_history(chan, limit=200, reason="console_store.load")
         for msg in messages:
-            if msg.content.startswith(CODEBLOCK):
+            if (getattr(msg.author, "id", None) == getattr(self.bot.user, "id", None)
+                    and getattr(self.bot.user, "id", None) is not None
+                    and getattr(msg, "webhook_id", None) is None
+                    and msg.content.startswith(CODEBLOCK)):
                 try:
                     payload = json.loads(msg.content[len(CODEBLOCK):].strip("` \n"))
+                    if not isinstance(payload, dict):
+                        continue
+                    payload.setdefault("guild_id", chan.guild.id)
+                    if not is_allowed_guild(payload.get("guild_id"), self.bot):
+                        continue
                     payload["_msg"] = msg                       # attache le Message
-                    self._cache[payload["event_id"]] = payload
+                    eid = int(payload["event_id"])
+                    if eid > 0:
+                        # History is newest first: old records never supersede it.
+                        self._cache.setdefault(eid, payload)
                 except Exception:
                     log.warning("Message #%s mal formé (id=%s)", self.channel_name, msg.id)
         return self._cache
@@ -83,6 +98,7 @@ class ConsoleStore:
         *data* peut contenir des objets non‑sérialisables (ex. discord.Message) ;
         ils sont retirés avant l'appel à json.dumps().
         """
+        require_guild(data.get("guild_id"), self.bot)
         cache = await self.load_all()
         eid = data["event_id"]
 
@@ -100,7 +116,7 @@ class ConsoleStore:
         else:                                   # création
             chan = await self._channel()
             if chan is None:
-                return                          # persistance désactivée
+                raise RuntimeError("Console des événements indisponible : sauvegarde refusée.")
             msg = await chan.send(json_block)
             if self.pin_messages:
                 try:
@@ -116,6 +132,7 @@ class ConsoleStore:
     async def delete(self, event_id: int) -> None:
         cache = await self.load_all()
         if event_id in cache:
+            require_guild(cache[event_id].get("guild_id"), self.bot)
             try:
                 await cache[event_id]["_msg"].delete()
             except discord.HTTPException:

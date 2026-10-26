@@ -6,6 +6,7 @@ import json
 import asyncio
 import logging
 import tempfile
+from copy import deepcopy
 import discord
 from datetime import datetime
 from discord.ext import commands
@@ -13,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 
 from utils.channel_resolver import resolve_text_channel
 from utils.discord_history import fetch_channel_history
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 
 DATA_ROOT = os.path.dirname(__file__)
 DATA_FILE = os.path.join(DATA_ROOT, "players_data.json")
@@ -88,11 +90,16 @@ class PlayersCog(commands.Cog):
         self._init_lock = asyncio.Lock()
         print(f"[DEBUG] PlayersCog initialisé (avant lecture {CONSOLE_CHANNEL_NAME}).")
 
+    async def cog_check(self, ctx):
+        require_guild(ctx.guild, self.bot)
+        return True
+
     async def cog_load(self):
         if self._init_task is None or self._init_task.done():
             self._init_task = asyncio.create_task(self.initialize_data())
 
     async def initialize_data(self):
+        configured_guild_id(self.bot)
         if self.initialized:
             return
         async with self._init_lock:
@@ -123,8 +130,9 @@ class PlayersCog(commands.Cog):
         ctx: commands.Context = None,
         guild: Optional[discord.Guild] = None,
     ):
-        sauvegarder_donnees(self.persos_data)
         target_guild = guild or (ctx.guild if ctx and ctx.guild else None)
+        require_guild(target_guild if target_guild is not None else configured_guild_id(self.bot), self.bot)
+        sauvegarder_donnees(self.persos_data)
         logger.debug(
             "Players persistence targeting guild id=%s name=%s",
             getattr(target_guild, "id", None),
@@ -188,33 +196,23 @@ class PlayersCog(commands.Cog):
         return tmp.name
 
     async def _resolve_console_channel(self, guild: Optional[discord.Guild] = None) -> Optional[discord.TextChannel]:
-        channel: Optional[discord.abc.GuildChannel] = None
-        channel_id = _parse_channel_id(CONSOLE_CHANNEL_ID)
-        if channel_id:
-            channel = self.bot.get_channel(channel_id)
-            if channel is None:
-                try:
-                    channel = await self.bot.fetch_channel(channel_id)
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                    channel = None
-            if isinstance(channel, discord.TextChannel):
-                return channel
-        target_guilds: List[discord.Guild] = []
-        if guild:
-            target_guilds.append(guild)
-        target_guilds.extend(g for g in self.bot.guilds if g not in target_guilds)
-        for g in target_guilds:
-            resolved = resolve_text_channel(
-                g,
-                id_env="CHANNEL_CONSOLE_ID",
-                name_env="CHANNEL_CONSOLE",
+        if guild is not None:
+            require_guild(guild, self.bot)
+            candidates = [guild]
+        else:
+            candidates = allowed_guilds(self.bot)
+        for candidate in candidates:
+            channel = resolve_text_channel(
+                candidate, id_env="CHANNEL_CONSOLE_ID", name_env="CHANNEL_CONSOLE",
                 default_name=CONSOLE_CHANNEL_NAME,
             )
-            if resolved:
-                return resolved
+            if channel is not None:
+                require_guild(getattr(channel, "guild", candidate), self.bot)
+                return channel
         return None
 
     async def _load_data_from_console(self, console_channel: discord.TextChannel) -> bool:
+        require_guild(getattr(console_channel, "guild", None), self.bot)
         try:
             pinned_messages = await console_channel.pins()
         except Exception:
@@ -245,7 +243,7 @@ class PlayersCog(commands.Cog):
         best_data: Optional[Dict[str, dict]] = None
         best_message: Optional[discord.Message] = None
         for message in candidates:
-            if message.author != self.bot.user:
+            if message.author != self.bot.user or getattr(message, "webhook_id", None):
                 continue
             content = message.content or ""
             has_marker = PLAYERS_MARKER in content
@@ -274,7 +272,7 @@ class PlayersCog(commands.Cog):
             best_data = parsed
             best_message = message
             break
-        if best_data and best_message:
+        if best_data is not None and best_message is not None:
             self.persos_data = best_data
             self.console_message_id = best_message.id
             snapshot_date = (
@@ -309,8 +307,10 @@ class PlayersCog(commands.Cog):
             return None
 
     def _looks_like_players_data(self, data: dict) -> bool:
-        if not isinstance(data, dict) or not data:
+        if not isinstance(data, dict):
             return False
+        if not data:
+            return True
         forbidden = {
             "messages",
             "edits",
@@ -329,7 +329,7 @@ class PlayersCog(commands.Cog):
         return False
 
     def _is_console_snapshot(self, message: discord.Message) -> bool:
-        if message.author != self.bot.user:
+        if message.author != self.bot.user or getattr(message, "webhook_id", None):
             return False
         content = message.content or ""
         if PLAYERS_MARKER in content:
@@ -339,6 +339,7 @@ class PlayersCog(commands.Cog):
         return False
 
     async def _get_console_snapshot(self, console_channel: discord.TextChannel) -> Optional[discord.Message]:
+        require_guild(getattr(console_channel, "guild", None), self.bot)
         if self.console_message_id:
             try:
                 message = await console_channel.fetch_message(self.console_message_id)
@@ -383,6 +384,8 @@ class PlayersCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
+        if not is_allowed_guild(member.guild, self.bot):
+            return
         await self._ensure_initialized()
         member_id = str(member.id)
         if member_id in self.persos_data:
@@ -403,6 +406,7 @@ class PlayersCog(commands.Cog):
     @commands.has_role("Staff")
     @commands.command(name="recrutement")
     async def recrutement_command(self, ctx: commands.Context, *, pseudo: str = None):
+        require_guild(ctx.guild, self.bot)
         await self._ensure_initialized()
         if not pseudo:
             await ctx.send("Usage : !recrutement <PseudoNouveau>")
@@ -427,6 +431,7 @@ class PlayersCog(commands.Cog):
 
     @commands.group(name="membre", invoke_without_command=True)
     async def membre_group(self, ctx: commands.Context, *, arg: str = None):
+        require_guild(ctx.guild, self.bot)
         await self._ensure_initialized()
         if not arg:
             embed = discord.Embed(
@@ -486,6 +491,7 @@ class PlayersCog(commands.Cog):
     @membre_group.command(name="del")
     @commands.has_role("Staff")
     async def membre_del_member(self, ctx: commands.Context, *, pseudo: str = None):
+        require_guild(ctx.guild, self.bot)
         await self._ensure_initialized()
         if not pseudo:
             await ctx.send("Usage : !membre del <pseudo>")
@@ -516,13 +522,13 @@ class PlayersCog(commands.Cog):
 
     @membre_group.command(name="principal")
     async def membre_principal(self, ctx: commands.Context, *, nom_perso: str = None):
+        require_guild(ctx.guild, self.bot)
         await self._ensure_initialized()
         if not nom_perso:
             await ctx.send("Usage : !membre principal <NomPerso>")
             return
         author_id = str(ctx.author.id)
         author_name = ctx.author.display_name
-        self._verifier_et_fusionner_id(author_id, author_name, nom_perso)
         if author_id not in self.persos_data:
             self.persos_data[author_id] = {
                 "discord_name": author_name,
@@ -537,13 +543,13 @@ class PlayersCog(commands.Cog):
 
     @membre_group.command(name="addmule")
     async def membre_addmule(self, ctx: commands.Context, *, nom_mule: str = None):
+        require_guild(ctx.guild, self.bot)
         await self._ensure_initialized()
         if not nom_mule:
             await ctx.send("Usage : !membre addmule <NomMule>")
             return
         author_id = str(ctx.author.id)
         author_name = ctx.author.display_name
-        self._verifier_et_fusionner_id(author_id, author_name)
         if author_id not in self.persos_data:
             self.persos_data[author_id] = {
                 "discord_name": author_name,
@@ -562,13 +568,13 @@ class PlayersCog(commands.Cog):
 
     @membre_group.command(name="delmule")
     async def membre_delmule(self, ctx: commands.Context, *, nom_mule: str = None):
+        require_guild(ctx.guild, self.bot)
         await self._ensure_initialized()
         if not nom_mule:
             await ctx.send("Usage : !membre delmule <NomMule>")
             return
         author_id = str(ctx.author.id)
         author_name = ctx.author.display_name
-        self._verifier_et_fusionner_id(author_id, author_name)
         if author_id not in self.persos_data:
             await ctx.send(NOT_REGISTERED_MESSAGE)
             return
@@ -588,10 +594,10 @@ class PlayersCog(commands.Cog):
 
     @membre_group.command(name="moi")
     async def membre_moi(self, ctx: commands.Context):
+        require_guild(ctx.guild, self.bot)
         await self._ensure_initialized()
         author_id = str(ctx.author.id)
         author_name = ctx.author.display_name
-        self._verifier_et_fusionner_id(author_id, author_name)
         if author_id not in self.persos_data:
             await ctx.send(NOT_REGISTERED_MESSAGE)
             return
@@ -600,6 +606,7 @@ class PlayersCog(commands.Cog):
 
     @membre_group.command(name="liste")
     async def membre_liste(self, ctx: commands.Context):
+        require_guild(ctx.guild, self.bot)
         await self._ensure_initialized()
         filtered_ids = [uid for uid in self.persos_data if uid.isdigit()]
         if not filtered_ids:
@@ -639,6 +646,7 @@ class PlayersCog(commands.Cog):
         )
 
     async def _afficher_membre_joueur_embed(self, ctx: commands.Context, user_id: str, user_name: str):
+        require_guild(ctx.guild, self.bot)
         if user_id not in self.persos_data:
             await ctx.send(f"{user_name} n'a pas encore enregistré de personnage.")
             return
@@ -646,6 +654,7 @@ class PlayersCog(commands.Cog):
         await self._envoyer_fiche_embed(ctx, user_id, user_name, data)
 
     async def _envoyer_fiche_embed(self, ctx: commands.Context, user_id: str, user_name: str, data: dict):
+        require_guild(ctx.guild, self.bot)
         main_name = data.get("main", "")
         mules_list = data.get("mules", [])
         embed = discord.Embed(
@@ -712,46 +721,75 @@ class PlayersCog(commands.Cog):
         results.sort(key=lambda item: item[2])
         return [(uid, label) for uid, label, _ in results]
 
-    def _verifier_et_fusionner_id(self, vrai_id: str, *aliases: str):
-        if vrai_id in self.persos_data:
-            return
-        alias_pairs: list[tuple[str, str]] = []
-        for alias in aliases:
-            if not alias:
-                continue
-            lowered = alias.lower()
-            slug = ''.join(ch for ch in lowered if ch.isalnum())
-            alias_pairs.append((lowered, slug))
-        if not alias_pairs:
-            return
-        for uid, data in list(self.persos_data.items()):
-            candidates = (
-                data.get("discord_name", ""),
-                data.get("main", ""),
-            )
-            for candidate in candidates:
-                if not candidate:
-                    continue
-                cand_lower = candidate.lower()
-                cand_slug = ''.join(ch for ch in cand_lower if ch.isalnum())
-                for alias_lower, alias_slug in alias_pairs:
-                    if (
-                        cand_lower == alias_lower
-                        or cand_lower in alias_lower
-                        or alias_lower in cand_lower
-                        or (cand_slug and cand_slug == alias_slug)
-                    ):
-                        if uid == vrai_id:
-                            return
-                        self.persos_data[vrai_id] = data
-                        del self.persos_data[uid]
-                        sauvegarder_donnees(self.persos_data)
-                        return
+    def get_member_record(self, guild_id: int, user_id: int | str) -> dict | None:
+        require_guild(guild_id, self.bot)
+        record = self.persos_data.get(str(user_id))
+        return deepcopy(record) if record is not None else None
 
-    async def auto_register_member(self, discord_id: int, discord_display_name: str, dofus_pseudo: str):
+    def list_member_records(self, guild_id: int) -> dict[str, dict]:
+        require_guild(guild_id, self.bot)
+        return deepcopy(self.persos_data)
+
+    def set_main(self, guild_id: int, user_id: int | str, discord_name: str, main: str) -> dict:
+        require_guild(guild_id, self.bot)
+        uid = self._owned_id(user_id)
+        record = self.persos_data.setdefault(uid, {"discord_name": discord_name, "main": "", "mules": []})
+        record["discord_name"] = discord_name
+        record["main"] = main
+        return deepcopy(record)
+
+    @staticmethod
+    def _owned_id(user_id: int | str) -> str:
+        value = str(user_id)
+        if not value.isascii() or not value.isdigit() or not 0 < int(value) < 2**64:
+            raise ValueError("Un identifiant Discord explicite est requis.")
+        return value
+
+    def add_mule(self, guild_id: int, user_id: int | str, mule: str, discord_name: str = "") -> bool:
+        require_guild(guild_id, self.bot)
+        uid = self._owned_id(user_id)
+        record = self.persos_data.setdefault(uid, {"discord_name": discord_name, "main": "", "mules": []})
+        mules = record.setdefault("mules", [])
+        if any(isinstance(value, str) and value.casefold() == mule.casefold() for value in mules):
+            return False
+        mules.append(mule)
+        return True
+
+    def remove_mule(self, guild_id: int, user_id: int | str, mule: str) -> str | None:
+        require_guild(guild_id, self.bot)
+        record = self.persos_data.get(self._owned_id(user_id))
+        if record is None:
+            return None
+        for index, value in enumerate(record.get("mules", [])):
+            if isinstance(value, str) and value.casefold() == mule.casefold():
+                return record["mules"].pop(index)
+        return None
+
+    def delete_member(self, guild_id: int, user_id: int | str) -> dict | None:
+        require_guild(guild_id, self.bot)
+        record = self.persos_data.pop(self._owned_id(user_id), None)
+        return deepcopy(record) if record is not None else None
+
+    def resolve_member_record(self, guild_id: int, query: str) -> tuple[str, dict] | None:
+        require_guild(guild_id, self.bot)
+        value = (query or "").strip()
+        uid = value.removeprefix("<@").removeprefix("!").removesuffix(">")
+        if uid.isascii() and uid.isdigit():
+            record = self.get_member_record(guild_id, uid)
+            return (uid, record) if record is not None else None
+        key = self._normalize_token(value)
+        matches = [(uid, deepcopy(record)) for uid, record in self.persos_data.items()
+                   if uid.isdigit() and key and any(
+                       self._normalize_token(str(record.get(field, ""))) == key
+                       for field in ("discord_name", "main"))]
+        if len(matches) > 1:
+            raise ValueError("Plusieurs joueurs correspondent : utilise un identifiant Discord explicite.")
+        return matches[0] if matches else None
+
+    async def auto_register_member(self, discord_id: int, discord_display_name: str, dofus_pseudo: str, *, guild_id: int):
+        require_guild(guild_id, self.bot)
         await self._ensure_initialized()
         author_id = str(discord_id)
-        self._verifier_et_fusionner_id(author_id, discord_display_name, dofus_pseudo)
         if author_id not in self.persos_data:
             self.persos_data[author_id] = {
                 "discord_name": discord_display_name,
@@ -761,7 +799,8 @@ class PlayersCog(commands.Cog):
         else:
             self.persos_data[author_id]["discord_name"] = discord_display_name
             self.persos_data[author_id]["main"] = dofus_pseudo
-        await self.dump_data_to_console()
+        guild = next((g for g in allowed_guilds(self.bot) if g.id == guild_id), None)
+        await self.dump_data_to_console(guild=guild)
         print(f"[DEBUG] auto_register_member : {discord_display_name} ({author_id}) --> main={dofus_pseudo}")
 
 async def setup(bot: commands.Bot):

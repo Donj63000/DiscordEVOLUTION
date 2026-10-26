@@ -4,7 +4,7 @@ from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from aioresponses import aioresponses
+from tests_support.http_mock import aioresponses
 from PIL import Image, ImageDraw
 import pytest
 import pytest_asyncio

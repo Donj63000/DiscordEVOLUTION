@@ -73,17 +73,19 @@ async def test_job_directory_can_be_enabled_without_other_members_private_profil
     assert "profil_declare" not in profile
     ctx.bot.cogs["ProfilCog"].store.get_by_owner.assert_not_awaited()
     ctx.bot.guilds.append(NS(id=7))
+    assert (await tools.do_artisans(ctx, "tailleur", 100))["artisans"] == result["artisans"]
+    ctx.guild = NS(id=7)
     with pytest.raises(EvoError):
         await tools.do_artisans(ctx, "tailleur", 100)
 
 
 def test_job_access_is_an_explicit_independent_setting():
-    env = {"OPENAI_API_KEY": "unit-test-placeholder", "EVO_PUBLIC_JOB_DATA": "1"}
+    env = {"BOT_GUILD_ID": "1", "OPENAI_API_KEY": "unit-test-placeholder", "EVO_PUBLIC_JOB_DATA": "1"}
     with patch.dict("os.environ", env, clear=True):
         settings = EvoConfig.from_env(guilds=[NS(id=1)])
     assert settings.public_job_data
     assert not settings.public_member_data
-    with patch.dict("os.environ", {"OPENAI_API_KEY": "unit-test-placeholder"}, clear=True):
+    with patch.dict("os.environ", {"BOT_GUILD_ID": "1", "OPENAI_API_KEY": "unit-test-placeholder"}, clear=True):
         assert not EvoConfig.from_env(guilds=[NS(id=1)]).public_job_data
 
 

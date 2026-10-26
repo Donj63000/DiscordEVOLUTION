@@ -27,6 +27,11 @@ from utils.calendar_data import matches_filter, snapshot_events
 NOW = datetime(2026, 9, 12, 10, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def evolution_guild(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "100")
+
+
 def draft(**changes):
     values = {"titre": "Donjon Blop", "date": "demain 21h", "lieu": "Entrée du donjon",
               "capacite": "8", "description": "Sortie de guilde"}

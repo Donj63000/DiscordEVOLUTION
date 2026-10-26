@@ -1,4 +1,5 @@
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -55,13 +56,18 @@ async def cog():
 
 
 def context():
-    return SimpleNamespace(author=SimpleNamespace(id=42), send=AsyncMock(return_value=SimpleNamespace(edit=AsyncMock())))
+    return SimpleNamespace(
+        guild=SimpleNamespace(id=int(os.environ["BOT_GUILD_ID"])),
+        author=SimpleNamespace(id=42), send=AsyncMock(return_value=SimpleNamespace(edit=AsyncMock())),
+    )
 
 
 def interaction(*, author=42, values=None):
     return SimpleNamespace(
+        guild_id=int(os.environ["BOT_GUILD_ID"]),
+        guild=SimpleNamespace(id=int(os.environ["BOT_GUILD_ID"])),
         user=SimpleNamespace(id=author), data={"values": values or []},
-        response=SimpleNamespace(defer=AsyncMock(), edit_message=AsyncMock(), send_message=AsyncMock(),
+        response=SimpleNamespace(is_done=lambda: False, defer=AsyncMock(), edit_message=AsyncMock(), send_message=AsyncMock(),
                                  send_modal=AsyncMock()),
         followup=SimpleNamespace(send=AsyncMock()),
         edit_original_response=AsyncMock(return_value=SimpleNamespace(edit=AsyncMock())),

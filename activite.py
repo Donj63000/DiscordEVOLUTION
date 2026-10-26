@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 import copy
 import json
@@ -99,19 +100,21 @@ class ActiviteCog(commands.Cog):
         return datetime.now(timezone.utc)
 
     def _resolve_console_channel(self, guild):
+        require_guild(guild, getattr(self, "bot", None))
         return resolve_text_channel(
             guild, id_env="CHANNEL_CONSOLE_ID", name_env="CHANNEL_CONSOLE",
             default_name=CONSOLE_CHANNEL_FALLBACK,
         )
 
     def _resolve_organisation_channel(self, guild):
+        require_guild(guild, getattr(self, "bot", None))
         return resolve_text_channel(
             guild, id_env="ORGANISATION_CHANNEL_ID", name_env="ORGANISATION_CHANNEL_NAME",
             default_name=ORGANISATION_CHANNEL_FALLBACK,
         )
 
     def _source_guild(self):
-        for guild in self.bot.guilds:
+        for guild in allowed_guilds(self.bot):
             if self._source_guild_id is not None:
                 if guild.id == self._source_guild_id:
                     return guild
@@ -120,6 +123,7 @@ class ActiviteCog(commands.Cog):
         return None
 
     def _guard(self, ctx):
+        require_guild(getattr(ctx, "guild", None), self.bot)
         if not self.initialized:
             raise ActivityError(
                 "Les activités ne sont pas encore chargées. Le Staff doit vérifier l'accès à #console."
@@ -127,17 +131,22 @@ class ActiviteCog(commands.Cog):
         guild = getattr(ctx, "guild", None)
         if guild is None:
             raise ActivityError("Utilise les activités dans un salon du serveur.")
+        if self._source_guild_id is not None and not is_allowed_guild(self._source_guild_id, self.bot):
+            raise ActivityError("Les activités appartiennent à un autre serveur ; restauration requise.")
         source = self._source_guild()
         if source is not None and source.id != guild.id:
             raise ActivityError("Les activités appartiennent au serveur de la console, pas à ce serveur.")
-        if source is None and len(self.bot.guilds) > 1:
+        if source is None and len(allowed_guilds(self.bot)) > 1:
             raise ActivityError("Le serveur des activités n'a pas pu être identifié.")
 
     def events_for_guild(self, guild_id):
+        require_guild(guild_id, getattr(self, "bot", None))
+        if self._source_guild_id is not None and not is_allowed_guild(self._source_guild_id, self.bot):
+            return {}
         source = self._source_guild()
         if source is not None and source.id != guild_id:
             return {}
-        if source is None and len(self.bot.guilds) > 1:
+        if source is None and len(allowed_guilds(self.bot)) > 1:
             return {}
         return {
             key: record for key, record in self.activities_data.get("events", {}).items()
@@ -236,9 +245,11 @@ class ActiviteCog(commands.Cog):
                 logger.debug("Activities temporary cache could not be removed", exc_info=True)
 
     async def dump_data_to_console(self, ctx, *, payload=None):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         return await self.dump_data_to_console_no_ctx(ctx.guild, payload=payload)
 
     async def dump_data_to_console_no_ctx(self, guild, *, payload=None):
+        require_guild(guild, getattr(self, "bot", None))
         channel = self._resolve_console_channel(guild)
         if channel is None:
             raise ActivityError("Salon #console introuvable : aucune modification confirmée.")
@@ -248,6 +259,7 @@ class ActiviteCog(commands.Cog):
 
     async def _commit(self, candidate, *, ctx=None, guild=None):
         """Publish memory only after durable success; ambiguous writes require a reload."""
+        require_guild(guild or getattr(ctx, "guild", None) or self._source_guild(), self.bot)
         if not self.initialized:
             raise ActivityError("Le registre est en cours de restauration. Vérifie /activite liste avant de réessayer.")
         try:
@@ -273,6 +285,7 @@ class ActiviteCog(commands.Cog):
 
     async def _update_event_fields(self, guild, identifier, **fields):
         """Merge side-effect metadata without overwriting concurrent roster changes."""
+        require_guild(guild, getattr(self, "bot", None))
         async with self._mutation_lock:
             record = self.events_for_guild(guild.id).get(str(identifier))
             if record is None or all(record.get(k) == v for k, v in fields.items()):
@@ -343,6 +356,7 @@ class ActiviteCog(commands.Cog):
 
     async def _recover_legacy_cards(self, guild):
         """Recover identifiable old cards without relying on the gateway message cache."""
+        require_guild(guild, getattr(self, "bot", None))
         channel = self._resolve_organisation_channel(guild)
         if channel is None:
             return
@@ -375,6 +389,7 @@ class ActiviteCog(commands.Cog):
 
     async def sync_card(self, identifier, guild, *, publish=False):
         """Bound all Discord work; a saved roster remains authoritative on presentation failure."""
+        require_guild(guild, getattr(self, "bot", None))
         key = str(identifier)
         try:
             return await asyncio.wait_for(self._sync_card(key, guild, publish=publish), timeout=25)
@@ -392,6 +407,7 @@ class ActiviteCog(commands.Cog):
         ))
 
     async def _sync_card(self, key, guild, *, publish=False):
+        require_guild(guild, getattr(self, "bot", None))
         async with self._card_locks.setdefault(key, asyncio.Lock()):
             original = self.events_for_guild(guild.id).get(key)
             if original is None:
@@ -482,6 +498,7 @@ class ActiviteCog(commands.Cog):
         return None
 
     async def _notify_members(self, guild, record, text, member_ids):
+        require_guild(guild, getattr(self, "bot", None))
         channel = self._resolve_organisation_channel(guild)
         if channel is None or not member_ids:
             return
@@ -502,6 +519,7 @@ class ActiviteCog(commands.Cog):
 
     async def _sync_legacy_roles(self, guild, identifier, user_ids=()):
         """Keep the historical entry point; reconcile the entire team, not only one click."""
+        require_guild(guild, getattr(self, "bot", None))
         try:
             return await asyncio.wait_for(self.role_manager.sync(guild, identifier), timeout=25)
         except Exception:
@@ -511,6 +529,7 @@ class ActiviteCog(commands.Cog):
     @commands.command(name="activite")
     @commands.guild_only()
     async def activite_main(self, ctx, action=None, *, args=None):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         aliases = {"créer": "creer", "rejoindre": "join", "quitter": "leave", "aide": "guide"}
         action = aliases.get((action or "liste").lower(), (action or "liste").lower())
         handlers = {
@@ -531,6 +550,7 @@ class ActiviteCog(commands.Cog):
             await ctx.send(str(exc), allowed_mentions=discord.AllowedMentions.none())
 
     async def command_guide(self, ctx, args=None):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         await ctx.send(
             "**Sorties de la guilde**\n"
             "`/activite creer` ouvre un formulaire : quoi, quand, où, places et précisions.\n"
@@ -552,6 +572,7 @@ class ActiviteCog(commands.Cog):
         )
 
     async def command_depuis(self, ctx, args=None):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         self._require_validated(ctx)
         message = getattr(ctx, "slash_values", {}).get("_source_message")
         channel = self._resolve_organisation_channel(ctx.guild)
@@ -570,6 +591,7 @@ class ActiviteCog(commands.Cog):
         )
 
     async def _open_form(self, ctx, record=None, *, initial=None, announcement_url=None, creation_key=None):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if record is None:
             self._require_validated(ctx)
         elif not self.can_modify(ctx, record):
@@ -610,6 +632,7 @@ class ActiviteCog(commands.Cog):
         Shared by /activite and Evo. The caller owns its receipt and must not
         retry with a fresh key after an uncertain write.
         """
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         self._guard(ctx)
         self._require_validated(ctx)
         if not isinstance(creation_key, str) or not 1 <= len(creation_key) <= 200:
@@ -654,6 +677,7 @@ class ActiviteCog(commands.Cog):
             return copy.deepcopy(self.activities_data["events"][key]), True
 
     async def command_creer(self, ctx, line=None):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         self._guard(ctx)
         self._require_validated(ctx)
         supplied = getattr(ctx, "slash_values", {})
@@ -699,6 +723,7 @@ class ActiviteCog(commands.Cog):
                 logger.warning("Activity receipt update unavailable event_id=%s", key)
 
     async def command_liste(self, ctx, args=None, *, action="info"):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         self._guard(ctx)
         view = ActivityListView(self, ctx.author.id, ctx.guild.id, action=action)
         view.message = await ctx.send(
@@ -706,6 +731,7 @@ class ActiviteCog(commands.Cog):
         )
 
     async def command_info(self, ctx, args):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         record = self._record(ctx, args)
         artwork, _ = announcement_image(getattr(ctx, "channel", None))
         try:
@@ -721,6 +747,7 @@ class ActiviteCog(commands.Cog):
             close_artwork(artwork)
 
     async def command_participants(self, ctx, args):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         record = self._record(ctx, args)
         file = roster_file(record, ctx.guild)
         embed = discord.Embed(title=f"Participants · {safe(record['titre'], 180)}", colour=discord.Colour.blue())
@@ -740,6 +767,7 @@ class ActiviteCog(commands.Cog):
             file.close()
 
     async def command_gerer(self, ctx, args):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         record = self._record(ctx, args)
         if not self.can_modify(ctx, record):
             raise ActivityError("Seuls l'organisateur et le Staff peuvent gérer cette sortie.")
@@ -749,6 +777,7 @@ class ActiviteCog(commands.Cog):
         )
 
     async def command_publier(self, ctx, args):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         record = self._record(ctx, args)
         if not self.can_modify(ctx, record):
             raise ActivityError("Seuls l'organisateur et le Staff peuvent republier cette fiche.")
@@ -760,6 +789,7 @@ class ActiviteCog(commands.Cog):
     async def change_membership(self, ctx, args, action, *, validate_record=None, before_mutation=None,
                                 request_key=None):
         """Je sauvegarde une inscription personnelle avant toute notification."""
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         self._record(ctx, args)
         if action == "join":
             self._require_validated(ctx)
@@ -802,6 +832,7 @@ class ActiviteCog(commands.Cog):
                 "source": self._card_link(current)}
 
     async def sync_membership(self, guild, identifier, member_id, promoted):
+        require_guild(guild, getattr(self, "bot", None))
         await self._sync_legacy_roles(guild, identifier, [member_id, *promoted])
         await self.sync_card(identifier, guild)
         current = self.activities_data["events"][identifier]
@@ -812,6 +843,7 @@ class ActiviteCog(commands.Cog):
             )
 
     async def _change_membership(self, ctx, args, action):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         result = await self.change_membership(ctx, args, action)
         ctx.activity_committed = True
         current = self.activities_data["events"][result["id"]]
@@ -825,16 +857,19 @@ class ActiviteCog(commands.Cog):
         await self.sync_membership(ctx.guild, result["id"], ctx.author.id, result["promoted"])
 
     async def command_join(self, ctx, args=None):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if not str(args or "").strip():
             return await self.command_liste(ctx, action="join")
         await self._change_membership(ctx, args, "join")
 
     async def command_leave(self, ctx, args=None):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if not str(args or "").strip():
             return await self.command_liste(ctx, action="leave")
         await self._change_membership(ctx, args, "leave")
 
     async def command_annuler(self, ctx, args):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         async with self._mutation_lock:
             record = self._record(ctx, args)
             if not self.can_modify(ctx, record):
@@ -858,6 +893,7 @@ class ActiviteCog(commands.Cog):
         )
 
     async def command_modifier(self, ctx, args):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         parts = str(args or "").split(" ", 1)
         record = self._record(ctx, parts[0])
         supplied = getattr(ctx, "slash_values", {})
@@ -930,6 +966,7 @@ class ActiviteCog(commands.Cog):
 
     async def _maintain_event(self, guild, key):
         """Never keep the roster lock during reminders, role requests or announcement edits."""
+        require_guild(guild, getattr(self, "bot", None))
         async with self._mutation_lock:
             original = self.activities_data["events"].get(key)
             if original is None:
@@ -1017,6 +1054,8 @@ class ActiviteCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
+        if not is_allowed_guild(getattr(member, "guild", None), getattr(self, "bot", None)):
+            return
         if not self.initialized or member.guild.id != getattr(self._source_guild(), "id", None):
             return
         notifications = []
@@ -1052,6 +1091,8 @@ class ActiviteCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_message_delete(self, payload):
+        if not is_allowed_guild(getattr(payload, "guild_id", None), getattr(self, "bot", None)):
+            return
         if not self.initialized or payload.guild_id is None:
             return
         for key, record in self.events_for_guild(payload.guild_id).items():
@@ -1061,6 +1102,8 @@ class ActiviteCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_bulk_message_delete(self, payload):
+        if not is_allowed_guild(getattr(payload, "guild_id", None), getattr(self, "bot", None)):
+            return
         if not self.initialized or payload.guild_id is None:
             return
         for key, record in self.events_for_guild(payload.guild_id).items():
@@ -1090,6 +1133,7 @@ class ActiviteCog(commands.Cog):
         filtre: str = "toutes", prive: bool = False,
     ):
         """J'ouvre le mois courant ; les arguments restent compatibles avec l'ancien préfixe."""
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if not self.initialized:
             return await ctx.send("Données en cours de chargement. Réessaie dans quelques secondes.")
         if prive and getattr(ctx, "interaction", None) is None:
@@ -1103,17 +1147,11 @@ class ActiviteCog(commands.Cog):
             return await ctx.send(str(exc))
 
         guild = getattr(ctx, "guild", None)
-        guilds = getattr(self.bot, "guilds", ())
-        if guild is not None and len(guilds) > 1:
-            source_guild = next(
-                (candidate for candidate in guilds
-                 if self._resolve_console_channel(candidate) is not None), None,
+        if self._source_guild_id is not None and not is_allowed_guild(self._source_guild_id, self.bot):
+            return await ctx.send(
+                "Les activités de ce bot sont rattachées au serveur de sa console. "
+                "Le calendrier n’est pas disponible ici."
             )
-            if source_guild is None or source_guild.id != guild.id:
-                return await ctx.send(
-                    "Les activités de ce bot sont rattachées au serveur de sa console. "
-                    "Le calendrier n’est pas disponible ici."
-                )
 
         can_attach = True
         channel = getattr(ctx, "channel", None)
@@ -1139,6 +1177,7 @@ class ActiviteCog(commands.Cog):
 
     async def _calendar_activity_action(self, interaction, event_id: str, action: str) -> None:
         """Run the existing command pipeline, including checks, roles and console persistence."""
+        require_guild(getattr(interaction, "guild_id", None) or getattr(interaction, "guild", None), getattr(self, "bot", None))
         from utils.slash_support import invoke_from_component
 
         if action not in {"join", "leave"}:

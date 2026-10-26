@@ -13,6 +13,7 @@ from discord.ext import commands
 from discord.ext.commands.view import StringView
 
 from utils.command_policy import retired_slash_reason, unavailable_reason
+from utils.guild_scope import GuildScopeError, require_guild
 from utils.slash_errors import (
     ERROR_HANDLED_KEY, SlashInputError, error_message, log_command_error, send_interaction_error,
 )
@@ -64,6 +65,11 @@ def interaction_command_path(interaction: discord.Interaction) -> tuple[str, ...
 
 class EvolutionCommandTree(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        try:
+            require_guild(interaction.guild_id, self.client)
+        except GuildScopeError as exc:
+            await send_interaction_error(interaction, str(exc))
+            return False
         # Cette barrière couvre aussi les commandes natives et les anciens menus Discord.
         name = (interaction.data or {}).get("name", "")
         path = interaction_command_path(interaction)
@@ -177,6 +183,7 @@ async def invoke_from_slash(
     defer_response: bool = True,
 ) -> SlashContext | None:
     """J'exécute conversions, permissions, cooldowns et hooks avant le traitement existant."""
+    require_guild(interaction.guild_id, bot)
     reason = unavailable_reason(target)
     if reason is not None:
         await send_interaction_error(interaction, reason)
@@ -246,6 +253,7 @@ async def _activity_deadline(operation):
 
 async def _invoke_checked_context(bot, command, ctx):
     """Conserve conversions, contrôles, hooks et événements sans doubler les erreurs."""
+    require_guild(ctx.guild, bot)
     bot.dispatch("command", ctx)
     async def run():
         if not await bot.can_run(ctx, call_once=True):
@@ -309,6 +317,7 @@ async def invoke_from_component(
     *, values: dict[str, object] | None = None, defer_response: bool = True,
 ) -> SlashContext | None:
     """Exécute la commande avec les droits du membre qui clique, jamais ceux du bot."""
+    require_guild(interaction.guild_id, bot)
     reason = unavailable_reason(target)
     if reason is not None:
         await send_interaction_error(interaction, reason)

@@ -399,6 +399,11 @@ async def test_other_guild_never_receives_shared_activity_storage(calendar_bot, 
         "id": "200", "name": "Source", "owner_id": "999", "roles": [],
     })
     env.bot._connection._guilds = {200: source, 100: click.guild}
+    # The retained snapshot belongs to the foreign server. Filtering that
+    # server from cache discovery must not authorize its data in Evolution.
+    env.cog._source_guild_id = 200
+    for event in env.cog.activities_data.get("events", {}).values():
+        event["guild_id"] = 200
     monkeypatch.setattr(
         env.cog, "_resolve_console_channel",
         lambda guild: SimpleNamespace(id=42) if console_found and guild.id == 200 else None,

@@ -118,6 +118,7 @@ async def test_readiness_requires_connection_and_leadership(monkeypatch):
     import main
 
     client = main.create_bot()
+    client._connection._guilds[client.allowed_guild_id] = SimpleNamespace(id=client.allowed_guild_id)
     client._connection.user = SimpleNamespace(id=1, name="test")
     client.ensure_console_channel = AsyncMock()
     client.acquire_leadership = AsyncMock(return_value=True)

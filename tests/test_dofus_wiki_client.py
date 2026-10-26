@@ -3,7 +3,7 @@ from email.utils import formatdate
 from unittest.mock import AsyncMock
 
 import aiohttp
-from aioresponses import CallbackResult, aioresponses
+from tests_support.http_mock import CallbackResult, aioresponses
 import pytest
 import pytest_asyncio
 

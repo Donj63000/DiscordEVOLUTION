@@ -8,6 +8,8 @@ from defender import DefenderCog, ThreatLevel
 
 @pytest.fixture
 def defender(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "1")
+    monkeypatch.delenv("EVO_GUILD_ID", raising=False)
     monkeypatch.setenv("DEFENDER_HISTORY_ENABLED", "0")
     monkeypatch.setenv("DEFENDER_EXPAND_SHORTLINKS", "0")
     return DefenderCog(bot=SimpleNamespace())

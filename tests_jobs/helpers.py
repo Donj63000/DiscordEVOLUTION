@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock
 
 import aiohttp
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 from utils.job_snapshot import (
     InvalidJobSnapshot, JobSnapshotReader, MAX_SNAPSHOT_BYTES, validate_jobs_payload,
 )
@@ -116,6 +117,8 @@ def isolated_job():
         "fetch_channel_history": history.fetch_channel_history,
         "JobSnapshotReader": JobSnapshotReader, "InvalidJobSnapshot": InvalidJobSnapshot,
         "MAX_SNAPSHOT_BYTES": MAX_SNAPSHOT_BYTES, "validate_jobs_payload": validate_jobs_payload,
+        "allowed_guilds": allowed_guilds, "configured_guild_id": configured_guild_id,
+        "is_allowed_guild": is_allowed_guild, "require_guild": require_guild,
     })
     # Le NS expose le dictionnaire des globals utilisé par les fonctions pour monkeypatch.
     module.globals = module.JobCog.__init__.__globals__

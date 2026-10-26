@@ -48,7 +48,7 @@ def incomplete(outputs, *, tokens=3000):
 
 class ReasoningConfigTests(unittest.TestCase):
     def settings(self, **env):
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "unit-test-placeholder", **env}, clear=True):
+        with patch.dict(os.environ, {"BOT_GUILD_ID": "1", "OPENAI_API_KEY": "unit-test-placeholder", **env}, clear=True):
             return EvoConfig.from_env(guilds=[Guild()])
 
     def test_default_high_preserves_money_and_bounds_call_limits(self):

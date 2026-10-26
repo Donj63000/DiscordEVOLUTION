@@ -11,6 +11,11 @@ import activite
 from test_activite_init import FakeConsoleChannel, FakeMessage
 
 
+@pytest.fixture(autouse=True)
+def evolution_guild(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "100")
+
+
 class RecordingConsoleChannel(FakeConsoleChannel):
     """Je conserve les snapshots envoyés pour simuler leur restauration sans Discord."""
 
@@ -434,7 +439,7 @@ async def test_calendar_today_uses_paris_in_view_and_command(
 
     clock.current = now_utc.replace(tzinfo=timezone.utc)
     author = SimpleNamespace(id=7)
-    view = activite.CalendrierView(author, {}, None)
+    view = activite.CalendrierView(author, {}, None, guild=activity_env.guild)
     try:
         assert view.highlight_date == today_paris
         assert (view.year, view.month) == (today_paris.year, today_paris.month)

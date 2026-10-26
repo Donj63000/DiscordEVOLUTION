@@ -17,6 +17,8 @@ from discord.ext import commands
 
 from utils.channel_resolver import resolve_text_channel
 from utils.console_json_store import ConsoleJSONSnapshotStore
+from utils.dm_sessions import get_dm_coordinator, passive_accepts, unowned_dm_message, DMFlowBusy, cancel_dm_flows
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 
 log = logging.getLogger(__name__)
 
@@ -169,6 +171,7 @@ class WelcomeCog(commands.Cog):
                 self._init_task = asyncio.create_task(self._post_ready_init())
 
     def cog_unload(self) -> None:
+        cancel_dm_flows(self.bot, "welcome")
         if self._init_task and not self._init_task.done():
             self._init_task.cancel()
 
@@ -364,14 +367,14 @@ class WelcomeCog(commands.Cog):
         return None
 
     def _get_guild(self, guild_id: int | None) -> Optional[discord.Guild]:
-        if guild_id is None:
+        if guild_id is None or not is_allowed_guild(guild_id, self.bot):
             return None
         get_guild = getattr(self.bot, "get_guild", None)
         if callable(get_guild):
             guild = get_guild(int(guild_id))
             if guild is not None:
                 return guild
-        for guild in getattr(self.bot, "guilds", []) or []:
+        for guild in allowed_guilds(self.bot):
             if getattr(guild, "id", None) == int(guild_id):
                 return guild
         return None
@@ -393,7 +396,7 @@ class WelcomeCog(commands.Cog):
                 return member
 
         first_member = None
-        for candidate_guild in getattr(self.bot, "guilds", []) or []:
+        for candidate_guild in allowed_guilds(self.bot):
             member = candidate_guild.get_member(user_id)
             if member is None:
                 continue
@@ -528,24 +531,37 @@ class WelcomeCog(commands.Cog):
         *,
         force: bool = False,
     ) -> None:
-        existing = self.pending_welcomes.get(member.id)
-        if existing and not force and not self._is_state_expired(existing):
-            channel = dm_channel or await member.create_dm()
-            await self._safe_send(channel, self._help_message(existing))
-            await self._send_current_prompt(channel, existing)
-            return
+        require_guild(member.guild, self.bot)
+        coordinator = get_dm_coordinator(self.bot)
+        try:
+            lease = coordinator.acquire(member.id, member.guild.id, "welcome", timeout=900, passive=True)
+        except DMFlowBusy:
+            return  # A foreground form owns private input; onboarding stays suspended.
+        try:
+            existing = self.pending_welcomes.get(member.id)
+            if existing and not force and not self._is_state_expired(existing):
+                channel = dm_channel or await member.create_dm()
+                coordinator.bind(lease, channel)
+                await self._safe_send(channel, self._help_message(existing))
+                await self._send_current_prompt(channel, existing)
+                return
 
-        channel = dm_channel or await member.create_dm()
-        await self._send_welcome_intro(member, channel)
-        self.pending_welcomes[member.id] = {
-            "schema_version": 2,
-            "guild_id": int(self._guild_id(member.guild)),
-            "stage": "reglement",
-            "created_at": _iso_now(),
-            "updated_at": _iso_now(),
-        }
-        await self._persist_state()
-        log.debug("Welcome flow started for user=%s guild=%s.", member.id, self._guild_id(member.guild))
+            channel = dm_channel or await member.create_dm()
+            coordinator.bind(lease, channel)
+            await self._send_welcome_intro(member, channel)
+            self.pending_welcomes[member.id] = {
+                "schema_version": 2,
+                "guild_id": int(self._guild_id(member.guild)),
+                "stage": "reglement",
+                "created_at": _iso_now(),
+                "updated_at": _iso_now(),
+            }
+            await self._persist_state()
+            log.debug("Welcome flow started for user=%s guild=%s.", member.id, self._guild_id(member.guild))
+
+        except BaseException:
+            coordinator.release(lease)
+            raise
 
     async def _send_current_prompt(self, channel: Any, state: dict[str, Any]) -> None:
         stage = state.get("stage")
@@ -674,6 +690,7 @@ class WelcomeCog(commands.Cog):
             return
         try:
             await players_cog.auto_register_member(
+                guild_id=member.guild.id,
                 discord_id=member.id,
                 discord_display_name=member.display_name,
                 dofus_pseudo=dofus_pseudo,
@@ -789,6 +806,10 @@ class WelcomeCog(commands.Cog):
     async def _handle_special_reply(self, member: discord.Member, message: discord.Message, state: Optional[dict[str, Any]]) -> bool:
         content = message.content or ""
         if self._is_cancel(content):
+            coordinator = get_dm_coordinator(self.bot)
+            lease = coordinator.current(member.id)
+            if lease and lease.kind == "welcome":
+                coordinator.release(lease)
             self.pending_welcomes.pop(member.id, None)
             await self._persist_state()
             await self._safe_send(
@@ -812,6 +833,7 @@ class WelcomeCog(commands.Cog):
         return False
 
     async def _handle_welcome_message(self, member: discord.Member, message: discord.Message) -> None:
+        require_guild(member.guild, self.bot)
         content = message.content or ""
         lock = self._lock_for(member.id)
         async with lock:
@@ -917,6 +939,8 @@ class WelcomeCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
+        if not is_allowed_guild(member.guild, self.bot):
+            return
         log.debug("Welcome join event for %s.", member.id)
         if member.bot:
             return
@@ -947,7 +971,19 @@ class WelcomeCog(commands.Cog):
         member = self._find_member_for_user(message.author.id)
         if not member:
             return
+        if not passive_accepts(self.bot, message, "welcome"):
+            if unowned_dm_message(self.bot, message) and self._is_restart(message.content or ""):
+                coordinator = get_dm_coordinator(self.bot)
+                current = coordinator.current(member.id)
+                if current is None or current.passive:
+                    await self._start_welcome_flow(member, message.channel, force=True)
+            return
         await self._handle_welcome_message(member, message)
+        if self._is_onboarded(member):
+            coordinator = get_dm_coordinator(self.bot)
+            lease = coordinator.current(member.id)
+            if lease and lease.kind == "welcome":
+                coordinator.release(lease)
 
     async def fallback_public_greeting(self, member: discord.Member) -> None:
         if not WELCOME_PUBLIC_FALLBACK:

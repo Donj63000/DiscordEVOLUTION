@@ -20,6 +20,10 @@ from utils.command_policy import ai_service_enabled, enabled_flag, build_availab
 from utils.slash_sync import sync_application_commands, cleanup_retired_guild_commands
 from utils.bot_branding import sync_bot_branding
 from utils.evo_config import EvoError, resolve_console_channel
+from utils.guild_scope import (
+    GuildScopeError, allowed_guilds, configured_guild_id, event_is_allowed,
+    get_allowed_guild_id, is_allowed_guild, require_guild,
+)
 
 load_dotenv()
 
@@ -48,6 +52,7 @@ def env_csv(name: str) -> list[str]:
 
 class EvoBot(commands.Bot):
     def __init__(self):
+        allowed_guild_id = get_allowed_guild_id()
         token = os.getenv("DISCORD_TOKEN")
         if not token:
             raise RuntimeError("DISCORD_TOKEN manquant")
@@ -64,6 +69,31 @@ class EvoBot(commands.Bot):
             tree_cls=EvolutionCommandTree,
         )
         self.token = token
+        self.allowed_guild_id = allowed_guild_id
+        self.add_check(self._guild_command_check, call_once=True)
+        # discord.py sends component and modal interactions to ViewStore before
+        # Client.dispatch. Gate the gateway parser as well as CommandTree.
+        interaction_parser = self._connection.parsers["INTERACTION_CREATE"]
+
+        def scoped_interaction_parser(data):
+            guild_id = data.get("guild_id")
+            if guild_id is not None:
+                if not is_allowed_guild(guild_id, self):
+                    return
+            else:
+                # Private previews use buttons/modals, but never slash commands.
+                # The view must still validate its captured owner and origin.
+                if data.get("type") not in {3, 5}:
+                    return
+                raw_user = (data.get("user") or {}).get("id", "")
+                if not str(raw_user).isascii() or not str(raw_user).isdigit():
+                    return
+                guild = self.get_guild(self.allowed_guild_id)
+                if guild is None or guild.get_member(int(raw_user)) is None:
+                    return
+            return interaction_parser(data)
+
+        self._connection.parsers["INTERACTION_CREATE"] = scoped_interaction_parser
         self.INSTANCE_ID = os.getenv("RENDER_INSTANCE_ID") or os.getenv("INSTANCE_ID") or uuid.uuid4().hex
         self._singleton_ready = False
         self._startup_setup_started = False
@@ -96,6 +126,27 @@ class EvoBot(commands.Bot):
             return await orig(message)
 
         self.process_commands = _once_per_message
+
+    async def _guild_command_check(self, ctx):
+        if ctx.guild is not None:
+            require_guild(ctx.guild, self)
+            return True
+        # Only explicit private conversational commands may resume in DMs.
+        root = getattr(getattr(ctx, "command", None), "root_parent", None) or ctx.command
+        if getattr(root, "name", "") not in {"ia", "iaend", "iahelp", "bot", "analyse", "aide", "help"}:
+            raise GuildScopeError("Utilise cette commande depuis le serveur Evolution.")
+        guild = self.get_guild(self.allowed_guild_id)
+        if guild is None or guild.get_member(ctx.author.id) is None:
+            raise GuildScopeError("Ce parcours privé est réservé aux membres d'Evolution.")
+        return True
+
+    def dispatch(self, event, /, *args, **kwargs):
+        if not event_is_allowed(event, args, self):
+            return
+        if event == "message" and args:
+            from utils.dm_sessions import freeze_dm_message
+            freeze_dm_message(self, args[0])
+        return super().dispatch(event, *args, **kwargs)
 
     async def _safe_load(self, ext_name: str) -> bool:
         try:
@@ -225,7 +276,7 @@ class EvoBot(commands.Bot):
     async def wait_console_channel(self, timeout=30):
         start = time.time()
         while time.time() - start < timeout:
-            for g in self.guilds:
+            for g in allowed_guilds(self):
                 if enabled_flag("EVO_ENABLED") and self._evo_guild_id() != g.id:
                     continue
                 ch = resolve_console_channel(g)
@@ -243,7 +294,7 @@ class EvoBot(commands.Bot):
             "no",
             "off",
         }
-        for guild in list(getattr(self, "guilds", []) or []):
+        for guild in allowed_guilds(self):
             ch = resolve_console_channel(guild)
             if ch:
                 continue
@@ -354,15 +405,7 @@ class EvoBot(commands.Bot):
         return message, parts[1], int(parts[2])
 
     def _evo_guild_id(self):
-        cog = self.get_cog("EvoCog")
-        config = getattr(cog, "config", None)
-        if config is not None:
-            return config.guild_id
-        raw = os.getenv("EVO_GUILD_ID", "").strip()
-        if not raw:
-            guilds = list(getattr(self, "guilds", []) or [])
-            return guilds[0].id if len(guilds) == 1 else None
-        return int(raw) if raw.isascii() and raw.isdigit() else None
+        return configured_guild_id(self)
 
     async def _suspend_evo(self, reason, *, cooldown=True):
         self._evo_leadership_known = False
@@ -504,6 +547,10 @@ class EvoBot(commands.Bot):
         logging.debug("Evo Discord connection resumed; leadership recheck required")
 
     async def on_ready(self):
+        if not allowed_guilds(self):
+            set_ready(False)
+            log.error("BOT_GUILD_ID n'est pas accessible : le bot reste indisponible.")
+            return
         self._evo_connected = True
         if not self._console_checked:
             await self.ensure_console_channel()

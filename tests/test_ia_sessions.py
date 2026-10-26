@@ -17,6 +17,7 @@ class DummyChat:
 
 class DummyChannel:
     def __init__(self):
+        self.id = 50
         self.last_reply = None
     async def send(self, content, mention_author=False):
         self.last_reply = content
@@ -57,9 +58,12 @@ class DummyMessage:
 
 @pytest.mark.asyncio
 async def test_dm_session_uses_pro_model(monkeypatch):
-    cog = IACog(bot=object())
-    monkeypatch.setattr(cog, "_new_chat", lambda *a, **k: DummyChat())
     ctx = DummyCtx(guild=None)
+    guild = types.SimpleNamespace(id=1, get_member=lambda uid: ctx.author if uid == ctx.author.id else None)
+    bot = types.SimpleNamespace(allowed_guild_id=1, get_guild=lambda gid: guild if gid == 1 else None)
+    ctx.bot = bot
+    cog = IACog(bot=bot)
+    monkeypatch.setattr(cog, "_new_chat", lambda *a, **k: DummyChat())
     await cog.ia_start_command.callback(cog, ctx)
     assert ctx.author.id in cog.sessions
     assert cog.sessions[ctx.author.id].model_name == "gemini-2.5-pro"

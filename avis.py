@@ -10,6 +10,7 @@ from typing import Optional
 import discord
 from discord.ext import commands
 from utils.slash_support import delete_invocation_message, notify_private_workflow
+from utils.dm_sessions import dm_workflow, dm_check_for, finish_dm_input, cancel_dm_flows
 from discord.utils import utcnow
 
 log = logging.getLogger("avis")
@@ -142,10 +143,7 @@ class AvisFeedback(commands.Cog):
         return dm
 
     async def _collect_dm_feedback(self, author: discord.User) -> Optional[str]:
-        check = (
-            lambda message: message.author.id == author.id
-            and isinstance(message.channel, discord.DMChannel)
-        )
+        check = dm_check_for(self.bot)
         attempts = 0
         while attempts < self.max_attempts:
             try:
@@ -189,8 +187,12 @@ class AvisFeedback(commands.Cog):
             pass
         return None
 
+    def cog_unload(self):
+        cancel_dm_flows(self.bot, "avis")
+
     @commands.command(name="avis")
     @commands.guild_only()
+    @dm_workflow("avis", timeout=900)
     async def avis_cmd(self, ctx: commands.Context):
         if ctx.author.bot:
             return
@@ -250,6 +252,7 @@ class AvisFeedback(commands.Cog):
         self.active_sessions.add(ctx.author.id)
         try:
             feedback_text = await self._collect_dm_feedback(ctx.author)
+            finish_dm_input(self.bot)
             if not feedback_text:
                 return
             staff_channel = self._resolve_staff_channel(ctx.guild)

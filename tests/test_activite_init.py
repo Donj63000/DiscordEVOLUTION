@@ -8,6 +8,11 @@ import pytest
 import activite
 
 
+@pytest.fixture(autouse=True)
+def evolution_guild(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "100")
+
+
 class FakeMessage:
     def __init__(self, author, content):
         self.author = author

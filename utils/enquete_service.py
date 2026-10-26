@@ -5,6 +5,7 @@ publiques, ce qui permet de tester pagination, confidentialité et erreurs hors 
 """
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 from collections import deque
 from dataclasses import dataclass
@@ -101,6 +102,7 @@ class AccessScope:
     """La diffusion n'élargit pas l'accès : chaque lecteur doit pouvoir lire la source."""
     def __init__(self, guild, bot_member, requester_id: int, cfg: Config, destination: str,
                  *, current_channel_id: int | None = None):
+        require_guild(guild, getattr(self, "bot", None))
         self.guild, self.bot_member, self.requester_id, self.cfg = guild, bot_member, requester_id, cfg
         if destination not in {"ici", "staff", "console", "les-deux"}:
             raise EnqueteError("Destination invalide.")
@@ -628,8 +630,9 @@ class Collector:
             warnings = getattr(self.bot.get_cog("ModerationCog"), "warnings", {})
             if isinstance(warnings, dict) and str(self.meta.target_id) in warnings:
                 self.meta.identity["Avertissements de l'ancienne base (non datés)"] = warnings[str(self.meta.target_id)]
-            players = getattr(self.bot.get_cog("PlayersCog"), "persos_data", {})
-            record = players.get(str(self.meta.target_id), {}) if isinstance(players, dict) else {}
+            players = self.bot.get_cog("PlayersCog")
+            reader = getattr(players, "get_member_record", None)
+            record = (reader(self.meta.guild_id, self.meta.target_id) or {}) if callable(reader) else {}
             if isinstance(record, dict):
                 values = [record.get("main"), *(record.get("mules", []) if isinstance(record.get("mules"), list) else [])]
                 for value in values:

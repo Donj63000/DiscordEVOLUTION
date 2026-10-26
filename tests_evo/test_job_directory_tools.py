@@ -50,12 +50,26 @@ async def test_job_directory_requires_explicit_opt_in():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("guilds", [[SimpleNamespace(id=7)], [SimpleNamespace(id=1), SimpleNamespace(id=7)]])
-async def test_job_directory_never_reads_legacy_data_in_another_or_multiple_guilds(guilds):
+@pytest.mark.parametrize("guilds,authorized", [
+    ([SimpleNamespace(id=7)], False),
+    ([SimpleNamespace(id=1), SimpleNamespace(id=7)], True),
+])
+async def test_job_directory_uses_only_the_configured_guild(guilds, authorized):
     ctx = directory_context(public_job_data=True)
     ctx.bot.guilds = guilds
-    with pytest.raises(EvoError, match="pas autorisé"):
-        await EvoTools().do_liste_metiers(ctx)
+    reader = ctx.bot.cogs["JobCog"].read_jobs_snapshot
+    if authorized:
+        result = await EvoTools().do_liste_metiers(ctx)
+        assert result["total"] == 2
+        reader.assert_awaited_once_with(ctx.guild)
+        ctx.guild = SimpleNamespace(id=7)
+        with pytest.raises(EvoError):
+            await EvoTools().do_liste_metiers(ctx)
+        assert reader.await_count == 1  # A foreign request never reloads the registry.
+    else:
+        with pytest.raises(EvoError, match="pas autorisé"):
+            await EvoTools().do_liste_metiers(ctx)
+        reader.assert_not_awaited()
 
 
 @pytest.mark.asyncio

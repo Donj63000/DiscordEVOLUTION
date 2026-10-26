@@ -1,6 +1,7 @@
 """Entrée Discord native, exclusivement conversationnelle et explicitement activée."""
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 from collections import OrderedDict
 import logging
@@ -66,7 +67,7 @@ class EvoCog(commands.Cog):
         if self._closed or not enabled_flag("EVO_ENABLED"):
             raise EvoError("Evo est désactivé par le Staff.")
         if self.config is None:
-            self.config = EvoConfig.from_env(guilds=self.bot.guilds)
+            self.config = EvoConfig.from_env(guilds=allowed_guilds(self.bot))
         return self.config
 
     def _context(self, guild, channel, member):

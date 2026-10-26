@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import discord
-from aioresponses import aioresponses
+from tests_support.http_mock import aioresponses
 from discord import app_commands
 from discord.ext import commands
 import pytest
@@ -28,6 +28,7 @@ AUTHOR_ID = 111000000000000001
 
 @pytest_asyncio.fixture
 async def slash_bot(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "100")
     monkeypatch.setattr(discord.utils, "evaluate_annotation", EVALUATE_ANNOTATION)
     monkeypatch.setattr(discord.utils, "is_inside_class", IS_INSIDE_CLASS)
     async with commands.Bot(
@@ -617,6 +618,8 @@ async def test_snowflake_option_is_a_string_to_preserve_full_precision(slash_bot
 @pytest.mark.asyncio
 @pytest.mark.parametrize("guild_id", [None, "12345"])
 async def test_startup_syncs_slash_commands_by_default(monkeypatch, guild_id):
+    monkeypatch.setenv("DISCORD_TOKEN", "unit-test-placeholder")
+    monkeypatch.setenv("BOT_GUILD_ID", "12345")
     import main
 
     monkeypatch.delenv("SYNC_SLASH_COMMANDS", raising=False)
@@ -627,16 +630,13 @@ async def test_startup_syncs_slash_commands_by_default(monkeypatch, guild_id):
     tree = SimpleNamespace(copy_global_to=Mock(), remove_command=Mock(),
                            sync=AsyncMock(return_value=[]), fetch_commands=AsyncMock(return_value=[]))
     await main.EvoBot._sync_app_commands(SimpleNamespace(tree=tree))
-    if guild_id is None:
-        tree.copy_global_to.assert_not_called()
-        tree.sync.assert_awaited_once_with()
-    else:
-        assert tree.sync.call_args.kwargs["guild"].id == int(guild_id)
-        tree.copy_global_to.assert_called_once()
+    assert tree.sync.call_args.kwargs["guild"].id == 12345
+    tree.copy_global_to.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_startup_can_disable_sync_and_loads_catalog_last(monkeypatch):
+    monkeypatch.setenv("DISCORD_TOKEN", "unit-test-placeholder")
     import main
 
     monkeypatch.setenv("SYNC_SLASH_COMMANDS", "0")

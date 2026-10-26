@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 import discord
 
+from utils.guild_scope import is_allowed_guild
 from utils.evo_config import EvoError, resolve_console_channel
 
 _SECRET = re.compile(
@@ -151,7 +152,7 @@ class ToolContext:
     job_directory: object | None = None
 
     def check(self) -> None:
-        if self.guild is None or self.guild.id != self.config.guild_id:
+        if self.guild is None or not is_allowed_guild(self.guild, self.bot) or self.guild.id != self.config.guild_id:
             raise EvoError("Evo n'est pas activé sur ce serveur.")
         if self.channel is None or (
             self.config.channel_ids and self.channel.id not in self.config.channel_ids

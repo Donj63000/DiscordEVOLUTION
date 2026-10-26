@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import welcome
+from utils.dm_sessions import get_dm_coordinator, freeze_dm_message
 
 
 def test_sanitize_display_text_removes_mentions_and_limits_length():
@@ -29,6 +30,7 @@ class DummyRole:
 
 class DummyGuild:
     def __init__(self, roles=None) -> None:
+        self.id = 1
         self.roles = list(roles or [])
         self._members = {}
 
@@ -69,13 +71,14 @@ class DummyDMChannel:
 class DummyBot:
     def __init__(self, guilds) -> None:
         self.guilds = list(guilds)
+        self.allowed_guild_id = 1
 
     def get_cog(self, name):
         return None
 
 
 @pytest.mark.asyncio
-async def test_dm_oui_without_state_prompts_status(monkeypatch):
+async def test_explicit_welcome_oui_prompts_status(monkeypatch):
     monkeypatch.setattr(welcome.discord, "DMChannel", DummyDMChannel)
     bot = DummyBot([])
     guild = DummyGuild()
@@ -88,6 +91,11 @@ async def test_dm_oui_without_state_prompts_status(monkeypatch):
     dm_channel = DummyDMChannel()
     message = SimpleNamespace(author=SimpleNamespace(id=42, bot=False), channel=dm_channel, content="oui")
 
+    coordinator = get_dm_coordinator(bot)
+    lease = coordinator.acquire(42, guild.id, "welcome", passive=True)
+    coordinator.bind(lease, dm_channel)
+    message.id = lease.since_id + 1
+    freeze_dm_message(bot, message)
     await cog.on_message(message)
 
     assert cog.pending_welcomes[42]["stage"] == "status"
@@ -95,7 +103,7 @@ async def test_dm_oui_without_state_prompts_status(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dm_membre_without_state_prompts_pseudo(monkeypatch):
+async def test_explicit_welcome_membre_prompts_pseudo(monkeypatch):
     monkeypatch.setattr(welcome.discord, "DMChannel", DummyDMChannel)
     bot = DummyBot([])
     guild = DummyGuild()
@@ -108,6 +116,11 @@ async def test_dm_membre_without_state_prompts_pseudo(monkeypatch):
     dm_channel = DummyDMChannel()
     message = SimpleNamespace(author=SimpleNamespace(id=77, bot=False), channel=dm_channel, content="membre")
 
+    coordinator = get_dm_coordinator(bot)
+    lease = coordinator.acquire(77, guild.id, "welcome", passive=True)
+    coordinator.bind(lease, dm_channel)
+    message.id = lease.since_id + 1
+    freeze_dm_message(bot, message)
     await cog.on_message(message)
 
     assert cog.pending_welcomes[77]["stage"] == "pseudo"
@@ -130,6 +143,11 @@ async def test_status_invite_assigns_role(monkeypatch):
     dm_channel = DummyDMChannel()
     message = SimpleNamespace(author=SimpleNamespace(id=12, bot=False), channel=dm_channel, content="invite")
 
+    coordinator = get_dm_coordinator(bot)
+    lease = coordinator.acquire(12, guild.id, "welcome", passive=True)
+    coordinator.bind(lease, dm_channel)
+    message.id = lease.since_id + 1
+    freeze_dm_message(bot, message)
     await cog.on_message(message)
 
     member.add_roles.assert_awaited_once_with(invite_role)

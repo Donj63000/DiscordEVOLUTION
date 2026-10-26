@@ -76,4 +76,6 @@ async def service(catalog, rules):
 @pytest.fixture(autouse=True)
 def builder_without_maintenance(monkeypatch):
     """Je conserve les tests métier pour la future remise en service du builder."""
+    monkeypatch.setenv("BOT_GUILD_ID", "100")
+    monkeypatch.delenv("EVO_GUILD_ID", raising=False)
     monkeypatch.setattr("utils.command_policy.BUILD_MAINTENANCE", False)

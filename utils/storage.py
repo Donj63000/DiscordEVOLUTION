@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+import asyncio
+import io
 from typing import Dict, Optional
 
 from models import EventData
@@ -9,6 +11,7 @@ import discord
 from discord.ext import commands
 from utils.channel_resolver import resolve_text_channel
 from utils.discord_history import fetch_channel_history
+from utils.guild_scope import allowed_guilds, require_guild, is_allowed_guild
 
 logger = logging.getLogger(__name__)
 STAFF_ROLE_NAME = os.getenv("IASTAFF_ROLE", os.getenv("STAFF_ROLE_NAME", "Staff"))
@@ -27,6 +30,7 @@ class EventStore:
         self.db = None
         self.events: Dict[str, EventData] = {}
         self.conversations: Dict[str, list] = {}
+        self._write_lock = asyncio.Lock()
         self._console_auto_create = (os.getenv("CONSOLE_AUTO_CREATE", "1") or "1").strip().lower() not in {
             "0",
             "false",
@@ -36,7 +40,7 @@ class EventStore:
 
     async def _resolve_console_channel(self) -> Optional[discord.TextChannel]:
         default_name = os.getenv("CHANNEL_CONSOLE", self.console_channel_name or "console")
-        for guild in list(getattr(self.bot, "guilds", []) or []):
+        for guild in allowed_guilds(self.bot):
             channel = resolve_text_channel(
                 guild,
                 id_env="CHANNEL_CONSOLE_ID",
@@ -49,7 +53,7 @@ class EventStore:
             return None
         if os.getenv("CHANNEL_CONSOLE_ID"):
             return None
-        for guild in list(getattr(self.bot, "guilds", []) or []):
+        for guild in allowed_guilds(self.bot):
             me = guild.me or (guild.get_member(self.bot.user.id) if self.bot.user else None)
             if not me or not getattr(me.guild_permissions, "manage_channels", False):
                 continue
@@ -144,10 +148,22 @@ class EventStore:
 
     async def _load_db(self):
         rows = await self.db.fetch("SELECT id, data FROM events")
-        self.events = {r["id"]: EventData.from_dict(dict(r["data"])) for r in rows}
-        rows = await self.db.fetch("SELECT id, data FROM conversations")
-        self.conversations = {r["id"]: dict(r["data"]) for r in rows}
+        self.events = {}
+        for row in rows:
+            payload = self._json_value(row["data"])
+            if isinstance(payload, dict) and is_allowed_guild(payload.get("guild_id"), self.bot):
+                try:
+                    self.events[str(row["id"])] = EventData.from_dict(payload)
+                except (ValueError, TypeError):
+                    logger.warning("Invalid event record ignored id=%s", row["id"])
+        # Legacy transcripts have no trustworthy source guild and are never
+        # resumed after reboot. New conversations are ephemeral input sessions.
+        self.conversations = {}
         logger.info("EventStore: data loaded from PostgreSQL.")
+
+    @staticmethod
+    def _json_value(value):
+        return json.loads(value) if isinstance(value, str) else value
 
     async def _load_console(self):
         self.events = {}
@@ -158,13 +174,17 @@ class EventStore:
             self.console_channel = channel
         if not channel:
             return
+        require_guild(getattr(channel, "guild", None), self.bot)
         limit = max(
             int(os.getenv("EVENTSTORE_HISTORY_LIMIT", os.getenv("CONSOLE_HISTORY_LIMIT", "200"))),
             0,
         )
         messages = await fetch_channel_history(channel, limit=limit, reason="event_store.load")
         for msg in messages:
-            if msg.author == self.bot.user and self.MARKER in msg.content:
+            if (getattr(msg.author, "id", None) == getattr(self.bot.user, "id", None)
+                    and getattr(self.bot.user, "id", None) is not None
+                    and getattr(msg, "webhook_id", None) is None
+                    and msg.content.startswith(self.MARKER)):
                 data = None
                 if msg.attachments:
                     for att in msg.attachments:
@@ -183,25 +203,49 @@ class EventStore:
                         data = json.loads(raw_json)
                     except Exception:
                         pass
-                if data:
+                if isinstance(data, dict):
                     raw_events = data.get("events", {})
-                    self.events = {eid: EventData.from_dict(ed) for eid, ed in raw_events.items()}
-                    self.conversations = data.get("conversations", {})
+                    if not isinstance(raw_events, dict):
+                        continue
+                    parsed = {}
+                    for eid, ed in raw_events.items():
+                        if not isinstance(ed, dict) or not is_allowed_guild(ed.get("guild_id"), self.bot):
+                            continue
+                        try:
+                            parsed[str(eid)] = EventData.from_dict(ed)
+                        except (TypeError, ValueError):
+                            logger.warning("Invalid event record ignored id=%s", eid)
+                    self.events = parsed
+                    self.conversations = {}
                     logger.info("EventStore: data loaded from console channel.")
                     break
 
     async def save_event(self, event_id: str, payload: EventData):
-        self.events[event_id] = payload
-        data_dict = payload.model_dump(mode="python", exclude_none=True)
-        if self.backend == "postgres" and self.db:
-            await self.db.execute(
-                "INSERT INTO events(id, data) VALUES($1, $2)"
-                " ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data",
-                event_id,
-                data_dict,
-            )
-        else:
-            await self._dump_console()
+        require_guild(payload.guild_id, self.bot)
+        data_dict = payload.model_dump(mode="json", exclude_none=True)
+        async with self._write_lock:
+            previous = self.events.get(event_id)
+            self.events[event_id] = payload
+            try:
+                if self.backend == "postgres" and self.db:
+                    status = await self.db.execute(
+                        "INSERT INTO events(id, data) VALUES($1, $2::jsonb)"
+                        " ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data"
+                        " WHERE events.data->>'guild_id'=$3",
+                        event_id,
+                        json.dumps(data_dict),
+                        str(payload.guild_id),
+                    )
+                    if status == "INSERT 0 0":
+                        raise RuntimeError("Un événement d'un autre serveur ne peut pas être remplacé.")
+                else:
+                    await self._dump_console()
+            except BaseException:
+                if previous is None:
+                    self.events.pop(event_id, None)
+                else:
+                    self.events[event_id] = previous
+                raise
 
     async def save_conversation(self, conv_id: str, transcript: Optional[list]):
         if transcript is None:
@@ -213,23 +257,39 @@ class EventStore:
                 await self.db.execute("DELETE FROM conversations WHERE id=$1", conv_id)
             else:
                 await self.db.execute(
-                    "INSERT INTO conversations(id, data) VALUES($1, $2)"
+                    "INSERT INTO conversations(id, data) VALUES($1, $2::jsonb)"
                     " ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data",
                     conv_id,
-                    transcript,
+                    json.dumps(transcript),
                 )
         else:
             await self._dump_console()
 
     async def delete_event(self, event_id: str) -> bool:
-        existed = self.events.pop(event_id, None) is not None
-        if self.backend == "postgres" and self.db:
-            await self.db.execute("DELETE FROM events WHERE id=$1", event_id)
-        else:
-            await self._dump_console()
-        if existed:
-            logger.debug("EventStore: deleted event %s.", event_id)
-        return existed
+        existing = self.events.get(event_id)
+        if existing is None:
+            # A foreign-guild row filtered during load must never be deletable
+            # merely because a caller knows its global event identifier.
+            return False
+        require_guild(existing.guild_id, self.bot)
+        async with self._write_lock:
+            previous = self.events.pop(event_id, None)
+            if previous is None:
+                return False
+            try:
+                if self.backend == "postgres" and self.db:
+                    status = await self.db.execute(
+                        "DELETE FROM events WHERE id=$1 AND data->>'guild_id'=$2", event_id, str(previous.guild_id),
+                    )
+                    if status == "DELETE 0":
+                        raise RuntimeError("Événement absent ou appartenant à un autre serveur : suppression refusée.")
+                else:
+                    await self._dump_console()
+            except BaseException:
+                self.events[event_id] = previous
+                raise
+        logger.debug("EventStore: deleted event %s.", event_id)
+        return True
 
     async def _dump_console(self):
         channel = self.console_channel
@@ -237,31 +297,20 @@ class EventStore:
             channel = await self._resolve_console_channel()
             self.console_channel = channel
         if not channel:
-            return
+            raise RuntimeError("Console des événements indisponible : sauvegarde refusée.")
+        require_guild(getattr(channel, "guild", None), self.bot)
         data = {
-            "events": {eid: e.model_dump(mode="python", exclude_none=True) for eid, e in self.events.items()},
+            "events": {eid: e.model_dump(mode="json", exclude_none=True) for eid, e in self.events.items()},
             "conversations": self.conversations,
         }
         data_str = json.dumps(data, indent=4, ensure_ascii=False)
         if len(data_str) < 1900:
             await channel.send(f"{self.MARKER}\n```json\n{data_str}\n```")
         else:
-            temp_path = "temp_event_store.json"
-            try:
-                with open(temp_path, "w", encoding="utf-8") as f:
-                    f.write(data_str)
-                await channel.send(
-                    f"{self.MARKER} (fichier)",
-                    file=discord.File(fp=temp_path, filename="event_store.json"),
-                )
-            finally:
-                try:
-                    os.remove(temp_path)
-                except FileNotFoundError:
-                    pass
-                except OSError as exc:
-                    logger.warning(
-                        "Failed to remove temporary event store file %s: %s",
-                        temp_path,
-                        exc,
-                    )
+            with discord.File(io.BytesIO(data_str.encode("utf-8")), filename="event_store.json") as file:
+                await channel.send(f"{self.MARKER} (fichier)", file=file)
+
+    async def close(self):
+        if self.db is not None:
+            await self.db.close()
+            self.db = None

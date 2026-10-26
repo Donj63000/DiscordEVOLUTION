@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, check_interaction_guild, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 import hashlib
 import io
@@ -69,6 +70,8 @@ class CalendarSession(discord.ui.View):
 
     async def _check_context(self, interaction: discord.Interaction) -> bool:
         """Vérifie le serveur et l'expiration avant toute ouverture ou modification."""
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if self.guild_id is not None and interaction.guild_id != self.guild_id:
             await notify(interaction, "Ce calendrier appartient à un autre serveur.")
             return False
@@ -78,6 +81,8 @@ class CalendarSession(discord.ui.View):
         return True
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if not await self._check_context(interaction):
             return False
         if interaction.user.id != self.author_id:
@@ -114,6 +119,8 @@ class CalendarSession(discord.ui.View):
                     log.debug("Calendar: timeout edit failed user_id=%s", self.author_id, exc_info=True)
 
     async def finish(self, interaction: discord.Interaction) -> None:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await interaction.response.defer()
         async with self._lock:
             self.stop()
@@ -130,6 +137,8 @@ class CalendarSession(discord.ui.View):
         self, interaction: discord.Interaction, embed: discord.Embed, files: list[discord.File],
     ) -> None:
         """Réutilise une image inchangée ; chaque objet File est fermé même en cas d'échec."""
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         attachments = files
         if len(files) == 1 and self.message is not None:
             retained = next(
@@ -180,6 +189,8 @@ class CalendarDateModal(discord.ui.Modal):
         self.add_item(self.target)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if not await self.owner.interaction_check(interaction):
             return
         try:
@@ -203,6 +214,8 @@ class CalendrierView(CalendarSession):
         clock: Callable[[], datetime] | None = None, attach_files: bool = True,
         attachment_limit: int = 8 * 1024 * 1024, private: bool = False, registry=None,
     ):
+        if guild is not None:
+            require_guild(guild, getattr(self, "bot", None))
         super().__init__(author.id, getattr(guild, "id", None))
         self.events = events
         self.source = source or (lambda: self.events)
@@ -231,6 +244,8 @@ class CalendrierView(CalendarSession):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Les visiteurs peuvent consulter une fiche, mais jamais déplacer la vue d'autrui."""
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if not await self._check_context(interaction):
             return False
         if not self.private and interaction.message is not None:
@@ -496,6 +511,8 @@ class CalendrierView(CalendarSession):
         self, interaction: discord.Interaction, *, selected_filter: str | None = None,
     ) -> None:
         """Crée une session indépendante : aucune navigation ni inscription d'autrui n'est copiée."""
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if not await self._check_context(interaction):
             return
         state = replace(
@@ -519,6 +536,8 @@ class CalendrierView(CalendarSession):
                   interaction.user.id, self.author_id)
 
     async def change(self, interaction, transform: Callable[[CalendarState], CalendarState]) -> None:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await interaction.response.defer()
         async with self._lock:
             if self.is_finished():
@@ -548,18 +567,26 @@ class CalendrierView(CalendarSession):
 
     @discord.ui.button(label="Précédent", emoji="◀️", style=discord.ButtonStyle.secondary, row=0)
     async def previous_period(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.change(interaction, lambda state: state.step(-1))
 
     @discord.ui.button(label="Aujourd’hui", style=discord.ButtonStyle.primary, row=0)
     async def go_today(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.change(interaction, lambda state: replace(state, anchor=self.highlight_date, page=0))
 
     @discord.ui.button(label="Suivant", emoji="▶️", style=discord.ButtonStyle.secondary, row=0)
     async def next_period(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.change(interaction, lambda state: state.step(1))
 
     @discord.ui.button(label="Semaine", emoji="📋", style=discord.ButtonStyle.secondary, row=0)
     async def switch_mode(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.change(
             interaction,
             lambda state: replace(
@@ -569,6 +596,8 @@ class CalendrierView(CalendarSession):
 
     @discord.ui.select(placeholder="Choisir une activité · Détails et inscription", row=1)
     async def choose_event(self, interaction, select):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         event_id = select.values[0] if select.values else ""
         await interaction.response.defer(ephemeral=True, thinking=True)
         if snapshot_events(self.source()).get(event_id) is None:
@@ -589,6 +618,8 @@ class CalendrierView(CalendarSession):
 
     @discord.ui.select(placeholder="Filtres et options", row=2)
     async def choose_options(self, interaction, select):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         selected = select.values[0] if select.values else ""
         if selected == "private":
             await self.open_private(interaction)
@@ -608,9 +639,13 @@ class CalendrierView(CalendarSession):
             await notify(interaction, "Option inconnue. Relance `/calendrier`.")
 
     async def refresh(self, interaction) -> None:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.change(interaction, lambda state: state)
 
     async def upcoming(self, interaction) -> None:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         def target(state):
             snapshot = snapshot_events(self.source())
             page = make_page(snapshot, state, self.author_id, self.clock())
@@ -625,10 +660,14 @@ class CalendrierView(CalendarSession):
 
     @discord.ui.button(label="Activités précédentes", style=discord.ButtonStyle.secondary, row=3)
     async def previous_page(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.change(interaction, lambda state: replace(state, page=state.page - 1))
 
     @discord.ui.button(label="Activités suivantes", style=discord.ButtonStyle.secondary, row=3)
     async def next_page(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.change(interaction, lambda state: replace(state, page=state.page + 1))
 
 
@@ -637,6 +676,7 @@ class ActivityDetailView(CalendarSession):
         self, author_id: int, guild, source: EventSource, event_id: str,
         action: ActivityAction | None, clock: Callable[[], datetime],
     ):
+        require_guild(guild, getattr(self, "bot", None))
         super().__init__(author_id, getattr(guild, "id", None))
         self.guild = guild
         self.source = source
@@ -723,6 +763,8 @@ class ActivityDetailView(CalendarSession):
         return embed
 
     async def update(self, interaction, action: str | None = None) -> None:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await interaction.response.defer()
         async with self._lock:
             if self.is_finished():
@@ -740,18 +782,26 @@ class ActivityDetailView(CalendarSession):
 
     @discord.ui.button(label="S’inscrire", style=discord.ButtonStyle.success, row=0)
     async def join(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.update(interaction, "join")
 
     @discord.ui.button(label="Se désinscrire", style=discord.ButtonStyle.secondary, row=0)
     async def leave(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.update(interaction, "leave")
 
     @discord.ui.button(label="Actualiser", style=discord.ButtonStyle.secondary, row=0)
     async def refresh(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.update(interaction)
 
     @discord.ui.button(label="Texte complet", style=discord.ButtonStyle.secondary, row=1)
     async def full_text(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await interaction.response.defer()
         self.message = await interaction.original_response()
         event = snapshot_events(self.source()).get(self.event_id)
@@ -775,4 +825,6 @@ class ActivityDetailView(CalendarSession):
 
     @discord.ui.button(label="Fermer", style=discord.ButtonStyle.secondary, row=0)
     async def close(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.finish(interaction)

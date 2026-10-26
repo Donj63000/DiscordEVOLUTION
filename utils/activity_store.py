@@ -11,6 +11,7 @@ import discord
 from utils.activity_data import ActivityError
 from utils.console_json_store import ConsoleJSONSnapshotStore
 from utils.discord_history import fetch_channel_history
+from utils.guild_scope import require_guild
 
 log = logging.getLogger(__name__)
 MARKER = "===BOTACTIVITES==="
@@ -45,6 +46,7 @@ class ActivitySnapshotStore(ConsoleJSONSnapshotStore):
 
     async def load(self, channel) -> dict | None:
         """Never interpret a refused history request or a damaged snapshot as an empty database."""
+        require_guild(getattr(channel, "guild", None), self.bot)
         pins = await channel.pins()
         recent = await fetch_channel_history(
             channel, limit=max(self._history_limit(), 200),
@@ -78,6 +80,7 @@ class ActivitySnapshotStore(ConsoleJSONSnapshotStore):
 
     async def persist(self, channel, payload: dict):
         """Keep the previous message on any failure other than a confirmed deletion."""
+        require_guild(getattr(channel, "guild", None), self.bot)
         if self.channel_id not in (None, channel.id):
             raise ActivityError("La console des activités ne peut pas changer pendant une écriture.")
         body = json.dumps(payload, ensure_ascii=False, indent=2).replace("`", "\\u0060")

@@ -127,7 +127,7 @@ class SafetyTests(unittest.TestCase):
     def test_console_excluded_even_when_public_and_allowlisted(self):
         ctx = context()
         ctx.channel.name = "archives-bot"
-        with patch.dict("os.environ", {"CONSOLE_CHANNEL_NAME": "archives-bot"}, clear=True):
+        with patch.dict("os.environ", {"BOT_GUILD_ID": "1", "CONSOLE_CHANNEL_NAME": "archives-bot"}, clear=True):
             with self.assertRaisesRegex(EvoError, "console"):
                 ctx.check()
 
@@ -253,6 +253,8 @@ class DomainTests(unittest.IsolatedAsyncioTestCase):
         result = await self.tools.do_artisans(ctx, "tailleur", 1)
         self.assertEqual(len(result["artisans"]), 1)
         ctx.bot.guilds.append(Guild(9))
+        self.assertEqual((await self.tools.do_artisans(ctx, "tailleur", 1))["artisans"], result["artisans"])
+        ctx.guild = ctx.bot.guilds[-1]
         with self.assertRaises(EvoError):
             await self.tools.do_artisans(ctx, "tailleur", 1)
 

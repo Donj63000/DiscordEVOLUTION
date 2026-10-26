@@ -14,6 +14,8 @@ def runtime(request, monkeypatch, tmp_path):
     for key in ("JOB_CONSOLE_HISTORY_LIMIT", "CONSOLE_HISTORY_LIMIT", "JOB_CONSOLE_SYNC_TTL",
                 "CHANNEL_CONSOLE_ID", "CHANNEL_CONSOLE", "JOB_ALLOW_LOCAL_FALLBACK"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("BOT_GUILD_ID", "1")
+    monkeypatch.delenv("EVO_GUILD_ID", raising=False)
     monkeypatch.setenv("DISCORD_HISTORY_RETRIES", "0")
     if request.param == "sdk":
         wire = pytest.importorskip("discord", reason="SDK discord.py absent ; mode isolé disponible")

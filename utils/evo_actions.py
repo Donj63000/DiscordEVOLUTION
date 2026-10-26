@@ -1,6 +1,7 @@
 """Actions personnelles explicites, déléguées aux registres métier du bot."""
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 from datetime import datetime
 import logging
@@ -50,7 +51,7 @@ def _authorize(ctx, action):
         mentions = re.findall(r"<@!?(\d+)>", getattr(ctx, "request_text", ""))
         if any(int(identifier) != ctx.member.id for identifier in mentions):
             raise EvoError("Je peux modifier ton propre profil, pas celui d'un autre membre.")
-    if len(ctx.bot.guilds) != 1 or ctx.bot.guilds[0].id != ctx.guild.id:
+    if len(allowed_guilds(ctx.bot)) != 1 or allowed_guilds(ctx.bot)[0].id != ctx.guild.id:
         raise EvoError("Les actions personnelles attendent un registre identifié sur un serveur unique.")
 
 
@@ -222,7 +223,7 @@ async def create_activity(ctx, titre, quand, description, lieu, capacite, duree_
     ctx.check()
     if type(ctx.trigger_id) is not int:
         raise EvoError("La demande de création doit avoir un identifiant Discord.")
-    if len(ctx.bot.guilds) != 1 or ctx.bot.guilds[0].id != ctx.guild.id:
+    if len(allowed_guilds(ctx.bot)) != 1 or allowed_guilds(ctx.bot)[0].id != ctx.guild.id:
         raise EvoError("Le registre des activités doit appartenir à un serveur identifié.")
     try:
         values = creation_values(

@@ -2,7 +2,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from aioresponses import aioresponses
+from tests_support.http_mock import aioresponses
 import pytest
 import pytest_asyncio
 

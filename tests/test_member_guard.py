@@ -144,7 +144,8 @@ class DummyConsoleChannel:
 
 
 @pytest.mark.asyncio
-async def test_on_member_remove_records_former_member():
+async def test_on_member_remove_records_former_member(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "123")
     default_role = DummyRole(1, "@everyone")
     member_role = DummyRole(2, "Member")
     guild = DummyGuild(123, roles=[default_role, member_role])
@@ -166,6 +167,7 @@ async def test_on_member_remove_records_former_member():
 
 @pytest.mark.asyncio
 async def test_on_member_join_sends_alert(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "456")
     default_role = DummyRole(1, "@everyone")
     staff_role = DummyRole(3, "Staff")
     guild = DummyGuild(456, roles=[default_role, staff_role])
@@ -198,7 +200,8 @@ async def test_on_member_join_sends_alert(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reaction_cross_kicks_member():
+async def test_reaction_cross_kicks_member(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "789")
     default_role = DummyRole(1, "@everyone")
     staff_role = DummyRole(3, "Staff")
     guild = DummyGuild(789, roles=[default_role, staff_role])

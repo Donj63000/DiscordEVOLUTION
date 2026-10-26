@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, check_interaction_guild, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 import logging
 
@@ -33,6 +34,8 @@ class ActionConfirmation(discord.ui.View):
         self._lock = asyncio.Lock()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if interaction.user.id != self.owner_id or interaction.guild_id != self.guild_id:
             await send_interaction_error(interaction, "Cette confirmation appartient à une autre personne.")
             return False
@@ -43,6 +46,8 @@ class ActionConfirmation(discord.ui.View):
 
     async def _claim(self, interaction, content: str) -> bool:
         # Une double requête Discord ne doit jamais exécuter deux suppressions.
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         async with self._lock:
             if self._used or self.is_finished():
                 await send_interaction_error(interaction, "Cette demande a déjà été traitée.")
@@ -57,6 +62,8 @@ class ActionConfirmation(discord.ui.View):
     @discord.ui.button(label="Confirmer", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         # La méthode est aussi protégée lors d'un appel direct dans les tests.
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if not await self.interaction_check(interaction):
             return
         if not await self._claim(interaction, "Demande confirmée. Vérification des droits et traitement…"):
@@ -69,6 +76,8 @@ class ActionConfirmation(discord.ui.View):
 
     @discord.ui.button(label="Annuler", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if await self.interaction_check(interaction):
             await self._claim(interaction, "Action annulée. Aucune modification.")
 

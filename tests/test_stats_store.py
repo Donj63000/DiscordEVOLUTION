@@ -128,7 +128,9 @@ class _Bot:
         self._channel = channel
         self.user = object()
         channel.bot_user = self.user
-        self.guilds = [types.SimpleNamespace(text_channels=[channel])]
+        guild = types.SimpleNamespace(id=1, text_channels=[channel])
+        channel.guild = guild
+        self.guilds = [guild]
 
     def get_all_channels(self):
         return [self._channel]

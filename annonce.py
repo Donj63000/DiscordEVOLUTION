@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import discord
 from discord.ext import commands
 from utils.slash_support import delete_invocation_message
+from utils.dm_sessions import dm_workflow, dm_check_for, cancel_dm_flows
 
 from utils.channel_resolver import resolve_text_channel
 from utils.openai_config import (
@@ -254,7 +255,7 @@ def parse_mentions(raw: str, guild: discord.Guild) -> list[str]:
     """Accepte: @everyone, @here, <@&id>, @RoleName, RoleName, none/aucune."""
     cleaned = (raw or "").strip()
     if not cleaned:
-        cleaned = ANNOUNCE_DEFAULT_MENTIONS
+        cleaned = ANNONCE_DEFAULT_MENTIONS
 
     lowered = cleaned.strip().lower()
     if lowered in {"aucun", "aucune", "none", "no", "0"}:
@@ -501,11 +502,12 @@ class AnnonceCog(commands.Cog):
         allow_empty: bool = False,
     ) -> str:
         await dm.send(prompt)
+        routed = dm_check_for(self.bot)
         while True:
             try:
                 msg = await self.bot.wait_for(
                     "message",
-                    check=lambda m: m.author.id == author.id and m.channel.id == dm.id,
+                    check=lambda m: routed(m) and m.author.id == author.id and m.channel.id == dm.id,
                     timeout=DM_TIMEOUT,
                 )
             except asyncio.TimeoutError:
@@ -559,8 +561,12 @@ class AnnonceCog(commands.Cog):
             f"- delete_trigger: `{ANNONCE_DELETE_TRIGGER}`"
         )
 
+    def cog_unload(self):
+        cancel_dm_flows(self.bot, "annonce")
+
     @commands.command(name="annonce", aliases=["annoncestaff", "*annonce", "annonces"])
     @staff_only()
+    @dm_workflow("annonce", timeout=DM_TIMEOUT)
     async def annonce_cmd(self, ctx: commands.Context, *, quick: str | None = None):
         # sécurité: serveur only
         if ctx.guild is None:
