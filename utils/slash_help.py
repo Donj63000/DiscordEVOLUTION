@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, check_interaction_guild, configured_guild_id, is_allowed_guild, require_guild
 import logging
 import math
 
@@ -98,27 +99,37 @@ class HelpView(discord.ui.View):
         return embed
 
     async def interaction_check(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if interaction.user.id != self.owner_id:
             await send_interaction_error(interaction, "Ouvre ton propre guide avec `/aide`.")
             return False
         return True
 
     async def update(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         self.refresh()
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
     @discord.ui.select(placeholder="Choisir une catégorie")
     async def sections(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         self.section, self.page = select.values[0], 0
         await self.update(interaction)
 
     @discord.ui.button(label="Précédent", style=discord.ButtonStyle.secondary)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         self.page = max(0, self.page - 1)
         await self.update(interaction)
 
     @discord.ui.button(label="Suivant", style=discord.ButtonStyle.secondary)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         self.page = min(self.pages - 1, self.page + 1)
         await self.update(interaction)
 

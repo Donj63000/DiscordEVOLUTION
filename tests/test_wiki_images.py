@@ -4,7 +4,7 @@ import threading
 from unittest.mock import AsyncMock
 
 import aiohttp
-from aioresponses import CallbackResult, aioresponses
+from tests_support.http_mock import CallbackResult, aioresponses
 from PIL import Image, ImageDraw
 import pytest
 

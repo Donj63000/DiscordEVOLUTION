@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, check_interaction_guild, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 import json
 import logging
@@ -115,6 +116,8 @@ class VeteranPromotionButton(discord.ui.Button):
         return f"{label[:77]}..."
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         outcome = await self.cog.handle_veteran_promotion_interaction(
             interaction,
             member_id=self.member_id,
@@ -164,6 +167,8 @@ class VeteranPromotionView(discord.ui.View):
             )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         user = getattr(interaction, "user", None)
 
         if interaction.guild is None or not isinstance(user, discord.Member):
@@ -395,6 +400,7 @@ class UpCog(commands.Cog):
         }
 
     def _collect_veteran_candidates(self, guild: discord.Guild) -> list[dict]:
+        require_guild(guild, getattr(self, "bot", None))
         candidates: list[dict] = []
 
         for member in getattr(guild, "members", []) or []:
@@ -415,12 +421,14 @@ class UpCog(commands.Cog):
         await self._ensure_initialized()
         all_candidates: list[dict] = []
 
-        for guild in getattr(self.bot, "guilds", []) or []:
+        for guild in allowed_guilds(self.bot) or []:
             all_candidates.extend(self._collect_veteran_candidates(guild))
 
         return all_candidates
 
     async def scan_entire_history(self, guild: discord.Guild | None = None) -> None:
+        if guild is not None:
+            require_guild(guild, getattr(self, "bot", None))
         self.user_message_count.clear()
 
         scan_days = _parse_int_env("UP_SCAN_DAYS", 180, minimum=0)
@@ -432,7 +440,7 @@ class UpCog(commands.Cog):
         if scan_days > 0:
             after = discord.utils.utcnow() - timedelta(days=scan_days)
 
-        guilds = [guild] if guild is not None else list(getattr(self.bot, "guilds", []) or [])
+        guilds = [guild] if guild is not None else list(allowed_guilds(self.bot) or [])
 
         for target_guild in guilds:
             for channel in getattr(target_guild, "text_channels", []) or []:
@@ -524,6 +532,7 @@ class UpCog(commands.Cog):
     @commands.has_role(STAFF_ROLE_NAME)
     @commands.command(name="veteran", aliases=["vétéran"])
     async def veteran_command(self, ctx: commands.Context) -> None:
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if ctx.guild is None:
             await ctx.send("Commande disponible uniquement sur le serveur.")
             return
@@ -576,6 +585,7 @@ class UpCog(commands.Cog):
         *,
         prefer_fetch: bool = False,
     ) -> discord.Member | None:
+        require_guild(guild, getattr(self, "bot", None))
         fetch_member = getattr(guild, "fetch_member", None)
         if prefer_fetch and callable(fetch_member):
             try:
@@ -598,6 +608,7 @@ class UpCog(commands.Cog):
         return None
 
     def _resolve_announcement_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
+        require_guild(guild, getattr(self, "bot", None))
         return resolve_text_channel(
             guild,
             id_env="ANNONCE_CHANNEL_ID",
@@ -606,6 +617,7 @@ class UpCog(commands.Cog):
         )
 
     def _bot_member(self, guild: discord.Guild) -> discord.Member | None:
+        require_guild(guild, getattr(self, "bot", None))
         me = getattr(guild, "me", None)
         if me is not None:
             return me
@@ -621,6 +633,7 @@ class UpCog(commands.Cog):
         return None
 
     def _can_bot_assign_role(self, guild: discord.Guild, role: discord.Role) -> bool:
+        require_guild(guild, getattr(self, "bot", None))
         me = self._bot_member(guild)
         if me is None:
             return True
@@ -645,6 +658,8 @@ class UpCog(commands.Cog):
         member_id: int,
         candidate_snapshot: dict | None = None,
     ) -> PromotionOutcome:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -690,6 +705,8 @@ class UpCog(commands.Cog):
         candidate_snapshot: dict | None = None,
     ) -> PromotionOutcome:
         guild = member.guild
+        require_guild(guild, self.bot)
+        require_guild(getattr(promoted_by, "guild", None), self.bot)
         member_id = member.id
 
         if self._has_role(member, VETERAN_ROLE_NAME):

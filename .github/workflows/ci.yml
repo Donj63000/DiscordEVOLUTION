@@ -22,6 +22,22 @@ jobs:
         python-version:
           - '3.11'
           - '3.12'
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: discord_security_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d discord_security_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/discord_security_test
 
     steps:
       - name: Checkout repository
@@ -32,11 +48,21 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: requirements/linux-py*.lock
 
-      - name: Install dependencies
+      - name: Install hash-verified dependencies in a clean environment
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pytest-cov
+          python -m venv --without-pip "$RUNNER_TEMP/app-env"
+          echo "$RUNNER_TEMP/app-env/bin" >> "$GITHUB_PATH"
+          lock_version="${{ matrix.python-version }}"
+          lock_version="${lock_version/./}"
+          python -m pip --python "$RUNNER_TEMP/app-env/bin/python" install --require-hashes -r "requirements/linux-py${lock_version}.lock"
+          python -m pip --python "$RUNNER_TEMP/app-env/bin/python" check
+          mkdir -p artifacts
+          python -m pip --python "$RUNNER_TEMP/app-env/bin/python" freeze > artifacts/installed-${{ matrix.python-version }}.txt
+
+      - name: Run security regressions with the actual SDKs in isolation
+        run: python -m pytest tests_security -q -W error::pytest.PytestDeprecationWarning --junitxml=artifacts/security-${{ matrix.python-version }}.xml
 
       - name: Compile Python sources
         run: |
@@ -46,6 +72,8 @@ jobs:
             cogs \
             models \
             tests \
+            tests_security \
+            tests_support \
             utils
 
       - name: Run strict pytest suite
@@ -57,6 +85,23 @@ jobs:
             --cov=. \
             --cov-report=term-missing:skip-covered \
             --cov-report=xml:artifacts/coverage-${{ matrix.python-version }}.xml
+
+      - name: Audit every locked dependency with PyPI and OSV
+        if: always()
+        run: |
+          mkdir -p artifacts
+          python -m venv "$RUNNER_TEMP/audit-env"
+          "$RUNNER_TEMP/audit-env/bin/python" -m pip install pip-audit==2.10.1
+          lock_version="${{ matrix.python-version }}"
+          lock_version="${lock_version/./}"
+          set +e
+          "$RUNNER_TEMP/audit-env/bin/pip-audit" -r "requirements/linux-py${lock_version}.lock" --require-hashes --disable-pip --strict --vulnerability-service pypi --format json --output artifacts/audit-pypi-${{ matrix.python-version }}.json
+          audit_pypi_status=$?
+          "$RUNNER_TEMP/audit-env/bin/pip-audit" -r "requirements/linux-py${lock_version}.lock" --require-hashes --disable-pip --strict --vulnerability-service osv --format json --output artifacts/audit-osv-${{ matrix.python-version }}.json
+          audit_osv_status=$?
+          set -e
+          test "$audit_pypi_status" -eq 0
+          test "$audit_osv_status" -eq 0
 
       - name: Validate FM model invariants with Monte Carlo
         run: |

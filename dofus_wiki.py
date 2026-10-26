@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, check_interaction_guild, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 from dataclasses import dataclass, replace
 from io import BytesIO
@@ -69,6 +70,8 @@ class WikiView(discord.ui.View):
         cog.views.add(self)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
                 "Lance ta propre recherche avec /objet, /recette, /equipement ou /monstre.",
@@ -99,6 +102,8 @@ class WikiView(discord.ui.View):
                     log.debug("Wiki: expired_view_message_unavailable", exc_info=True)
 
     async def ensure_active(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if self.is_finished() or self.cog._closed:
             await interaction.followup.send("Ce menu a expiré. Relance ta recherche.", ephemeral=True)
             return False
@@ -180,12 +185,18 @@ class ResultView(WikiView):
         return embed
 
     async def go_previous(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.move(interaction, -1)
 
     async def go_next(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.move(interaction, 1)
 
     async def move(self, interaction, direction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await interaction.response.defer()
         async with self.lock:
             if not await self.ensure_active(interaction):
@@ -205,6 +216,8 @@ class ResultView(WikiView):
                            self.fuzzy, self.stale, self.page)
 
     async def choose(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         selected = interaction.data.get("values", [])
         await interaction.response.defer()
         async with self.lock:
@@ -335,12 +348,18 @@ class DetailView(WikiView):
         return self.pages[self.page]
 
     async def go_previous(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.move(interaction, -1)
 
     async def go_next(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.move(interaction, 1)
 
     async def move(self, interaction, direction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await interaction.response.defer()
         async with self.lock:
             if not await self.ensure_active(interaction):
@@ -349,6 +368,8 @@ class DetailView(WikiView):
             await self.change_page(interaction, page=page)
 
     async def choose_section(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await interaction.response.defer()
         async with self.lock:
             if not await self.ensure_active(interaction):
@@ -366,6 +387,8 @@ class DetailView(WikiView):
 
     async def edit_page(self, interaction):
         """Je remplace ensemble la fiche et sa carte, avec repli sur le texte."""
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         page = self.current_item_page()
         rendered = None
         if page is not None and page.map_spec is not None:
@@ -424,6 +447,8 @@ class DetailView(WikiView):
         prospecting=UNCHANGED,
     ):
         """Je conserve l'état visible si la publication échoue ou si le menu expire."""
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         previous = (
             self.action, self.pages, self.page, self.quantity, self.section,
             self.section_positions.copy(), self.prospecting, self.sections,
@@ -467,6 +492,8 @@ class DetailView(WikiView):
         self.refresh()
 
     async def toggle_action(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await interaction.response.defer()
         async with self.lock:
             if not await self.ensure_active(interaction):
@@ -484,9 +511,13 @@ class DetailView(WikiView):
             await self.change_page(interaction, action=action, pages=pages, page=page)
 
     async def update_detail(self, interaction, action, pages, quantity):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.change_page(interaction, action=action, pages=pages, quantity=quantity)
 
     async def return_to_results(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await interaction.response.defer()
         async with self.lock:
             if not await self.ensure_active(interaction):
@@ -501,6 +532,8 @@ class DetailView(WikiView):
             log.debug("Wiki: results_restored page=%s quantity=%s", state.page, state.quantity)
 
     async def open_quantity(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if self.is_finished():
             await interaction.response.send_message("Ce menu a expiré. Relance ta recherche.", ephemeral=True)
             return
@@ -513,6 +546,8 @@ class DetailView(WikiView):
 
     async def open_prospecting(self, interaction: discord.Interaction) -> None:
         """Un formulaire doit être la réponse initiale : je n'attends pas un rendu verrouillé."""
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if self.is_finished() or self.cog._closed:
             await interaction.response.send_message(
                 "Ce menu a expiré. Relance ta recherche.", ephemeral=True,
@@ -573,9 +608,13 @@ class ProspectingModal(discord.ui.Modal, title="Prospection personnalisée"):
         self.stop()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         return await self.view.interaction_check(interaction)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         try:
             await interaction.response.defer()
             async with self.view.lock:
@@ -623,9 +662,13 @@ class RecipeQuantityModal(discord.ui.Modal, title="Quantité à fabriquer"):
         self.stop()
 
     async def interaction_check(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         return await self.view.interaction_check(interaction)
 
     async def on_submit(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await interaction.response.defer()
         try:
             async with self.view.lock:
@@ -767,6 +810,7 @@ class DofusWikiCog(commands.Cog):
             return None
 
     async def search(self, ctx, query, action, quantity=1):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if not query or not query.strip():
             names = {"item": "objet", "recipe": "recette", "monster": "monstre"}
             command = names[action]
@@ -805,6 +849,7 @@ class DofusWikiCog(commands.Cog):
     @commands.cooldown(4, 10, commands.BucketType.user)
     async def objet_command(self, ctx, *, nom: str = ""):
         """Je consulte les caractéristiques d'un objet Rétro."""
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         await self.search(ctx, nom, "item")
 
     @commands.command(name="recette")
@@ -812,6 +857,7 @@ class DofusWikiCog(commands.Cog):
     @commands.cooldown(4, 10, commands.BucketType.user)
     async def recette_command(self, ctx, *, recherche: str = ""):
         """Je calcule une recette avec !recette [quantité] nom de l'objet."""
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         match = re.fullmatch(r"([+-]?\d+)\s+(.+)", recherche.strip(), flags=re.DOTALL)
         quantity, query = (int(match[1]), match[2]) if match else (1, recherche)
         if not 1 <= quantity <= MAX_QUANTITY:
@@ -824,6 +870,7 @@ class DofusWikiCog(commands.Cog):
     @commands.cooldown(4, 10, commands.BucketType.user)
     async def monstre_command(self, ctx, *, nom: str = ""):
         """Je consulte les statistiques et résistances du monstre sélectionné."""
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         await self.search(ctx, nom, "monster")
 
     @commands.command(name="equipement")
@@ -833,6 +880,7 @@ class DofusWikiCog(commands.Cog):
         self, ctx, categorie: str = "", niveau: int = 200, niveau_min: int = 1, *, nom: str = "",
     ):
         """Je cherche un type d'équipement jusqu'au niveau demandé."""
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if not categorie:
             await ctx.send("Utilise `/equipement type:Chapeau niveau:100` ou `!equipement coiffe 100`.")
             return

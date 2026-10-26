@@ -8,7 +8,7 @@ import threading
 from unittest.mock import AsyncMock
 
 import aiohttp
-from aioresponses import CallbackResult, aioresponses
+from tests_support.http_mock import CallbackResult, aioresponses
 import pytest
 
 from utils.dofus_wiki import WikiDetail, WikiEntry

@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import copy
 
+import discord
 import pytest
+from discord.ext import commands
 
 from iastaff import IAStaff
 
@@ -12,6 +15,9 @@ class FakeMember:
         self.display_name = display_name
         self.name = display_name
         self.roles = []
+        self.bot = False
+        self.guild_permissions = discord.Permissions.none()
+        self.top_role = SimpleNamespace(position=1)
         self.add_roles = AsyncMock()
         self.remove_roles = AsyncMock()
 
@@ -20,12 +26,36 @@ class FakeRole:
     def __init__(self, role_id, name):
         self.id = role_id
         self.name = name
+        self.position = 2
+        self.managed = False
+        self.permissions = discord.Permissions.none()
+
+    def is_default(self):
+        return False
 
 
 class FakeGuild:
     def __init__(self, members=None, roles=None):
+        self.id = 1000
+        self.owner_id = 99999
         self._members = members or []
         self._roles = roles or []
+        for obj in [*self._members, *self._roles]:
+            obj.guild = self
+        self.me = FakeMember(9999, "Bot")
+        self.me.guild = self
+        self.me.guild_permissions = discord.Permissions(manage_roles=True)
+        self.me.top_role = SimpleNamespace(position=20)
+        self.fetch_member = AsyncMock(side_effect=self._fetch_member)
+        self.fetch_roles = AsyncMock(side_effect=lambda: list(self._roles))
+
+    async def _fetch_member(self, member_id):
+        if member_id == self.me.id:
+            return self.me
+        member = self.get_member(member_id)
+        if member is None:
+            raise RuntimeError("Unknown synthetic member")
+        return member
 
     def get_member(self, member_id):
         for member in self._members:
@@ -51,8 +81,14 @@ class FakeGuild:
 class FakeContext:
     def __init__(self, members=None, roles=None):
         self.channel = SimpleNamespace(id=777)
-        self.author = SimpleNamespace(id=111)
+        self.author = FakeMember(111, "StaffActor")
+        self.author.roles = [SimpleNamespace(name="Staff")]
+        self.author.guild_permissions = discord.Permissions(manage_roles=True)
+        self.author.top_role = SimpleNamespace(position=10)
         self.guild = FakeGuild(members or [], roles or [])
+        self.author.guild = self.guild
+        self.guild._members.append(self.author)
+        self.command = None
         self.invoke = AsyncMock()
 
 
@@ -118,8 +154,27 @@ class StubPlayersCog:
     async def _ensure_initialized(self):
         self.initialized = True
 
-    def _verifier_et_fusionner_id(self, vrai_id: str, *aliases: str):
-        return
+    def get_member_record(self, guild_id, user_id):
+        return copy.deepcopy(self.persos_data.get(str(user_id)))
+
+    def resolve_member_record(self, guild_id, query):
+        if str(query) in self.persos_data:
+            return str(query), self.get_member_record(guild_id, query)
+        return None
+
+    def add_mule(self, guild_id, user_id, mule, discord_name=""):
+        entry = self.persos_data.setdefault(str(user_id), {"discord_name": discord_name, "main": "", "mules": []})
+        if mule in entry["mules"]:
+            return False
+        entry["mules"].append(mule)
+        return True
+
+    def remove_mule(self, guild_id, user_id, mule):
+        entry = self.persos_data[str(user_id)]
+        if mule not in entry["mules"]:
+            return None
+        entry["mules"].remove(mule)
+        return mule
 
     async def dump_data_to_console(self, ctx):
         self.dump_ctx = ctx
@@ -133,6 +188,20 @@ class StubPlayersCog:
 
 @pytest.fixture
 def iastaff_tools_cog(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "1000")
+    monkeypatch.setenv("IASTAFF_ALLOWED_ROLE_IDS", "999,998")
+    # These are dispatch/formatting unit tests. Real SDK command checks,
+    # cooldowns, hooks and converters are exercised in tests_security.
+    monkeypatch.setattr("iastaff.check_command", AsyncMock())
+
+    async def unit_invoke(ctx, command, *args, **kwargs):
+        return await ctx.invoke(command, *args, **kwargs)
+
+    async def unit_convert(ctx, command, args, kwargs):
+        return args, kwargs
+
+    monkeypatch.setattr("iastaff.invoke_checked", unit_invoke)
+    monkeypatch.setattr("iastaff.convert_arguments", unit_convert)
     monkeypatch.setattr("iastaff.AsyncOpenAI", None)
     bot = SimpleNamespace(
         guilds=[],
@@ -158,13 +227,24 @@ def iastaff_tools_cog(monkeypatch):
     return cog
 
 
+async def dispatch_confirmed(cog, ctx, name, payload):
+    before = ctx.invoke.await_count
+    response = await cog._dispatch_command_tool(ctx, name, payload)
+    if cog._requires_confirmation(name):
+        assert ctx.invoke.await_count == before
+        assert "Action sensible" in response
+        nonce = next(reversed(cog.pending_confirmations))
+        return await cog._confirm_pending_action(ctx, nonce)
+    return response
+
+
 @pytest.mark.asyncio
 async def test_dispatch_command_tool_create_activity_invokes_command(iastaff_tools_cog):
     ctx = FakeContext()
-    dummy_command = object()
+    dummy_command = SimpleNamespace(qualified_name="job")
     iastaff_tools_cog.bot.get_command = lambda name: dummy_command if name == "activite" else None
 
-    ack = await iastaff_tools_cog._dispatch_command_tool(
+    ack = await dispatch_confirmed(iastaff_tools_cog,
         ctx,
         "create_activity",
         {"title": "Donjon Blop", "datetime": "16/11/2025 21:00", "description": "6 places"},
@@ -183,7 +263,7 @@ async def test_dispatch_command_tool_missing_command_raises(iastaff_tools_cog):
     ctx = FakeContext()
     iastaff_tools_cog.bot.get_command = lambda name: None
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(commands.CommandError):
         await iastaff_tools_cog._dispatch_command_tool(ctx, "start_organisation", {})
 
 
@@ -212,7 +292,7 @@ async def test_dispatch_command_tool_show_warnings_resolves_member(iastaff_tools
     warnings_cmd = object()
     iastaff_tools_cog.bot.get_command = lambda name: warnings_cmd if name == "warnings" else None
 
-    ack = await iastaff_tools_cog._dispatch_command_tool(
+    ack = await dispatch_confirmed(iastaff_tools_cog,
         ctx,
         "show_warnings",
         {"member": "<@222>"},
@@ -228,7 +308,7 @@ async def test_dispatch_command_tool_stats_enable_handles_group_command(iastaff_
     stats_on_cmd = object()
     iastaff_tools_cog.bot.get_command = lambda name: stats_on_cmd if name == "stats on" else None
 
-    ack = await iastaff_tools_cog._dispatch_command_tool(ctx, "stats_enable", {})
+    ack = await dispatch_confirmed(iastaff_tools_cog,ctx, "stats_enable", {})
 
     ctx.invoke.assert_awaited_once_with(stats_on_cmd)
     assert "activée" in ack
@@ -241,7 +321,7 @@ async def test_dispatch_command_tool_job_lookup_profession_passes_positionals(ia
     iastaff_tools_cog.bot.get_command = lambda name: job_cmd if name == "job" else None
     iastaff_tools_cog._summarize_job_profession = AsyncMock(return_value="Il y a 2 bijoutiers.")
 
-    ack = await iastaff_tools_cog._dispatch_command_tool(
+    ack = await dispatch_confirmed(iastaff_tools_cog,
         ctx,
         "job_lookup_profession",
         {"profession": "paysan"},
@@ -258,7 +338,7 @@ async def test_dispatch_command_tool_start_event_requires_details(iastaff_tools_
     event_cmd = object()
     iastaff_tools_cog.bot.get_command = lambda name: event_cmd if name == "event" else None
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(commands.CommandError):
         await iastaff_tools_cog._dispatch_command_tool(ctx, "start_event", {"title": "Raid"})
 
 
@@ -268,7 +348,7 @@ async def test_dispatch_command_tool_start_event_formats_summary(iastaff_tools_c
     event_cmd = object()
     iastaff_tools_cog.bot.get_command = lambda name: event_cmd if name == "event" else None
 
-    ack = await iastaff_tools_cog._dispatch_command_tool(
+    ack = await dispatch_confirmed(iastaff_tools_cog,
         ctx,
         "start_event",
         {"title": "Raid Café", "date_time": "Samedi 21h", "description": "Farm de guilde."},
@@ -330,7 +410,7 @@ async def test_set_member_job_updates_target(iastaff_tools_cog):
     stub.jobs_data = {}
     iastaff_tools_cog.job_stub = stub
 
-    ack = await iastaff_tools_cog._dispatch_command_tool(
+    ack = await dispatch_confirmed(iastaff_tools_cog,
         ctx,
         "set_member_job",
         {"member": "<@444>", "job": "Bucheron", "level": 80},
@@ -349,7 +429,7 @@ async def test_remove_member_job_handles_missing(iastaff_tools_cog):
     stub.jobs_data = {str(member.id): {"name": member.display_name, "jobs": {"Bijoutier": 60}}}
     iastaff_tools_cog.job_stub = stub
 
-    ack = await iastaff_tools_cog._dispatch_command_tool(
+    ack = await dispatch_confirmed(iastaff_tools_cog,
         ctx,
         "remove_member_job",
         {"member": "Crafter", "job": "Bijoutier"},
@@ -366,7 +446,7 @@ async def test_add_member_mule_creates_entry(iastaff_tools_cog):
     stub_players = StubPlayersCog()
     iastaff_tools_cog.players_stub = stub_players
 
-    ack = await iastaff_tools_cog._dispatch_command_tool(
+    ack = await dispatch_confirmed(iastaff_tools_cog,
         ctx,
         "add_member_mule",
         {"member": "Diso-Team", "mule": "Diso-Farm"},
@@ -386,7 +466,7 @@ async def test_remove_member_mule_updates_data(iastaff_tools_cog):
     }
     iastaff_tools_cog.players_stub = stub_players
 
-    ack = await iastaff_tools_cog._dispatch_command_tool(
+    ack = await dispatch_confirmed(iastaff_tools_cog,
         ctx,
         "remove_member_mule",
         {"member": "Krosmo", "mule": "Diso-Farm"},
@@ -399,14 +479,13 @@ async def test_remove_member_mule_updates_data(iastaff_tools_cog):
 @pytest.mark.asyncio
 async def test_run_bot_command_invokes_generic_command(iastaff_tools_cog):
     ctx = FakeContext()
-    dummy_command = object()
+    dummy_command = SimpleNamespace(qualified_name="job")
     iastaff_tools_cog.bot.get_command = lambda name: dummy_command if name == "job" else None
 
-    ack = await iastaff_tools_cog._dispatch_command_tool(
+    ack = await dispatch_confirmed(iastaff_tools_cog,
         ctx,
         "run_bot_command",
         {"command": "job", "positional_args": ["liste"], "keyword_args": {"foo": "bar"}},
-        skip_confirmation=True,
     )
 
     ctx.invoke.assert_awaited_once_with(dummy_command, "liste", foo="bar")
@@ -416,7 +495,7 @@ async def test_run_bot_command_invokes_generic_command(iastaff_tools_cog):
 @pytest.mark.asyncio
 async def test_run_bot_command_requires_confirmation_by_default(iastaff_tools_cog):
     ctx = FakeContext()
-    dummy_command = object()
+    dummy_command = SimpleNamespace(qualified_name="job")
     iastaff_tools_cog.bot.get_command = lambda name: dummy_command if name == "job" else None
 
     ack = await iastaff_tools_cog._dispatch_command_tool(
@@ -435,29 +514,28 @@ async def test_run_bot_command_blocks_dangerous_commands(iastaff_tools_cog):
     ctx = FakeContext()
     iastaff_tools_cog.bot.get_command = lambda name: object()
 
-    with pytest.raises(RuntimeError, match="Commande interdite"):
+    with pytest.raises(commands.CommandError, match="Commande interdite"):
         await iastaff_tools_cog._dispatch_command_tool(
             ctx,
             "run_bot_command",
             {"command": "clear"},
-            skip_confirmation=True,
-        )
+            )
 
 
 @pytest.mark.asyncio
 async def test_grant_role_adds_role(iastaff_tools_cog):
     member = FakeMember(888, "Clody")
-    role = FakeRole(999, "Staff")
+    role = FakeRole(999, "Membre")
     ctx = FakeContext(members=[member], roles=[role])
 
-    ack = await iastaff_tools_cog._dispatch_command_tool(
+    ack = await dispatch_confirmed(iastaff_tools_cog,
         ctx,
         "grant_role",
         {"member": "<@888>", "role": "<@&999>"},
     )
 
     member.add_roles.assert_awaited_once()
-    assert "Staff" in ack
+    assert "Membre" in ack
 
 
 @pytest.mark.asyncio
@@ -467,11 +545,10 @@ async def test_revoke_role_handles_missing_role(iastaff_tools_cog):
     member.roles.append(role)
     ctx = FakeContext(members=[member], roles=[role])
 
-    ack = await iastaff_tools_cog._dispatch_command_tool(
+    ack = await dispatch_confirmed(iastaff_tools_cog,
         ctx,
         "revoke_role",
         {"member": "Dwzo", "role": "Validé"},
-        skip_confirmation=True,
     )
 
     member.remove_roles.assert_awaited_once()

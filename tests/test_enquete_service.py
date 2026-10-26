@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 import tempfile
 import unittest
+import pytest
 from unittest.mock import AsyncMock, patch
 
 from utils.enquete_core import Alias, Config, EnqueteError, ReportMeta, Window, Workspace, snowflake_at
@@ -18,6 +19,12 @@ UTC = timezone.utc
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 GID, TARGET, BOT, REQUESTER, READER = 900000000000000001, 111000000000000001, 2, 3, 4
 DEST, SOURCE, SOURCE2, ROLE = 910000000000000001, 20, 21, 80
+
+
+@pytest.fixture(autouse=True)
+def evolution_guild(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", str(GID))
+
 
 
 def permissions(**kw):
@@ -503,7 +510,9 @@ class CollectorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_legacy_global_bases_need_manual_guild_binding(self):
         self.data["ModerationCog"] = NS(warnings={str(TARGET): 3})
-        self.data["PlayersCog"] = NS(persos_data={str(TARGET): {"main": "AncienPersonnage", "mules": ["AutreNom"]}})
+        self.data["PlayersCog"] = NS(get_member_record=lambda gid, uid: (
+            {"main": "AncienPersonnage", "mules": ["AutreNom"]}
+            if (gid, uid) == (GID, TARGET) else None))
         await self.collector.legacy()
         self.assertEqual(self.meta.identity, {})
         self.collector.cfg = replace(self.cfg, legacy_guild=GID)

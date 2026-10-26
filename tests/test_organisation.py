@@ -9,6 +9,11 @@ import pytest
 import organisation
 
 
+@pytest.fixture(autouse=True)
+def evolution_guild(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "123")
+
+
 class DummyResponses:
     def __init__(self, payloads):
         self._payloads = list(payloads)
@@ -336,7 +341,7 @@ async def test_load_events_from_console_tolerates_whitespace(monkeypatch):
 
     event = organisation.OrganisationEvent(
         id="evt-1",
-        guild_id=1,
+        guild_id=123,
         channel_id=2,
         message_id=3,
         author_id=4,
@@ -370,7 +375,7 @@ async def test_load_events_from_console_tolerates_whitespace(monkeypatch):
     monkeypatch.setattr(cog, "_console_channel", fake_console_channel)
     monkeypatch.setattr(cog, "_fetch_history", fake_fetch_history)
 
-    loaded = await cog._load_events_from_console(MagicMock())
+    loaded = await cog._load_events_from_console(SimpleNamespace(id=123))
 
     assert loaded == 1
     assert event.message_id in cog._events
@@ -532,6 +537,7 @@ async def test_reaction_handlers_sync_temp_role(monkeypatch):
     await cog.on_raw_reaction_add(
         SimpleNamespace(
             message_id=event.message_id,
+            guild_id=guild.id,
             user_id=member.id,
             emoji=organisation.EMOJI_GOING,
             member=member,
@@ -546,6 +552,7 @@ async def test_reaction_handlers_sync_temp_role(monkeypatch):
     await cog.on_raw_reaction_add(
         SimpleNamespace(
             message_id=event.message_id,
+            guild_id=guild.id,
             user_id=member.id,
             emoji=organisation.EMOJI_MAYBE,
             member=member,
@@ -562,7 +569,7 @@ async def test_reaction_handlers_sync_temp_role(monkeypatch):
     member.roles.append(role)
 
     await cog.on_raw_reaction_remove(
-        SimpleNamespace(message_id=event.message_id, user_id=member.id, emoji=organisation.EMOJI_GOING)
+        SimpleNamespace(guild_id=guild.id, message_id=event.message_id, user_id=member.id, emoji=organisation.EMOJI_GOING)
     )
 
     assert member.roles == []

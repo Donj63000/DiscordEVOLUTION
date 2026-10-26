@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 import json
 import logging
@@ -93,16 +94,18 @@ class FormerMemberGuardCog(commands.Cog):
             log.debug("Former member guard initialized with %s guilds.", len(self.data.get("guilds", {})))
 
     async def _warm_invite_cache(self) -> None:
-        for guild in getattr(self.bot, "guilds", []):
+        for guild in allowed_guilds(self.bot):
             await self._refresh_invite_cache(guild)
 
     async def _resolve_console_channel(
         self, guild: Optional[discord.Guild] = None
     ) -> Optional[discord.TextChannel]:
+        if guild is not None:
+            require_guild(guild, getattr(self, "bot", None))
         candidates = []
         if guild:
             candidates.append(guild)
-        for g in getattr(self.bot, "guilds", []):
+        for g in allowed_guilds(self.bot):
             if g not in candidates:
                 candidates.append(g)
         for g in candidates:
@@ -266,6 +269,8 @@ class FormerMemberGuardCog(commands.Cog):
         return None
 
     async def _persist_data(self, guild: Optional[discord.Guild] = None) -> None:
+        if guild is not None:
+            require_guild(guild, getattr(self, "bot", None))
         console_channel = await self._resolve_console_channel(guild)
         if not console_channel:
             log.warning("Console channel not found; former member data not persisted.")
@@ -317,6 +322,7 @@ class FormerMemberGuardCog(commands.Cog):
                     self.pending_alerts[int(message_id)] = (int(guild_id), int(user_id))
 
     def _guild_bucket(self, guild_id: int) -> Dict[str, Any]:
+        require_guild(guild_id, getattr(self, "bot", None))
         guilds = self.data.setdefault("guilds", {})
         bucket = guilds.setdefault(str(guild_id), {"members": {}})
         if "members" not in bucket:
@@ -324,10 +330,12 @@ class FormerMemberGuardCog(commands.Cog):
         return bucket
 
     def _get_member_record(self, guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+        require_guild(guild_id, getattr(self, "bot", None))
         bucket = self._guild_bucket(guild_id)
         return bucket["members"].get(str(user_id))
 
     def _set_member_record(self, guild_id: int, user_id: int, record: Dict[str, Any]) -> None:
+        require_guild(guild_id, getattr(self, "bot", None))
         bucket = self._guild_bucket(guild_id)
         bucket["members"][str(user_id)] = record
 
@@ -349,12 +357,14 @@ class FormerMemberGuardCog(commands.Cog):
         return roles
 
     def _staff_mention(self, guild: discord.Guild) -> str:
+        require_guild(guild, getattr(self, "bot", None))
         staff_role = discord.utils.get(guild.roles, name=STAFF_ROLE_NAME)
         if staff_role:
             return staff_role.mention
         return "@Staff"
 
     def _inviter_label(self, guild: discord.Guild, info: Optional[Dict[str, Any]]) -> str:
+        require_guild(guild, getattr(self, "bot", None))
         if not info:
             return "inconnu"
         inviter_id = info.get("inviter_id")
@@ -375,6 +385,8 @@ class FormerMemberGuardCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
+        if not is_allowed_guild(getattr(member, "guild", None), getattr(self, "bot", None)):
+            return
         if member.bot:
             return
         await self._ensure_initialized()
@@ -395,6 +407,8 @@ class FormerMemberGuardCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
+        if not is_allowed_guild(getattr(member, "guild", None), getattr(self, "bot", None)):
+            return
         if member.bot:
             return
         await self._ensure_initialized()
@@ -445,6 +459,8 @@ class FormerMemberGuardCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        if not is_allowed_guild(getattr(payload, "guild_id", None), getattr(self, "bot", None)):
+            return
         if payload.message_id not in self.pending_alerts:
             return
         if payload.user_id == getattr(self.bot.user, "id", None):
@@ -493,6 +509,7 @@ class FormerMemberGuardCog(commands.Cog):
         await self._persist_data(guild)
 
     async def _notify_kick_failure(self, guild: discord.Guild, channel_id: Optional[int], target_id: int) -> None:
+        require_guild(guild, getattr(self, "bot", None))
         if channel_id is None:
             return
         channel = self.bot.get_channel(channel_id)
@@ -502,11 +519,13 @@ class FormerMemberGuardCog(commands.Cog):
             )
 
     async def _refresh_invite_cache(self, guild: discord.Guild) -> Dict[str, Dict[str, Any]]:
+        require_guild(guild, getattr(self, "bot", None))
         invites = await self._fetch_invites(guild)
         self.invite_cache[guild.id] = invites
         return invites
 
     async def _fetch_invites(self, guild: discord.Guild) -> Dict[str, Dict[str, Any]]:
+        require_guild(guild, getattr(self, "bot", None))
         invites = {}
         if not hasattr(guild, "invites"):
             return invites
@@ -559,6 +578,8 @@ class FormerMemberGuardCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_invite_create(self, invite: discord.Invite) -> None:
+        if not is_allowed_guild(getattr(invite, "guild", None), getattr(self, "bot", None)):
+            return
         guild_id = invite.guild.id
         cache = self.invite_cache.setdefault(guild_id, {})
         inviter = invite.inviter
@@ -573,6 +594,8 @@ class FormerMemberGuardCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_invite_delete(self, invite: discord.Invite) -> None:
+        if not is_allowed_guild(getattr(invite, "guild", None), getattr(self, "bot", None)):
+            return
         guild_id = invite.guild.id
         cache = self.invite_cache.get(guild_id, {})
         cache.pop(invite.code, None)

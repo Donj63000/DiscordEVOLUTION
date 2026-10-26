@@ -183,7 +183,10 @@ async def test_staff_handles_router_error_without_a_second_generation():
     cog._build_channel_context = AsyncMock(return_value="")
     cog._make_messages = lambda *args: MESSAGES
     cog._ask_model = AsyncMock()
-    ctx = SimpleNamespace(message=None, typing=Typing, reply=AsyncMock())
+    ctx = SimpleNamespace(message=None, typing=Typing, reply=AsyncMock(), author=SimpleNamespace(id=7))
+    # This test isolates SDK failure handling; authorisation is covered with
+    # actual command dispatch in tests_security/test_iastaff_policy.py.
+    cog._authorised_context = AsyncMock(return_value=ctx)
 
     await cog.handle_staff_message(SimpleNamespace(id=42), SimpleNamespace(id=7), "Bonjour", ctx=ctx)
 

@@ -8,13 +8,14 @@ import importlib.util
 import json
 import logging
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
 from utils.exo_engine import D, Item, Rune, Rates, State, attempt
 from utils.exo_session import Session, export_session
 from utils.fm_retro_limits import HistoryBudget, history_size
+from utils.guild_scope import GuildScopeError, require_guild
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,23 +29,30 @@ def session_with_history(count=3):
     return session
 
 
-def original_commit():
+def original_methods():
     tree = ast.parse((ROOT / "exo.py").read_text(encoding="utf-8"))
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ExoView")
-    function = next(node for node in cls.body if getattr(node, "name", None) == "_commit")
+    functions = [node for node in cls.body
+                 if getattr(node, "name", None) in {"_commit", "_require_guild_context"}]
     module = ast.Module(body=[
-        ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), function
+        ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), *functions
     ], type_ignores=[])
     env = {"copy": copy, "asyncio": asyncio, "history_size": history_size,
-           "log": logging.getLogger(__name__)}
+           "log": logging.getLogger(__name__), "require_guild": require_guild}
     exec(compile(ast.fix_missing_locations(module), str(ROOT / "exo.py"), "exec"), env)
-    return env["_commit"]
+    return env
+
+
+def original_commit():
+    return original_methods()["_commit"]
 
 
 def fake_view(session, budget, publish):
-    view = SimpleNamespace(session=session, undo_session=None, retired=False, owner_id=1,
-                           evo_uncertain=True, cog=SimpleNamespace(history_budget=budget),
+    view = SimpleNamespace(session=session, undo_session=None, retired=False, owner_id=1, guild_id=1,
+                           evo_uncertain=True, cog=SimpleNamespace(history_budget=budget,
+                                                                 bot=SimpleNamespace(allowed_guild_id=1)),
                            rebuild=lambda: None, publish=publish)
+    view._require_guild_context = MethodType(original_methods()["_require_guild_context"], view)
     budget.reserve(id(view), history_size(session))
     return view
 
@@ -107,6 +115,25 @@ async def test_original_commit_does_not_resurrect_retired_reservation():
     view = fake_view(session_with_history(), budget, publish)
     await original_commit()(view, None, session_with_history(1))
     assert budget.used == 0 and not budget.allocations
+
+
+@pytest.mark.asyncio
+async def test_original_commit_refuses_foreign_workshop_before_mutation():
+    called = False
+    async def publish(_interaction):
+        nonlocal called
+        called = True
+    initial = session_with_history(2)
+    candidate = session_with_history(3)
+    budget = HistoryBudget()
+    view = fake_view(initial, budget, publish)
+    view.guild_id = 2
+    allocations = budget.allocations.copy()
+    with pytest.raises(GuildScopeError):
+        await original_commit()(view, None, candidate, undo=True)
+    assert view.session is initial and view.undo_session is None
+    assert candidate.revision == 0 and budget.allocations == allocations
+    assert not called
 
 
 @pytest.fixture

@@ -15,7 +15,7 @@ from utils.evo_config import EvoError
 
 class DiscordWorkflowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        enabled = patch.dict(os.environ, {"EVO_ENABLED": "1"}, clear=True)
+        enabled = patch.dict(os.environ, {"BOT_GUILD_ID": "1", "EVO_ENABLED": "1"}, clear=True)
         enabled.start()
         self.addCleanup(enabled.stop)
         self.ctx = context(config(cooldown=0))

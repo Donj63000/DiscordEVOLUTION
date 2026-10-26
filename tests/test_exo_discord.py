@@ -23,6 +23,12 @@ REAL_EVALUATE = discord.utils.evaluate_annotation
 REAL_INSIDE = discord.utils.is_inside_class
 
 
+@pytest.fixture(autouse=True)
+def evolution_guild(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "100")
+
+
+
 def interaction(user_id=42):
     response=SimpleNamespace(
         is_done=Mock(return_value=False), defer=AsyncMock(),

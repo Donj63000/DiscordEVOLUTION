@@ -220,13 +220,13 @@ async def test_global_cleanup_failure_is_retried_on_reconnect(sync_bot, monkeypa
     assert sync_bot._slash_global_cleanup_pending
     await cleanup_retired_guild_commands(sync_bot)
     assert sync_bot._slash_global_cleanup_pending
-    assert sync_bot._slash_cleanup_done == {100, 200}
+    assert sync_bot._slash_cleanup_done == {100}
     await cleanup_retired_guild_commands(sync_bot)
     assert not sync_bot._slash_global_cleanup_pending
     assert [getattr(call.kwargs["guild"], "id", None)
-            for call in sync_bot.tree.fetch_commands.await_args_list] == [None, None, 100, 200, None]
+            for call in sync_bot.tree.fetch_commands.await_args_list] == [None, None, 100, None]
     await cleanup_retired_guild_commands(sync_bot)
-    assert sync_bot.tree.fetch_commands.await_count == 5
+    assert sync_bot.tree.fetch_commands.await_count == 4
     sync_bot.tree.sync.assert_awaited_once()
 
 

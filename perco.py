@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 import json
 import logging
@@ -107,7 +108,7 @@ class PercoCog(commands.Cog):
     async def _initial_load(self) -> None:
         try:
             await self.bot.wait_until_ready()
-            for guild in self.bot.guilds:
+            for guild in allowed_guilds(self.bot):
                 await self._load_guild_status(guild)
         except asyncio.CancelledError:
             pass
@@ -115,6 +116,7 @@ class PercoCog(commands.Cog):
             log.warning("Chargement initial du statut perco échoué: %s", exc, exc_info=True)
 
     async def _load_guild_status(self, guild: discord.Guild) -> PercoState:
+        require_guild(guild, getattr(self, "bot", None))
         state = self.states.get(guild.id)
         if state is None:
             state = PercoState()
@@ -170,6 +172,7 @@ class PercoCog(commands.Cog):
             return None
 
     async def _ensure_state(self, guild: discord.Guild) -> PercoState:
+        require_guild(guild, getattr(self, "bot", None))
         state = self.states.get(guild.id)
         if state is None:
             state = PercoState()
@@ -190,6 +193,7 @@ class PercoCog(commands.Cog):
         user: discord.abc.User,
         new_status: str,
     ) -> tuple[discord.Embed, list[str]]:
+        require_guild(guild, getattr(self, "bot", None))
         state.status = new_status
         state.updated_by = getattr(user, "id", None)
         state.updated_at = int(time.time())
@@ -211,6 +215,7 @@ class PercoCog(commands.Cog):
         return embed, notes
 
     def _build_status_embed(self, guild: discord.Guild, state: PercoState) -> discord.Embed:
+        require_guild(guild, getattr(self, "bot", None))
         config = STATUS_CONFIG.get(state.status, STATUS_CONFIG["good"])
         embed = discord.Embed(
             title=config["title"],
@@ -231,6 +236,7 @@ class PercoCog(commands.Cog):
         return embed
 
     async def _announce_status(self, guild: discord.Guild, state: PercoState) -> Optional[discord.TextChannel]:
+        require_guild(guild, getattr(self, "bot", None))
         channel = resolve_text_channel(
             guild,
             id_env="ANNONCE_CHANNEL_ID",
@@ -281,6 +287,7 @@ class PercoCog(commands.Cog):
         return None
 
     async def _store_status(self, guild: discord.Guild, state: PercoState) -> Optional[discord.TextChannel]:
+        require_guild(guild, getattr(self, "bot", None))
         channel = resolve_text_channel(
             guild,
             id_env="CHANNEL_CONSOLE_ID",
@@ -325,6 +332,7 @@ class PercoCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild) -> None:
+        require_guild(guild, getattr(self, "bot", None))
         await self._load_guild_status(guild)
 
     @app_commands.command(name="perco", description="Voir le statut des percepteurs ; le Staff peut le modifier.")
@@ -345,6 +353,7 @@ class PercoCog(commands.Cog):
         interaction: discord.Interaction,
         etat: Optional[app_commands.Choice[str]] = None,
     ) -> None:
+        require_guild(getattr(interaction, "guild_id", None) or getattr(interaction, "guild", None), getattr(self, "bot", None))
         guild = interaction.guild
         if guild is None:
             await interaction.response.send_message(
@@ -374,6 +383,7 @@ class PercoCog(commands.Cog):
 
     @commands.command(name="perco")
     async def perco_prefix_command(self, ctx: commands.Context, etat: Optional[str] = None) -> None:
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         guild = ctx.guild
         if guild is None:
             await ctx.reply("Cette commande doit être utilisée dans un serveur.")

@@ -2,7 +2,7 @@
 
 [Retour au README](../README.md)
 
-Ce guide décrit une instance du bot adaptée à votre serveur. Le dépôt fournit le code ;
+Ce guide décrit l'instance du bot réservée au serveur Evolution. Le dépôt fournit le code ;
 le jeton, les salons, les rôles et les services externes se configurent dans votre environnement.
 
 ## 1. Préparer Python
@@ -15,7 +15,22 @@ cd DiscordEVOLUTION
 python -m venv .venv
 ```
 
-**Windows / PowerShell**
+**Linux (Python 3.12)**
+
+Dans l'environnement virtuel vide créé ci-dessus :
+
+```bash
+source .venv/bin/activate
+python -m pip install --require-hashes -r requirements/linux-py312.lock
+python -m pip check
+cp .env.example .env
+```
+
+Pour Python 3.11, remplacez le nom du verrou par `requirements/linux-py311.lock`.
+La CI et les déploiements Linux utilisent ces verrous ; leur régénération est une
+opération de maintenance, pas une étape de démarrage.
+
+**Windows / PowerShell (hors matrice Linux)**
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
@@ -23,13 +38,16 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-**Linux / macOS**
+**macOS (hors matrice Linux)**
 
 ```bash
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 cp .env.example .env
 ```
+
+Les installations Windows et macOS résolvent le manifeste et doivent être vérifiées
+sur leur plateforme ; les verrous fournis et les résultats de CI concernent Linux.
 
 Modifiez ensuite `.env`. Les valeurs d'exemple doivent être remplacées par vos valeurs ;
 laissez vides les clés des services que vous n'utilisez pas. Ne publiez pas ce fichier.
@@ -73,21 +91,29 @@ La liste complète se trouve dans [`.env.example`](../.env.example).
 | Variable | Quand la renseigner |
 | --- | --- |
 | `DISCORD_TOKEN` | **Obligatoire** pour démarrer le client Discord. |
+| `BOT_GUILD_ID` | **Obligatoire** : identifiant du seul serveur autorisé, Evolution. Aucun repli vers une autre guilde. |
 | `ENABLE_AI_COMMANDS` | `0` par défaut : aucune commande dépendant de l'IA n'est publiée. `1` exige aussi la clé du fournisseur concerné. |
 | `OPENAI_API_KEY` | Pour les parcours OpenAI explicitement réactivés ; `/organisation` fonctionne sans IA. |
 | `GOOGLE_API_KEY` | Pour Gemini, notamment `/event`, les conversations IA et IA Staff avec le backend de la configuration d'exemple. |
 | `FERNET_KEY` | Pour conserver l'historique local chiffré de Defender ; sans clé, cet historique est désactivé. |
 | `SYNC_SLASH_COMMANDS` | `1` pour synchroniser les commandes au démarrage. |
-| `SYNC_SLASH_GUILD_ID` | ID du serveur de développement ; vide pour la synchronisation globale. Un ID invalide bloque la publication au lieu de la rendre globale. |
-| `SLASH_CLEANUP_RETIRED` | `1` : après une synchronisation réussie, retirer les anciennes commandes désactivées dans les autres périmètres, sans vider les catalogues. |
+| `SYNC_SLASH_GUILD_ID` | Vide : synchroniser `BOT_GUILD_ID`. Si renseigné, doit être identique. Aucune publication globale par défaut. |
+| `SLASH_CLEANUP_RETIRED` | `1` : après une synchronisation réussie, retirer les anciennes commandes désactivées du catalogue global et du serveur Evolution configuré, sans vider les catalogues. |
 | `BOT_PREFIX` | `!` par défaut. |
 | `IASTAFF_ENABLE_TOOLS` | `1` pour activer le catalogue d'outils de l'assistant Staff. |
+| `IASTAFF_ALLOWED_ROLE_IDS` | IDs des rôles ordinaires que l'IA peut gérer. Vide : aucune attribution ni retrait. Les rôles privilégiés restent interdits. |
+| `EVENT_PROVENANCE_KEY` | Secret aléatoire de 32 octets encodé en 64 caractères hexadécimaux, nécessaire aux actions d'événements. Conserver la valeur au redéploiement. |
 | `DOFUS_WIKI_CACHE_TTL` | Durée du cache frais du wiki : `3600` secondes par défaut. |
 | `DOFUS_WIKI_TIMEOUT` | Délai d'une requête HTTP du wiki : `10` secondes par défaut. |
 
 Les clés IA ne sont pas requises pour utiliser l'encyclopédie, les métiers et les autres
 commandes sans IA. Chaque service activé doit disposer de sa propre configuration.
 La commande musicale nécessite aussi **FFmpeg** disponible dans le `PATH` de la machine.
+
+Si `EVO_GUILD_ID` est renseigné, il doit correspondre à `BOT_GUILD_ID`. Les anciens
+événements restent consultables mais leurs actions attendent une revalidation Staff.
+Voir le [guide des correctifs de sécurité](SECURITY.md) pour leur reprise, les
+confirmations IA et les nouvelles règles des conversations privées.
 
 Pour générer une clé Fernet :
 
@@ -143,10 +169,10 @@ Les empreintes de l'identité appliquée sont conservées dans le snapshot `===B
 de `#console`. La synchronisation attend que ce salon soit disponible et que le verrou
 de l'instance active soit acquis.
 
-Les commandes globales et les changements d'identité peuvent demander un délai de
-propagation. Pour un serveur de développement, `SYNC_SLASH_GUILD_ID` permet une
-synchronisation ciblée. Les permissions Staff restent contrôlées à l'exécution ;
-leur visibilité se règle aussi dans les intégrations du serveur.
+Les changements d'identité peuvent demander un délai de propagation. Les commandes
+sont synchronisées sur `BOT_GUILD_ID` ; `SYNC_SLASH_GUILD_ID`, s'il est renseigné,
+doit désigner ce même serveur. Les permissions Staff restent contrôlées à
+l'exécution ; leur visibilité se règle aussi dans les intégrations du serveur.
 
 ## 6. Render et UptimeRobot
 
@@ -161,18 +187,19 @@ Le projet associe un bot Discord et un petit serveur HTTP de suivi.
 
 Pour une instance en **Web Service Python** sur Render :
 
-Choisissez Python 3.11 ou 3.12 pour ce service, puis appliquez les réglages suivants.
+Choisissez Python 3.12 pour ce service et le verrou correspondant, puis appliquez les réglages suivants.
 
 | Réglage | Valeur |
 | --- | --- |
-| Build Command | `python -m pip install -r requirements.txt` |
+| Build Command | `python -m pip install --require-hashes -r requirements/linux-py312.lock` |
 | Start Command | `python main.py` |
 | `ALIVE_IN_PROCESS` | `1` |
 | `ALIVE_SERVER` | `aiohttp` |
 | `ALIVE_WORKERS` | `1` |
 | `ALIVE_THREADS` | `4` (utilisé seulement en mode Gunicorn) |
 | `MEMORY_LOG_INTERVAL` | `60` |
-| Secrets | Variables d'environnement Render, notamment `DISCORD_TOKEN`. |
+| Configuration | `BOT_GUILD_ID` ; `EVO_GUILD_ID` identique s'il est renseigné. |
+| Secrets | Variables d'environnement Render, notamment `DISCORD_TOKEN` et `EVENT_PROVENANCE_KEY`. |
 
 Le serveur écoute sur `0.0.0.0` et utilise la variable `PORT` fournie par Render.
 Le mode `aiohttp` sert le suivi HTTP dans un thread du processus du bot,

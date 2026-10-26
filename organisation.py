@@ -1,4 +1,5 @@
 from __future__ import annotations
+from utils.guild_scope import allowed_guilds, check_interaction_guild, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 import json
 import logging
@@ -368,6 +369,7 @@ class OrganisationCog(commands.Cog):
         return False
 
     def _find_organisation_channel(self, guild: discord.Guild, override: str='') -> Optional[discord.TextChannel]:
+        require_guild(guild, getattr(self, "bot", None))
         if override:
             override = override.strip()
             cid = _take_digits(override)
@@ -386,6 +388,7 @@ class OrganisationCog(commands.Cog):
         return resolve_text_channel(guild, id_env='ORGANISATION_CHANNEL_ID', name_env='ORGANISATION_CHANNEL_NAME', default_name=ORGANISATION_CHANNEL_NAME)
 
     async def _console_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
+        require_guild(guild, getattr(self, "bot", None))
         return resolve_text_channel(guild, id_env='CHANNEL_CONSOLE_ID', name_env='CHANNEL_CONSOLE', default_name=CONSOLE_CHANNEL_NAME)
 
     async def _fetch_history(self, channel: discord.TextChannel, limit: int=200) -> List[discord.Message]:
@@ -396,6 +399,7 @@ class OrganisationCog(commands.Cog):
         )
 
     async def _save_event_to_console(self, event: OrganisationEvent) -> bool:
+        require_guild(event.guild_id, self.bot)
         guild = self.bot.get_guild(event.guild_id)
         if not guild:
             return False
@@ -433,6 +437,7 @@ class OrganisationCog(commands.Cog):
             return False
 
     async def _load_events_from_console(self, guild: discord.Guild) -> int:
+        require_guild(guild, getattr(self, "bot", None))
         chan = await self._console_channel(guild)
         if not chan:
             return 0
@@ -452,6 +457,8 @@ class OrganisationCog(commands.Cog):
             try:
                 data = json.loads(m.group('body'))
                 event = OrganisationEvent.from_json(data)
+                if not is_allowed_guild(event.guild_id, self.bot):
+                    continue
                 if not event.message_id:
                     continue
                 if not event.console_message_id:
@@ -472,6 +479,7 @@ class OrganisationCog(commands.Cog):
         return int(date_ts) + max(0, ORGANISATION_TEMP_ROLE_GRACE_SECONDS)
 
     def _bot_member(self, guild: discord.Guild) -> Optional[discord.Member]:
+        require_guild(guild, getattr(self, "bot", None))
         me = getattr(guild, 'me', None)
         if me is not None:
             return me
@@ -493,12 +501,14 @@ class OrganisationCog(commands.Cog):
         )
 
     def _can_create_roles(self, guild: discord.Guild) -> Tuple[bool, str]:
+        require_guild(guild, getattr(self, "bot", None))
         me = self._bot_member(guild)
         if not self._has_manage_roles(me):
             return (False, "Je n'ai pas la permission `Gérer les rôles`.")
         return (True, '')
 
     def _can_manage_role(self, guild: discord.Guild, role: discord.Role) -> Tuple[bool, str]:
+        require_guild(guild, getattr(self, "bot", None))
         me = self._bot_member(guild)
         if not self._has_manage_roles(me):
             return (False, "Je n'ai pas la permission `Gérer les rôles`.")
@@ -527,6 +537,7 @@ class OrganisationCog(commands.Cog):
         return f'Event {name}'[:100].strip()
 
     def _unique_temp_role_name(self, guild: discord.Guild, draft: OrganisationDraft) -> str:
+        require_guild(guild, getattr(self, "bot", None))
         base = self._normalise_temp_role_name(draft.activity)
         names = {str(getattr(role, 'name', '')).lower() for role in getattr(guild, 'roles', []) or []}
         if base.lower() not in names:
@@ -540,6 +551,7 @@ class OrganisationCog(commands.Cog):
         return f'{base[:91]} {uuid.uuid4().hex[:8]}'.strip()
 
     async def _create_temp_role_for_draft(self, guild: discord.Guild, draft: OrganisationDraft) -> Tuple[Optional[discord.Role], str]:
+        require_guild(guild, getattr(self, "bot", None))
         ok, reason = self._can_create_roles(guild)
         if not ok:
             return (None, reason)
@@ -563,6 +575,7 @@ class OrganisationCog(commands.Cog):
         return (None, reason)
 
     async def _delete_temp_role(self, guild: discord.Guild, role: discord.Role, *, reason: str) -> bool:
+        require_guild(guild, getattr(self, "bot", None))
         ok, why = self._can_manage_role(guild, role)
         if not ok:
             log.warning('Organisation: role delete refused role_id=%s reason=%s', getattr(role, 'id', None), why)
@@ -581,6 +594,7 @@ class OrganisationCog(commands.Cog):
         return any(getattr(existing, 'id', None) == role_id for existing in getattr(member, 'roles', []) or [])
 
     async def _resolve_member(self, guild: discord.Guild, user_id: int, member: Optional[discord.Member]=None) -> Optional[discord.Member]:
+        require_guild(guild, getattr(self, "bot", None))
         if member is not None and getattr(member, 'id', None) == user_id:
             return member
         get_member = getattr(guild, 'get_member', None)
@@ -604,6 +618,7 @@ class OrganisationCog(commands.Cog):
         *,
         member: Optional[discord.Member]=None,
     ) -> bool:
+        require_guild(event.guild_id, self.bot)
         if not event.role_id:
             return False
         guild = self.bot.get_guild(event.guild_id)
@@ -636,6 +651,7 @@ class OrganisationCog(commands.Cog):
         return False
 
     def _schedule_role_cleanup(self, event: OrganisationEvent) -> None:
+        require_guild(event.guild_id, self.bot)
         if not event.role_id or not event.cleanup_ts or event.cleanup_status == 'expired':
             return
         existing = self._cleanup_tasks.get(event.message_id)
@@ -653,6 +669,7 @@ class OrganisationCog(commands.Cog):
         self._cleanup_tasks[event.message_id] = asyncio.create_task(_runner())
 
     async def _cleanup_expired_event_role(self, event: OrganisationEvent) -> None:
+        require_guild(event.guild_id, self.bot)
         guild = self.bot.get_guild(event.guild_id)
         deleted = True
         if guild and event.role_id:
@@ -682,7 +699,7 @@ class OrganisationCog(commands.Cog):
         except Exception:
             return
         total = 0
-        for guild in list(getattr(self.bot, 'guilds', []) or []):
+        for guild in list(allowed_guilds(self.bot) or []):
             try:
                 total += await self._load_events_from_console(guild)
             except Exception as exc:
@@ -691,6 +708,7 @@ class OrganisationCog(commands.Cog):
             log.info('Organisation: %s événement(s) restauré(s) depuis #console.', total)
 
     def _build_event_embed(self, event: OrganisationEvent) -> discord.Embed:
+        require_guild(event.guild_id, self.bot)
         title = (event.title or '').strip() or f'📅 Sortie guilde — {event.activity}'.strip()
         title = title[:256]
         desc_lines: List[str] = []
@@ -998,6 +1016,8 @@ class OrganisationCog(commands.Cog):
 
         @discord.ui.button(label='Ouvrir le formulaire', style=discord.ButtonStyle.primary)
         async def open_form(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             if interaction.user.id != self.author_id:
                 await interaction.response.send_message("❌ Réservé à l'auteur de la commande.", ephemeral=True)
                 return
@@ -1026,6 +1046,8 @@ class OrganisationCog(commands.Cog):
                 self.add_item(comp)
 
         async def on_submit(self, interaction: discord.Interaction) -> None:
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             if interaction.guild is None:
                 await interaction.response.send_message('❌ Serveur requis.', ephemeral=True)
                 return
@@ -1056,6 +1078,8 @@ class OrganisationCog(commands.Cog):
             self.add_item(self.channel)
 
         async def on_submit(self, interaction: discord.Interaction) -> None:
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             draft = self.parent._drafts.get(self.user_id)
             if not draft:
                 await interaction.response.send_message('Brouillon introuvable/expiré.', ephemeral=True)
@@ -1072,10 +1096,14 @@ class OrganisationCog(commands.Cog):
             self.user_id = user_id
 
         async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             return interaction.user.id == self.user_id
 
         @discord.ui.button(label='✏️ Ajuster', style=discord.ButtonStyle.secondary)
         async def adjust(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             draft = self.parent._drafts.get(self.user_id)
             if not draft:
                 await interaction.response.send_message('Brouillon introuvable.', ephemeral=True)
@@ -1088,6 +1116,8 @@ class OrganisationCog(commands.Cog):
 
         @discord.ui.button(label='⚙️ Options', style=discord.ButtonStyle.secondary)
         async def options(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             draft = self.parent._drafts.get(self.user_id)
             if not draft:
                 await interaction.response.send_message('Brouillon introuvable.', ephemeral=True)
@@ -1097,6 +1127,8 @@ class OrganisationCog(commands.Cog):
 
         @discord.ui.button(label='🔁 Régénérer', style=discord.ButtonStyle.secondary)
         async def regenerate(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             draft = self.parent._drafts.get(self.user_id)
             if not draft:
                 await interaction.response.send_message('Brouillon introuvable.', ephemeral=True)
@@ -1107,6 +1139,8 @@ class OrganisationCog(commands.Cog):
 
         @discord.ui.button(label='📣 Publier', style=discord.ButtonStyle.success)
         async def publish(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             draft = self.parent._drafts.get(self.user_id)
             if not draft:
                 await interaction.response.send_message('Brouillon introuvable.', ephemeral=True)
@@ -1124,10 +1158,14 @@ class OrganisationCog(commands.Cog):
 
         @discord.ui.button(label='🗑️ Annuler', style=discord.ButtonStyle.danger)
         async def cancel(self, interaction: discord.Interaction, _):
+            if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+                return False
             self.parent._drafts.pop(self.user_id, None)
             await interaction.response.edit_message(content='Brouillon annulé.', embed=None, view=None)
 
     async def _send_preview(self, interaction: discord.Interaction, draft: OrganisationDraft, *, replace: bool=False) -> None:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         fake_event = OrganisationEvent(id=draft.id, guild_id=draft.guild_id, channel_id=0, message_id=0, author_id=draft.author_id, created_at_iso=_now_iso(), activity=draft.activity, date_time=draft.date_time, date_ts=draft.date_ts, location=draft.location, seats=draft.seats, details=draft.details, title=draft.title, body=draft.body, cta=draft.cta, mentions=_parse_mentions(draft.mentions_raw, interaction.guild) if interaction.guild else [], going=set(), maybe=set())
         embed = self._build_event_embed(fake_event)
         view = self._PreviewView(self, interaction.user.id)
@@ -1137,6 +1175,8 @@ class OrganisationCog(commands.Cog):
         await interaction.followup.send(msg, embed=embed, view=view, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     async def _publish_draft(self, interaction: discord.Interaction, draft: OrganisationDraft) -> Tuple[bool, str]:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         guild = interaction.guild
         if guild is None:
             return (False, 'guild manquant')
@@ -1196,6 +1236,8 @@ class OrganisationCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        if not is_allowed_guild(getattr(payload, "guild_id", None), getattr(self, "bot", None)):
+            return
         if not self.bot.user or payload.user_id == self.bot.user.id:
             return
         event = self._events.get(payload.message_id)
@@ -1221,6 +1263,8 @@ class OrganisationCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent) -> None:
+        if not is_allowed_guild(getattr(payload, "guild_id", None), getattr(self, "bot", None)):
+            return
         if not self.bot.user or payload.user_id == self.bot.user.id:
             return
         event = self._events.get(payload.message_id)
@@ -1239,6 +1283,7 @@ class OrganisationCog(commands.Cog):
             self._schedule_event_update(event)
 
     def _apply_reaction(self, event: OrganisationEvent, *, emoji: str, user_id: int, add: bool) -> bool:
+        require_guild(event.guild_id, self.bot)
         before = (set(event.going), set(event.maybe))
         if emoji == EMOJI_GOING:
             if add:
@@ -1260,6 +1305,7 @@ class OrganisationCog(commands.Cog):
         return after != before
 
     async def _try_cleanup_member_reactions(self, event: OrganisationEvent, *, payload: discord.RawReactionActionEvent, keep_emoji: str) -> None:
+        require_guild(event.guild_id, self.bot)
         if keep_emoji not in OUTING_EMOJIS:
             return
         guild = self.bot.get_guild(event.guild_id)
@@ -1301,6 +1347,7 @@ class OrganisationCog(commands.Cog):
                 continue
 
     def _schedule_event_update(self, event: OrganisationEvent, delay: float=1.2) -> None:
+        require_guild(event.guild_id, self.bot)
         mid = event.message_id
         existing = self._pending_update_tasks.get(mid)
         if existing and (not existing.done()):
@@ -1315,6 +1362,7 @@ class OrganisationCog(commands.Cog):
         self._pending_update_tasks[mid] = asyncio.create_task(_runner())
 
     async def _update_event_message_and_persist(self, event: OrganisationEvent) -> None:
+        require_guild(event.guild_id, self.bot)
         await self._update_event_message(event)
         try:
             await self._save_event_to_console(event)
@@ -1327,6 +1375,7 @@ class OrganisationCog(commands.Cog):
             )
 
     async def _update_event_message(self, event: OrganisationEvent) -> None:
+        require_guild(event.guild_id, self.bot)
         guild = self.bot.get_guild(event.guild_id)
         if not guild:
             return
@@ -1350,6 +1399,7 @@ class OrganisationCog(commands.Cog):
 
     @commands.command(name='organisation', aliases=['orga', 'sortie'])
     async def organisation_cmd(self, ctx: commands.Context) -> None:
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if ctx.guild is None:
             await ctx.reply('❌ Commande utilisable uniquement sur le serveur.', mention_author=False)
             return
@@ -1362,6 +1412,7 @@ class OrganisationCog(commands.Cog):
 
     @commands.command(name='organisation-model', aliases=['organisationmodel', 'orga-model'])
     async def organisation_model(self, ctx: commands.Context, *, model: str | None=None) -> None:
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if ctx.guild is None:
             await ctx.reply('❌ Commande utilisable uniquement sur le serveur.', mention_author=False)
             return
@@ -1381,6 +1432,7 @@ class OrganisationCog(commands.Cog):
 
     @commands.command(name='organisation-sync', aliases=['orga-sync'])
     async def organisation_sync(self, ctx: commands.Context) -> None:
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if ctx.guild is None:
             await ctx.reply('❌ Serveur requis.', mention_author=False)
             return
@@ -1396,6 +1448,8 @@ class OrganisationCog(commands.Cog):
     @app_commands.guild_only()
     @app_commands.allowed_installs(guilds=True, users=False)
     async def organisation_slash(self, interaction: discord.Interaction) -> None:
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if interaction.guild is None:
             await interaction.response.send_message('❌ Serveur requis.', ephemeral=True)
             return

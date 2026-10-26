@@ -23,9 +23,17 @@ def set_ready(value):
 def create_app():
     # Flask reste disponible pour les modes historiques, sans être chargé
     # pour le simple serveur aiohttp.
-    from flask import Flask
+    from flask import Flask, request
 
     app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = 4096
+
+    @app.before_request
+    def reject_encoded_bodies():
+        if request.headers.get("Content-Encoding", "identity").strip().lower() != "identity":
+            return "Unsupported Content-Encoding", 415
+        if request.content_length is not None and request.content_length > 4096:
+            return "Request body too large", 413
 
     @app.get("/")
     def home():
@@ -56,7 +64,25 @@ def __getattr__(name):
 def create_aiohttp_app():
     from aiohttp import web
 
-    app = web.Application(client_max_size=4096)
+    @web.middleware
+    async def reject_encoded_bodies(request, handler):
+        if request.headers.get("Content-Encoding", "identity").strip().lower() != "identity":
+            response = web.Response(status=415, text="Unsupported Content-Encoding")
+            response.force_close()
+            return response
+        if request.content_length is not None and request.content_length > 4096:
+            response = web.Response(status=413, text="Request body too large")
+            response.force_close()
+            return response
+        return await handler(request)
+
+    # The HTTP parser runs before middlewares. Disable decompression there so
+    # even rejected/unread bodies are never expanded during request cleanup.
+    app = web.Application(
+        client_max_size=4096,
+        handler_args={"auto_decompress": False},
+        middlewares=[reject_encoded_bodies],
+    )
 
     async def home(request):
         return web.Response(text=HOME_TEXT)

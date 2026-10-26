@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 import copy
 from io import BytesIO
@@ -69,6 +70,7 @@ class ActionButton(discord.ui.Button):
         self.action = action
 
     async def callback(self, interaction: discord.Interaction):
+        require_guild(getattr(interaction, "guild_id", None) or getattr(interaction, "guild", None), getattr(self, "bot", None))
         await self.view.dispatch(interaction, self.action, revision=self.revision)
 
 
@@ -80,6 +82,7 @@ class ChoiceSelect(discord.ui.Select):
         self.action = action
 
     async def callback(self, interaction: discord.Interaction):
+        require_guild(getattr(interaction, "guild_id", None) or getattr(interaction, "guild", None), getattr(self, "bot", None))
         await self.view.dispatch(interaction, self.action, self.values[0], revision=self.revision)
 
 
@@ -152,9 +155,11 @@ class ExoModal(discord.ui.Modal):
         self.add_item(control)
 
     async def interaction_check(self, interaction):
+        require_guild(getattr(interaction, "guild_id", None) or getattr(interaction, "guild", None), getattr(self, "bot", None))
         return await self.panel.interaction_check(interaction)
 
     async def on_submit(self, interaction: discord.Interaction):
+        require_guild(getattr(interaction, "guild_id", None) or getattr(interaction, "guild", None), getattr(self, "bot", None))
         self.panel.modals.discard(self)
         if not await self.panel.interaction_check(interaction):
             return
@@ -271,6 +276,11 @@ class ExoModal(discord.ui.Modal):
 
 
 class ExoView(discord.ui.View):
+    def _require_guild_context(self, interaction=None):
+        require_guild(self.guild_id, getattr(self.cog, "bot", None))
+        if interaction is not None:
+            require_guild(getattr(interaction, "guild_id", None) or getattr(interaction, "guild", None), getattr(self.cog, "bot", None))
+
     def __init__(self, cog, owner_id: int, guild_id: int, session: Session, image=None,
                  *, search_objective: str | None = None):
         super().__init__(timeout=600)
@@ -317,12 +327,14 @@ class ExoView(discord.ui.View):
         await self.on_timeout()
 
     async def interaction_check(self, interaction):
+        self._require_guild_context(interaction)
         if interaction.user.id != self.owner_id:
             await private_message(interaction, "Cet atelier est personnel. Lancez /exo pour ouvrir le vôtre.")
             return False
         return await self.ensure_active(interaction)
 
     async def ensure_active(self, interaction):
+        self._require_guild_context(interaction)
         try:
             self.require_active()
         except WikiError as exc:
@@ -341,6 +353,7 @@ class ExoView(discord.ui.View):
                     or time.monotonic() - self.created >= 840)
 
     async def finish(self, reason: str, interaction=None):
+        self._require_guild_context(interaction)
         self.stop()
         for child in self.children:
             child.disabled = True
@@ -524,6 +537,7 @@ class ExoView(discord.ui.View):
 
     async def publish(self, interaction=None, *, initial=False):
         """Actualise le panneau existant ; Evo utilise uniquement son message ephemere."""
+        self._require_guild_context(interaction)
         self.require_active()
         if interaction is None:
             if not getattr(getattr(self.message, "flags", None), "ephemeral", False):
@@ -582,6 +596,7 @@ class ExoView(discord.ui.View):
         return message
 
     async def commit(self, interaction, candidate: Session, *, undo=False):
+        self._require_guild_context(interaction)
         if not await self.ensure_active(interaction):
             return
         await self._commit(interaction, candidate, undo=undo)
@@ -598,6 +613,7 @@ class ExoView(discord.ui.View):
             raise
 
     async def _commit(self, interaction, candidate: Session, *, undo=False):
+        self._require_guild_context(interaction)
         previous, old_undo = self.session, self.undo_session
         old_size = history_size(previous) + (history_size(old_undo) if old_undo else 0)
         next_undo = previous if undo else old_undo
@@ -629,6 +645,7 @@ class ExoView(discord.ui.View):
         return prefix + "\n" + "\n".join(result_lines(row, detailed=False))
 
     async def send_export(self, interaction, caption="Sauvegarde personnelle : /exo reprise:<ce fichier>."):
+        self._require_guild_context(interaction)
         stream = BytesIO(export_session(self.session))
         file = discord.File(stream, filename="exo-retro-session.json")
         try:
@@ -641,6 +658,7 @@ class ExoView(discord.ui.View):
         log.debug("exo: exported owner=%s", self.owner_id)
 
     async def check_revision(self, interaction, revision):
+        self._require_guild_context(interaction)
         if revision is not None and revision != self.session.revision:
             await private_message(
                 interaction,
@@ -651,6 +669,7 @@ class ExoView(discord.ui.View):
         return True
 
     async def search(self, interaction, query):
+        self._require_guild_context(interaction)
         if not query.strip():
             raise ValueError("Saisissez un nom d'objet.")
         entries = await self.cog.entries()
@@ -671,6 +690,7 @@ class ExoView(discord.ui.View):
             raise
 
     async def dispatch(self, interaction, action, value=None, *, revision=None):
+        self._require_guild_context(interaction)
         if not await self.interaction_check(interaction):
             return
         modal_action = "search" if action == "tab" and value == "search" else action
@@ -711,10 +731,12 @@ class ExoView(discord.ui.View):
                 await private_message(interaction, str(exc))
 
     async def report_busy(self, interaction, action):
+        self._require_guild_context(interaction)
         log.debug("exo: modal_busy action=%s owner=%s", action, self.owner_id)
         await private_message(interaction, "Une action est en cours. Réessaie dans un instant.")
 
     async def handle(self, interaction, action, value):
+        self._require_guild_context(interaction)
         s = copy.deepcopy(self.session)
         if action == "export":
             await self.send_export(interaction)
@@ -933,6 +955,7 @@ class ExoCog(commands.Cog):
         log.debug("exo: unloaded count=%s", len(views))
 
     async def autocomplete(self, interaction, current: str):
+        require_guild(getattr(interaction, "guild_id", None) or getattr(interaction, "guild", None), getattr(self, "bot", None))
         try:
             wiki = self.wiki()
             cached = wiki.client.peek(INDEX_PATHS[0])
@@ -964,6 +987,7 @@ class ExoCog(commands.Cog):
         self, interaction: discord.Interaction, objet: str | None = None,
         objectif: str | None = None, reprise: discord.Attachment | None = None,
     ):
+        require_guild(getattr(interaction, "guild_id", None) or getattr(interaction, "guild", None), getattr(self, "bot", None))
         await interaction.response.defer(ephemeral=True, thinking=True)
         key = (interaction.guild_id, interaction.user.id)
         if key not in self.views and len(self.views) + len(self.open_locks) >= MAX_SESSIONS:
@@ -1051,6 +1075,7 @@ class ExoCog(commands.Cog):
 
     async def open_build_session(self, interaction, reference, jets, sink, *, guild_id=None):
         """J'ouvre les jets confirmés du builder sans détruire un atelier en cas d'échec."""
+        require_guild(getattr(interaction, "guild_id", None) or getattr(interaction, "guild", None), getattr(self, "bot", None))
         key = (guild_id or interaction.guild_id, interaction.user.id)
         if self.closed or key in self.open_locks:
             raise ValueError("Une ouverture est en cours ou le module se recharge.")
@@ -1104,10 +1129,12 @@ class ExoCog(commands.Cog):
 
     @exo.autocomplete("objet")
     async def exo_autocomplete(self, interaction: discord.Interaction, current: str):
+        require_guild(getattr(interaction, "guild_id", None) or getattr(interaction, "guild", None), getattr(self, "bot", None))
         return await self.autocomplete(interaction, current)
 
     @exo.error
     async def exo_error(self, interaction, error):
+        require_guild(getattr(interaction, "guild_id", None) or getattr(interaction, "guild", None), getattr(self, "bot", None))
         if isinstance(error, app_commands.CommandOnCooldown):
             await private_message(interaction, "Deux ouvertures maximum par 15 secondes. Utilisez le panneau déjà ouvert.")
         else:

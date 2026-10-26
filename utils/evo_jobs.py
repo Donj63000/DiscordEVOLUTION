@@ -1,6 +1,7 @@
 """Annuaire déclaratif : un métier enregistré ne prouve pas une identité Discord."""
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 from dataclasses import dataclass, replace
 import logging
@@ -99,7 +100,7 @@ class JobDirectory:
         await ctx.ensure_access()
         if not (ctx.config.public_member_data or ctx.config.public_job_data):
             raise EvoError("L'annuaire des métiers n'est pas autorisé pour Evo dans cette configuration.")
-        if len(ctx.bot.guilds) != 1 or ctx.bot.guilds[0].id != ctx.guild.id:
+        if len(allowed_guilds(ctx.bot)) != 1 or allowed_guilds(ctx.bot)[0].id != ctx.guild.id:
             raise EvoError("L'annuaire des métiers n'est pas autorisé hors de son serveur unique.")
 
     async def _load(self, ctx: ToolContext) -> None:

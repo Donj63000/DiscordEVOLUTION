@@ -10,6 +10,7 @@ on:
       - 'tests_build/**'
       - 'data/build/**'
       - 'requirements.txt'
+      - 'requirements/**'
       - 'tools/build_preflight.py'
       - 'docs/EVOLUTION_BUILD*'
       - '.github/workflows/evolution-build.yml'
@@ -30,8 +31,13 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
+          cache-dependency-path: requirements/linux-py312.lock
       - name: Install actual project dependencies
-        run: python -m pip install -r requirements.txt
+        run: |
+          python -m venv --without-pip "$RUNNER_TEMP/build-env"
+          python -m pip --python "$RUNNER_TEMP/build-env/bin/python" install --require-hashes -r requirements/linux-py312.lock
+          python -m pip --python "$RUNNER_TEMP/build-env/bin/python" check
+          echo "$RUNNER_TEMP/build-env/bin" >> "$GITHUB_PATH"
       - name: Offline catalogue and dependency preflight
         run: python tools/build_preflight.py
       - name: Compile modules

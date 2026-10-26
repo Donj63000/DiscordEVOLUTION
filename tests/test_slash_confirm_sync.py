@@ -150,6 +150,7 @@ async def test_destructive_route_only_opens_a_private_confirmation(slash_bot):
 
 @pytest.fixture
 def sync_bot(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "100")
     monkeypatch.delenv("ENABLE_AI_COMMANDS", raising=False)
     monkeypatch.delenv("SYNC_SLASH_COMMANDS", raising=False)
     monkeypatch.delenv("SYNC_SLASH_GUILD_ID", raising=False)
@@ -183,10 +184,11 @@ async def test_sync_disabled_also_disables_every_cleanup(sync_bot, monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_global_sync_does_not_clear_guild_catalogs(sync_bot):
+async def test_default_sync_is_scoped_and_does_not_clear_foreign_catalogs(sync_bot):
     assert await sync_application_commands(sync_bot)
-    sync_bot.tree.sync.assert_awaited_once_with()
-    sync_bot.tree.copy_global_to.assert_not_called()
+    assert sync_bot.tree.sync.await_count == 1
+    assert sync_bot.tree.sync.await_args.kwargs["guild"].id == 100
+    assert sync_bot.tree.copy_global_to.call_args.kwargs["guild"].id == 100
     assert sync_bot._slash_sync_succeeded
 
 
@@ -219,8 +221,8 @@ async def test_remote_cleanup_is_not_repeated_on_every_reconnect(sync_bot):
     sync_bot._slash_sync_succeeded = True
     await cleanup_retired_guild_commands(sync_bot)
     await cleanup_retired_guild_commands(sync_bot)
-    assert sync_bot.tree.fetch_commands.await_count == 2
-    assert sync_bot._slash_cleanup_done == {100, 200}
+    assert sync_bot.tree.fetch_commands.await_count == 1
+    assert sync_bot._slash_cleanup_done == {100}
 
 
 @pytest.mark.asyncio
@@ -232,7 +234,7 @@ async def test_cleanup_http_failure_can_be_retried_on_reconnect(sync_bot):
     assert sync_bot._slash_cleanup_done == set()
     sync_bot.tree.fetch_commands.side_effect = None
     await cleanup_retired_guild_commands(sync_bot)
-    assert sync_bot._slash_cleanup_done == {100, 200}
+    assert sync_bot._slash_cleanup_done == {100}
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+from utils.guild_scope import allowed_guilds, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 import copy
 import os
@@ -206,6 +207,7 @@ class JobCog(commands.Cog):
         self.auto_prune.cancel()
 
     async def get_console_channel(self, guild: discord.Guild):
+        require_guild(guild, getattr(self, "bot", None))
         return resolve_text_channel(
             guild,
             id_env="CHANNEL_CONSOLE_ID",
@@ -233,6 +235,7 @@ class JobCog(commands.Cog):
         return embed
 
     async def send_logo_embed(self, ctx, embed: discord.Embed):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if os.path.exists(LOGO_PATH):
             await ctx.send(embed=self._logo_embed(embed), file=discord.File(LOGO_PATH, filename=LOGO_FILENAME))
         else:
@@ -240,12 +243,14 @@ class JobCog(commands.Cog):
 
     async def _refresh_jobs_locked(self, guild: discord.Guild):
         """Le verrou de mutation doit être détenu pendant toute la relecture."""
+        require_guild(guild, getattr(self, "bot", None))
         if self._remote_uncertain:
             await self._restore_jobs_for_mutation(guild)
             return True
         return await self._load_from_console(guild)
 
     async def load_from_console(self, guild: discord.Guild):
+        require_guild(guild, getattr(self, "bot", None))
         async with self._mutation_lock:
             return await self._refresh_jobs_locked(guild)
 
@@ -255,6 +260,7 @@ class JobCog(commands.Cog):
         Le TTL de synchronisation existant est conservé. Une source inaccessible
         n'est jamais remplacée par un annuaire vide ou une ancienne copie locale.
         """
+        require_guild(guild, getattr(self, "bot", None))
         async with self._mutation_lock:
             if not await self._refresh_jobs_locked(guild):
                 raise JobPersistenceError(
@@ -267,6 +273,7 @@ class JobCog(commands.Cog):
 
     async def _load_from_console(self, guild: discord.Guild):
         """Lecture sous _mutation_lock ; jamais de remplacement par un état incertain."""
+        require_guild(guild, getattr(self, "bot", None))
         now = time.monotonic()
         if (
             self.console_message_id is not None
@@ -306,6 +313,7 @@ class JobCog(commands.Cog):
         return True
 
     async def publish_to_console(self, guild: discord.Guild):
+        require_guild(guild, getattr(self, "bot", None))
         async with self._mutation_lock:
             if self._remote_uncertain:
                 raise JobPersistenceError("Le registre métiers doit être relu avant toute publication.")
@@ -314,7 +322,7 @@ class JobCog(commands.Cog):
 
     async def initialize_data(self):
         console_loaded = False
-        for guild in self.bot.guilds:
+        for guild in allowed_guilds(self.bot):
             try:
                 if await self.load_from_console(guild):
                     console_loaded = True
@@ -371,10 +379,12 @@ class JobCog(commands.Cog):
                     os.unlink(temporary)
 
     async def dump_data_to_console(self, guild: discord.Guild):
+        require_guild(guild, getattr(self, "bot", None))
         return await self.publish_to_console(guild)
 
     async def _read_jobs_snapshot(self, guild):
         # Un parcours interrompu n'est jamais interprété comme un annuaire absent.
+        require_guild(guild, getattr(self, "bot", None))
         try:
             async with asyncio.timeout(30):
                 return await self._discover_jobs_snapshot(guild)
@@ -385,6 +395,7 @@ class JobCog(commands.Cog):
             ) from exc
 
     async def _discover_jobs_snapshot(self, guild):
+        require_guild(guild, getattr(self, "bot", None))
         channel = await self.get_console_channel(guild)
         if channel is None:
             raise JobPersistenceError("Salon #console introuvable : aucune modification confirmée.")
@@ -460,6 +471,7 @@ class JobCog(commands.Cog):
         return channel, message, payload
 
     async def _restore_jobs_for_mutation(self, guild):
+        require_guild(guild, getattr(self, "bot", None))
         try:
             _, message, payload = await self._read_jobs_snapshot(guild)
             if payload is None and (
@@ -489,6 +501,7 @@ class JobCog(commands.Cog):
             ) from exc
 
     async def _persist_jobs_candidate(self, guild, candidate):
+        require_guild(guild, getattr(self, "bot", None))
         validate_jobs_payload(candidate)
         channel, existing, current = await self._read_jobs_snapshot(guild)
         if current is not None and current != self.jobs_data:
@@ -526,6 +539,7 @@ class JobCog(commands.Cog):
                 file.close()
 
     async def _commit_jobs_candidate(self, guild, candidate):
+        require_guild(guild, getattr(self, "bot", None))
         try:
             async with asyncio.timeout(20):
                 await self._persist_jobs_candidate(guild, candidate)
@@ -549,6 +563,7 @@ class JobCog(commands.Cog):
     async def update_member_job(self, guild, member_id, display_name, job_name, level, *,
                                 allow_new=False, before_mutation=None, superseded=None, request_key=None):
         """Je sérialise les modifications natives et Evo sur le même registre durable."""
+        require_guild(guild, getattr(self, "bot", None))
         if level is not None and (type(level) is not int or not JOB_MIN_LEVEL <= level <= JOB_MAX_LEVEL):
             raise JobPersistenceError("Le niveau doit être compris entre 1 et 100.")
         async with self._mutation_lock:
@@ -599,7 +614,7 @@ class JobCog(commands.Cog):
             if not key.isdigit():
                 member = discord.utils.find(
                     lambda m: m.name.lower() == key.lower() or m.display_name.lower() == key.lower(),
-                    self.bot.get_all_members(),
+                    (member for guild in allowed_guilds(self.bot) for member in guild.members),
                 )
                 if member:
                     new_key = str(member.id)
@@ -656,6 +671,7 @@ class JobCog(commands.Cog):
 
     async def _wait_for_job_confirmation(self, ctx, superseded: asyncio.Event | None):
         """J'arrête l'attente dès qu'une nouvelle saisie remplace cette demande."""
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         def check(message: discord.Message):
             return (
                 message.author.id == ctx.author.id
@@ -696,6 +712,7 @@ class JobCog(commands.Cog):
         *,
         superseded: asyncio.Event | None = None,
     ):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if superseded is not None and superseded.is_set():
             return
         if level < JOB_MIN_LEVEL or level > JOB_MAX_LEVEL:
@@ -753,10 +770,10 @@ class JobCog(commands.Cog):
 
     async def compute_member_union_ids(self):
         """Une liste partielle de membres n'autorise jamais la suppression de fiches."""
-        if not self.bot.guilds:
+        if not allowed_guilds(self.bot):
             raise JobPersistenceError("Aucun serveur chargé : nettoyage métiers annulé.")
         union_ids = set()
-        for guild in self.bot.guilds:
+        for guild in allowed_guilds(self.bot):
             fetched = set()
             try:
                 async with asyncio.timeout(30):
@@ -783,7 +800,7 @@ class JobCog(commands.Cog):
     async def prune_jobs(self):
         union_ids = await self.compute_member_union_ids()
         guild = None
-        for candidate_guild in self.bot.guilds:
+        for candidate_guild in allowed_guilds(self.bot):
             if await self.get_console_channel(candidate_guild):
                 guild = candidate_guild
                 break
@@ -792,7 +809,7 @@ class JobCog(commands.Cog):
         async with self._mutation_lock:
             await self._restore_jobs_for_mutation(guild)
             candidate = copy.deepcopy(self.jobs_data)
-            union_ids.update(member.id for member in self.bot.get_all_members())
+            union_ids.update(member.id for source in allowed_guilds(self.bot) for member in source.members)
             for key, row in list(candidate.items()):
                 # Une ancienne fiche indexée par pseudo n'est pas une preuve
                 # d'identité ni de départ ; elle reste disponible pour le Staff.
@@ -820,7 +837,9 @@ class JobCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        if len(self.bot.guilds) > 1:
+        if not is_allowed_guild(getattr(member, "guild", None), getattr(self, "bot", None)):
+            return
+        if len(allowed_guilds(self.bot)) > 1:
             # Le registre historique est commun : laisser le recensement complet
             # vérifier qu'un membre n'est plus présent sur aucun serveur.
             return
@@ -849,6 +868,7 @@ class JobCog(commands.Cog):
     @commands.command(name="job")
     async def job_command(self, ctx, *args):
         """Je remplace la saisie précédente avant tout chargement ou envoi Discord."""
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if not self._is_job_level_submission(args):
             await self._execute_job_command(ctx, *args)
             return
@@ -872,6 +892,7 @@ class JobCog(commands.Cog):
                 self._job_submissions.pop(key)
 
     async def _execute_job_command(self, ctx, *args, superseded: asyncio.Event | None = None):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         try:
             await self._execute_job_command_checked(ctx, *args, superseded=superseded)
         except JobPersistenceError as exc:
@@ -881,6 +902,7 @@ class JobCog(commands.Cog):
                 ))
 
     async def _execute_job_command_checked(self, ctx, *args, superseded: asyncio.Event | None = None):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if not self.initialized:
             await self.initialize_data()
         if args:
@@ -1176,6 +1198,7 @@ class JobCog(commands.Cog):
         channel_name: str | None = None,
         confirmation: str | None = None,
     ):
+        require_guild(getattr(ctx, "guild", None), getattr(self, "bot", None))
         if not channel_name:
             e = discord.Embed(
                 title="Utilisation",

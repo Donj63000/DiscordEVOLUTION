@@ -17,7 +17,7 @@ from utils.evo_search import search_tool
 @pytest.mark.parametrize("amount,calls", [("0.015", "3"), ("0.03", "2"), ("0.015", "2")])
 def test_web_misconfiguration_preserves_configuration_and_budget(amount, calls, caplog):
     env = {
-        "OPENAI_API_KEY": "unit-test-placeholder", "EVO_WEB_SEARCH_ENABLED": "1",
+        "BOT_GUILD_ID": "1", "OPENAI_API_KEY": "unit-test-placeholder", "EVO_WEB_SEARCH_ENABLED": "1",
         "EVO_REQUEST_USD": amount, "EVO_MAX_MODEL_CALLS": calls,
     }
     with patch.dict(os.environ, env, clear=True):
@@ -49,7 +49,7 @@ def test_web_availability_is_explicit(settings, expected):
     {"EVO_MAX_MODEL_CALLS": "1"},
 ])
 def test_really_invalid_or_inconsistent_settings_remain_errors(env):
-    with patch.dict(os.environ, {"OPENAI_API_KEY": "unit-test-placeholder", **env}, clear=True):
+    with patch.dict(os.environ, {"BOT_GUILD_ID": "1", "OPENAI_API_KEY": "unit-test-placeholder", **env}, clear=True):
         with pytest.raises(EvoError):
             EvoConfig.from_env(guilds=[NS(id=1)])
 

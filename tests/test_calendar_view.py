@@ -37,7 +37,8 @@ def interaction(user_id=7, guild_id=100):
 
 
 @pytest_asyncio.fixture
-async def agenda():
+async def agenda(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "100")
     records = {"1": record()}
     guild = SimpleNamespace(id=100, get_member=Mock(return_value=SimpleNamespace(display_name="Héros")))
     view = CalendrierView(

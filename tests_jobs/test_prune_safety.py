@@ -123,14 +123,15 @@ async def test_auto_prune_survives_temporary_directory_failure(runtime):
 
 
 @pytest.mark.asyncio
-async def test_multiguild_partial_census_does_not_delete_shared_registry(runtime):
+async def test_foreign_guild_census_is_never_read_or_merged(runtime):
     rt = runtime
     rt.console.add(DATA)
     rt.guild.member_count = 2
     census(rt.guild, [900, 101])
     other = NS(id=2, members=[], member_count=2)
-    census(other, [900], error=OSError("serveur inaccessible"))
+    other.fetch_members = Mock(side_effect=AssertionError("foreign guild must not be queried"))
     rt.bot.guilds.append(other)
-    with pytest.raises(rt.module.JobPersistenceError):
-        await rt.cog.prune_jobs()
-    assert rt.console.edits == rt.console.sends == 0
+    assert await rt.cog.prune_jobs() == 1
+    assert set(rt.cog.jobs_data) == {"101", "ancienne-fiche"}
+    assert rt.console.edits == 1 and rt.console.sends == 0
+    other.fetch_members.assert_not_called()

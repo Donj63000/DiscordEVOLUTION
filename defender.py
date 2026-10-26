@@ -22,11 +22,90 @@ import aiohttp
 import async_timeout
 import discord
 import idna
+from aiohttp.abc import AbstractResolver
+from yarl import URL
 from cryptography.fernet import Fernet, InvalidToken
 from discord.ext import commands
 from utils.slash_support import delete_invocation_message
+from utils.guild_scope import is_allowed_guild, require_guild
 
 log = logging.getLogger("Defender")
+
+
+class UnsafeProbeError(OSError):
+    """A probe destination could not be established as public."""
+
+
+def is_public_probe_address(value: str) -> bool:
+    """Accept public unicast endpoints, including the effective IPv4 address.
+
+    Address checks belong to the resolver used by the connector. A separate
+    getaddrinfo check can never authorize a later connection safely.
+    """
+    if "%" in value:  # Scoped addresses are not Internet destinations.
+        return False
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        elif address.sixtofour is not None or address.teredo is not None:
+            return False
+        elif address in ipaddress.ip_network("64:ff9b::/96") or address in ipaddress.ip_network("64:ff9b:1::/48"):
+            # Translation prefixes can reach a non-public embedded IPv4 host.
+            return False
+    return bool(
+        address.is_global
+        and not address.is_multicast
+        and not address.is_reserved
+        and not address.is_unspecified
+    )
+
+
+class PublicAddressResolver(AbstractResolver):
+    """Validate the exact records returned to aiohttp, not a previous lookup."""
+
+    def __init__(self, resolver: AbstractResolver | None = None):
+        self._resolver = resolver if resolver is not None else aiohttp.resolver.DefaultResolver()
+
+    async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET):
+        records = await self._resolver.resolve(host, port, family=family)
+        if not records or any(not is_public_probe_address(record["host"]) for record in records):
+            raise UnsafeProbeError("La destination réseau n'est pas publique.")
+        return records
+
+    async def close(self):
+        await self._resolver.close()
+
+
+def validate_probe_url(value: str) -> URL:
+    """Use aiohttp's URL parser and handle literals that bypass its resolver."""
+    try:
+        if "@" in urlparse(value).netloc:
+            # yarl canonicalizes an empty userinfo away; reject it as well.
+            raise ValueError("userinfo is not allowed")
+        url = URL(value)
+        if url.scheme not in {"http", "https"} or not url.host:
+            raise ValueError("unsupported destination")
+        if url.raw_user is not None or url.raw_password is not None:
+            raise ValueError("userinfo is not allowed")
+        if url.port != (443 if url.scheme == "https" else 80):
+            raise ValueError("non-standard port")
+        host = url.host
+        if "%" in host:
+            raise ValueError("scoped address")
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass  # The connector's resolver validates all DNS records.
+        else:
+            if not is_public_probe_address(host):
+                raise ValueError("non-public literal address")
+        return url
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise UnsafeProbeError("Destination de sonde interdite ou invalide.") from exc
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -353,6 +432,7 @@ class DefenderCog(commands.Cog):
         }
 
         self.http_session: aiohttp.ClientSession | None = None
+        self._public_resolver: PublicAddressResolver | None = None
         self.scan_semaphore = asyncio.Semaphore(self.max_concurrent_scans)
 
         self._analysis_cache: dict[str, tuple[float, AnalysisResult]] = {}
@@ -375,7 +455,12 @@ class DefenderCog(commands.Cog):
 
     async def cog_load(self) -> None:
         timeout = aiohttp.ClientTimeout(total=self.http_timeout)
-        connector = aiohttp.TCPConnector(limit_per_host=8, ttl_dns_cache=300)
+        self._public_resolver = PublicAddressResolver()
+        connector = aiohttp.TCPConnector(
+            limit_per_host=8,
+            ttl_dns_cache=300,
+            resolver=self._public_resolver,
+        )
 
         self.http_session = aiohttp.ClientSession(
             timeout=timeout,
@@ -388,12 +473,16 @@ class DefenderCog(commands.Cog):
     async def cog_unload(self) -> None:
         if self.http_session and not self.http_session.closed:
             await self.http_session.close()
+        if self._public_resolver is not None:
+            await self._public_resolver.close()
+            self._public_resolver = None
 
         self.logger.info("Session HTTP Defender fermée.")
 
     @commands.command(name="scan", help="Analyse un lien sans déclencher le mode automatique.")
     @commands.cooldown(3, 30, commands.BucketType.user)
     async def scan_command(self, ctx: commands.Context, *, url: str | None = None) -> None:
+        require_guild(ctx.guild, self.bot)
         if _env_bool("DEFENDER_SCAN_DELETE_COMMAND", True):
             try:
                 await delete_invocation_message(ctx)
@@ -429,6 +518,7 @@ class DefenderCog(commands.Cog):
     )
     @commands.has_permissions(manage_guild=True)
     async def defender_status_command(self, ctx: commands.Context) -> None:
+        require_guild(ctx.guild, self.bot)
         embed = discord.Embed(title="État Defender", color=0x3498DB)
         embed.add_field(
             name="Google Safe Browsing",
@@ -461,7 +551,7 @@ class DefenderCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot or not message.guild:
+        if message.author.bot or not is_allowed_guild(message.guild, self.bot):
             return
 
         content = message.content or ""
@@ -528,8 +618,10 @@ class DefenderCog(commands.Cog):
 
             return result
 
+        expansion_failed = False
         if self.expand_shortlinks and self._is_shortlink(candidate.host):
             expanded = await self.expand_url(candidate.normalized)
+            expansion_failed = expanded is None
 
             if expanded and expanded != candidate.normalized:
                 expanded_candidate = self._normalize_candidate(
@@ -543,13 +635,16 @@ class DefenderCog(commands.Cog):
         cache_key = candidate.normalized
         cached = self._cache_get(self._analysis_cache, cache_key)
 
-        if cached:
+        if cached and not expansion_failed:
             if manual:
                 self._record_history(cached)
 
             return cached
 
         heuristic_score, reasons = await self._score_heuristics(candidate)
+        _forbidden, resolved = await self._host_resolves_to_forbidden(candidate.host)
+        if expansion_failed:
+            reasons.append("Développement du lien impossible ou bloqué ; destination finale non vérifiée.")
         provider_results = await self._run_providers(candidate.normalized)
 
         score = min(
@@ -566,6 +661,9 @@ class DefenderCog(commands.Cog):
         elif provider_suspicious or score >= self.suspicious_threshold:
             level = ThreatLevel.SUSPICIOUS
             color = 0xE67E22
+        elif expansion_failed or not resolved:
+            level = ThreatLevel.UNKNOWN
+            color = 0x95A5A6
         else:
             level = ThreatLevel.CLEAN
             color = 0x2ECC71
@@ -639,6 +737,7 @@ class DefenderCog(commands.Cog):
                         endpoint,
                         params={"key": self.google_safe_browsing_key},
                         json=payload,
+                        allow_redirects=False,
                     ) as resp:
                         if resp.status in {429, 503} and attempt < self.max_retries:
                             await asyncio.sleep(self.backoff_base * (2**attempt))
@@ -698,7 +797,7 @@ class DefenderCog(commands.Cog):
         for attempt in range(self.max_retries + 1):
             try:
                 async with async_timeout.timeout(self.http_timeout):
-                    async with self.http_session.get(endpoint, headers=headers) as resp:
+                    async with self.http_session.get(endpoint, headers=headers, allow_redirects=False) as resp:
                         if resp.status in {429, 503} and attempt < self.max_retries:
                             await asyncio.sleep(self.backoff_base * (2**attempt))
                             continue
@@ -776,11 +875,13 @@ class DefenderCog(commands.Cog):
 
         try:
             async with async_timeout.timeout(self.http_timeout):
-                await self.http_session.post(
+                async with self.http_session.post(
                     "https://www.virustotal.com/api/v3/urls",
                     headers={"x-apikey": self.virustotal_api_key},
                     data={"url": url},
-                )
+                    allow_redirects=False,
+                ):
+                    pass
         except Exception as exc:
             self.logger.debug("Soumission VirusTotal impossible: %s", exc)
 
@@ -802,6 +903,7 @@ class DefenderCog(commands.Cog):
                     async with self.http_session.post(
                         "https://checkurl.phishtank.com/checkurl/",
                         data=data,
+                        allow_redirects=False,
                     ) as resp:
                         if resp.status in {429, 503} and attempt < self.max_retries:
                             await asyncio.sleep(self.backoff_base * (2**attempt))
@@ -1210,24 +1312,23 @@ class DefenderCog(commands.Cog):
 
         return previous[-1]
 
-    async def expand_url(self, url: str, max_redirects: int = 4) -> str:
+    async def expand_url(self, url: str, max_redirects: int = 4) -> str | None:
         cached = self._cache_get(self._expanded_cache, url)
 
         if cached:
-            return cached
+            try:
+                return str(validate_probe_url(cached))
+            except UnsafeProbeError:
+                return None
 
         current_url = url
+        max_redirects = max(0, min(max_redirects, 4))
 
-        for _ in range(max_redirects):
-            parsed = urlparse(current_url)
-
-            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-                break
-
-            forbidden, resolved = await self._host_resolves_to_forbidden(parsed.hostname)
-
-            if self.block_private_ips and (forbidden or not resolved):
-                break
+        for redirect_count in range(max_redirects + 1):
+            try:
+                validate_probe_url(current_url)
+            except UnsafeProbeError:
+                return None
 
             response = await self.head_or_get(current_url, method="HEAD")
 
@@ -1235,21 +1336,22 @@ class DefenderCog(commands.Cog):
                 response = await self.head_or_get(current_url, method="GET")
 
             if response is None:
-                break
+                return None
 
-            if 300 <= response.status < 400 and response.headers.get("Location"):
-                next_url = urljoin(current_url, response.headers["Location"].strip())
-                next_candidate = self._normalize_candidate(next_url)
+            if response.status >= 400:
+                return None
 
-                if not next_candidate:
-                    break
-
-                forbidden, resolved = await self._host_resolves_to_forbidden(next_candidate.host)
-
-                if self.block_private_ips and (forbidden or not resolved):
-                    break
-
-                current_url = next_candidate.normalized
+            if 300 <= response.status < 400:
+                location = next((value for key, value in response.headers.items() if key.lower() == "location"), None)
+                if not location:
+                    return None
+                if redirect_count == max_redirects:
+                    return None
+                next_url = urljoin(current_url, location.strip())
+                try:
+                    current_url = str(validate_probe_url(next_url))
+                except UnsafeProbeError:
+                    return None
                 continue
 
             break
@@ -1263,10 +1365,13 @@ class DefenderCog(commands.Cog):
             return None
 
         try:
+            safe_url = validate_probe_url(url)
+            if method not in {"HEAD", "GET"}:
+                return None
             async with async_timeout.timeout(self.http_timeout):
                 async with self.http_session.request(
                     method,
-                    url,
+                    safe_url,
                     allow_redirects=False,
                     max_redirects=0,
                 ) as resp:
@@ -1276,17 +1381,7 @@ class DefenderCog(commands.Cog):
             return None
 
     def _is_forbidden_ip(self, ip: ipaddress._BaseAddress) -> bool:
-        cgnat = ipaddress.ip_network("100.64.0.0/10")
-
-        return (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-            or ip in cgnat
-        )
+        return not is_public_probe_address(str(ip))
 
     async def _host_resolves_to_forbidden(self, host: str) -> tuple[bool, bool]:
         cache_key = host.lower().strip("[]")

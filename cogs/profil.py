@@ -14,6 +14,8 @@ from typing import Dict, Optional, Tuple
 import discord
 from discord.ext import commands
 from utils.slash_support import notify_private_workflow
+from utils.dm_sessions import dm_workflow, dm_check_for, finish_dm_input, cancel_dm_flows
+from utils.guild_scope import require_guild, require_context, allowed_guilds, is_allowed_guild
 from discord.utils import get
 
 # ============
@@ -220,6 +222,7 @@ class ConsoleProfileStore:
         self._lock = asyncio.Lock()
 
     async def _get_console_channel(self, guild_id: int) -> discord.TextChannel:
+        require_guild(guild_id, self.bot)
         guild = self.bot.get_guild(guild_id)
         if not guild:
             raise RuntimeError(f"Guild {guild_id} introuvable.")
@@ -231,6 +234,8 @@ class ConsoleProfileStore:
     async def _load_blob(self, guild_id: int) -> dict:
         ch = await self._get_console_channel(guild_id)
         async for msg in ch.history(limit=HISTORY_SCAN_LIMIT, oldest_first=False):
+            if msg.author != self.bot.user or getattr(msg, "webhook_id", None) is not None:
+                continue
             # priorité: pièce jointe du bon nom
             for att in msg.attachments:
                 if att.filename == PROFILES_FILENAME:
@@ -368,7 +373,8 @@ class LadderSnapshotStore:
     def __init__(self, bot: commands.Bot): self.bot = bot
 
     async def _get_console_channel(self, guild_id: int) -> discord.TextChannel:
-        for g in self.bot.guilds:
+        require_guild(guild_id, self.bot)
+        for g in allowed_guilds(self.bot):
             if g.id == guild_id:
                 ch = get(g.text_channels, name=os.getenv("CHANNEL_CONSOLE") or "console")
                 if ch: return ch
@@ -702,6 +708,18 @@ class ProfilActionsView(discord.ui.View):
         self.cog = cog
         self.prof = prof
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        guild = self.cog.bot.get_guild(self.prof.guild_id)
+        allowed = (
+            is_allowed_guild(self.prof.guild_id, self.cog.bot)
+            and interaction.user.id == self.prof.owner_id
+            and guild is not None and guild.get_member(interaction.user.id) is not None
+            and (interaction.guild is None or interaction.guild.id == self.prof.guild_id)
+        )
+        if not allowed:
+            await interaction.response.send_message("Ce panneau appartient à son auteur sur Evolution.", ephemeral=True)
+        return allowed
+
     @discord.ui.button(label="Mettre à jour %stats%", style=discord.ButtonStyle.primary)
     async def btn_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
@@ -733,8 +751,9 @@ class WizardCancelled(Exception):
 async def wait_user_message(bot: commands.Bot, chan: discord.abc.Messageable, author_id: int, timeout: int = 180) -> discord.Message:
     """Attend un message de l'utilisateur dans le même channel (DM ou non)."""
 
+    routed = dm_check_for(bot)
     def _check(m: discord.Message) -> bool:
-        return (m.author.id == author_id) and (m.channel.id == getattr(chan, "id", None))
+        return routed(m) and m.author.id == author_id and m.channel.id == getattr(chan, "id", None)
 
     return await bot.wait_for("message", check=_check, timeout=timeout)
 
@@ -986,6 +1005,13 @@ class ProfilCog(commands.Cog):
         # store #console (au lieu du JSON local)
         self.store = ConsoleProfileStore(bot)
 
+    def cog_unload(self):
+        cancel_dm_flows(self.bot, "profil")
+
+    async def cog_check(self, ctx):
+        require_context(ctx)
+        return True
+
     # ---- utilitaires de validation ----
     def canon_classe(self, s: str) -> str:
         key = strip_accents(s).lower().strip()
@@ -1013,12 +1039,13 @@ class ProfilCog(commands.Cog):
             await notify_private_workflow(ctx)
             return dm, True
         except discord.Forbidden:
-            await ctx.reply("Je ne peux pas t'envoyer de DM. On continue ici (ton texte `%stats%` sera visible dans ce salon).")
-            return ctx.channel, False
+            raise WizardCancelled("Messages privés indisponibles ; aucun texte privé ne sera collecté dans le salon.")
 
     async def _ask(self, bot: commands.Bot, chan: discord.abc.Messageable, author_id: int, question: str, check=None, timeout: int = 180) -> str:
         await chan.send(question)
+        routed = dm_check_for(bot)
         def _check(msg: discord.Message) -> bool:
+            if not routed(msg) or msg.channel.id != getattr(chan, "id", None): return False
             if msg.author.id != author_id: return False
             if check is not None: return check(msg)
             return True
@@ -1067,6 +1094,7 @@ class ProfilCog(commands.Cog):
     # ---- Création / mise à jour (dialogue guidé) ----
     @profil.command(name="set")
     @commands.guild_only()
+    @dm_workflow("profil", timeout=900)
     async def profil_set(self, ctx: commands.Context):
         """Crée ou met à jour ton profil via questions guidées (DM si possible)."""
         chan, is_dm = await self._open_dm(ctx)
@@ -1152,6 +1180,7 @@ class ProfilCog(commands.Cog):
                 retries=0
             )
 
+            finish_dm_input(self.bot)
             now = datetime.now(timezone.utc).isoformat()
             player_slug = await self.store.ensure_unique_slug(guild_id, slugify(name), owner_id)
             prof = Profile(
@@ -1467,7 +1496,7 @@ class ProfilCog(commands.Cog):
     @commands.Cog.listener()
     async def on_command_error(self, ctx: commands.Context, error: Exception):
         """Filet de sécurité : si une erreur survient sur une commande profil, on répond calmement au bon endroit."""
-        if not ctx.command:
+        if not ctx.command or not is_allowed_guild(ctx.guild, self.bot):
             return
         if not ctx.command.qualified_name.startswith("profil"):
             return

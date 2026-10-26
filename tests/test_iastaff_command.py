@@ -17,6 +17,7 @@ class FakeContext:
         self.channel = FakeChannel(channel_id)
         staff_role = SimpleNamespace(name=STAFF_ROLE_NAME)
         self.author = SimpleNamespace(id=42, display_name="Mod", roles=[staff_role])
+        self.guild = SimpleNamespace(id=1000, roles=[], fetch_member=AsyncMock(return_value=self.author), fetch_roles=AsyncMock(return_value=[]))
         self.replies: list[str] = []
 
     async def reply(self, content, *, mention_author=False):
@@ -25,6 +26,7 @@ class FakeContext:
 
 @pytest.fixture
 def iastaff_cog(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "1000")
     monkeypatch.setattr("iastaff.AsyncOpenAI", None)
     bot = SimpleNamespace(
         guilds=[],
@@ -74,9 +76,11 @@ async def test_iastaff_forwards_regular_message(iastaff_cog):
 
     await IAStaff.iastaff_cmd(iastaff_cog, ctx, message="Bonjour IA")
 
-    iastaff_cog.handle_staff_message.assert_awaited_once_with(
-        ctx.channel, ctx.author, "Bonjour IA", ctx=ctx
-    )
+    iastaff_cog.handle_staff_message.assert_awaited_once()
+    call = iastaff_cog.handle_staff_message.await_args
+    assert call.args == (ctx.channel, ctx.author, "Bonjour IA")
+    assert call.kwargs["ctx"].guild is ctx.guild
+    assert call.kwargs["ctx"].author is ctx.author
 
 
 @pytest.mark.asyncio
@@ -142,6 +146,9 @@ def test_make_messages_rules_mode(monkeypatch, iastaff_cog):
 
 
 def test_make_messages_trims_context_and_history(monkeypatch, iastaff_cog):
+    # Keep the budget deterministic regardless of environment settings at module
+    # collection: this case includes fixed rules as well as conversational data.
+    monkeypatch.setattr("iastaff.IASTAFF_RULES_MODE", "always")
     monkeypatch.setattr("iastaff.INPUT_MAX_CHARS", 20)
     monkeypatch.setattr("iastaff.MODERATION_PROMPT", "MOD")
     monkeypatch.setattr("iastaff.GUILD_RULES", "RULES")

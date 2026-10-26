@@ -19,6 +19,11 @@ from utils.activity_views import ActivityCardView, ActivityListView
 NOW = datetime(2026, 9, 12, 10, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def evolution_guild(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "100")
+
+
 def not_found():
     return discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "Absent")
 

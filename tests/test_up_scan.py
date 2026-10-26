@@ -8,6 +8,12 @@ import up
 from up import PromotionOutcome, UpCog, VeteranPromotionButton
 
 
+@pytest.fixture(autouse=True)
+def evolution_guild(monkeypatch):
+    monkeypatch.setenv("BOT_GUILD_ID", "42")
+
+
+
 class FakeHistory:
     def __init__(self, messages=None):
         self.messages = list(messages or [])
@@ -150,7 +156,7 @@ async def test_scan_entire_history_uses_limits_and_counts_messages(monkeypatch):
             SimpleNamespace(author=author),
         ]
     )
-    guild = SimpleNamespace(text_channels=[channel])
+    guild = SimpleNamespace(id=42, text_channels=[channel])
     bot = SimpleNamespace(guilds=[guild])
     cog = UpCog(bot)
 

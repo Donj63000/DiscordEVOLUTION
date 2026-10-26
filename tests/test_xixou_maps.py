@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 from urllib.parse import unquote
 
 import aiohttp
-from aioresponses import CallbackResult, aioresponses
+from tests_support.http_mock import CallbackResult, aioresponses
 from PIL import Image
 import pytest
 

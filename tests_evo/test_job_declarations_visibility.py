@@ -195,15 +195,16 @@ async def test_declared_label_is_data_not_markdown_link_mention_or_secret():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cause", ["disabled", "other_guild", "multiple_guilds", "permission"])
+@pytest.mark.parametrize("cause", ["disabled", "other_guild", "foreign_context", "permission"])
 async def test_unverified_declared_names_obey_the_same_access_controls(cause):
     ctx, cog = directory({"fiche": {"name": "NE_PAS_DIVULGUER", "jobs": {"Tailleur": 100}}})
     if cause == "disabled":
         ctx.config = config(public_job_data=False, public_member_data=False)
     elif cause == "other_guild":
         ctx.bot.guilds = [NS(id=77)]
-    elif cause == "multiple_guilds":
+    elif cause == "foreign_context":
         ctx.bot.guilds.append(NS(id=77))
+        ctx.guild = NS(id=77)
     else:
         ctx.channel.denied.add(ctx.member.id)
     with pytest.raises(EvoError):

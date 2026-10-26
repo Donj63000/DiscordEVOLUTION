@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from utils.guild_scope import allowed_guilds, check_interaction_guild, configured_guild_id, is_allowed_guild, require_guild
 import asyncio
 import io
 import logging
@@ -112,6 +113,8 @@ class OwnedActivityView(ActivityView):
         self.message = None
 
     async def interaction_check(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if (interaction.user.id, interaction.guild_id) != (self.owner_id, self.guild_id):
             await send_interaction_error(interaction, "Ce panneau privé appartient à un autre membre.")
             return False
@@ -169,6 +172,8 @@ class ActivityModal(discord.ui.Modal):
             self.add_item(field)
 
     async def on_submit(self, interaction):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if (interaction.user.id, interaction.guild_id) != (self.owner_id, self.guild_id):
             return await send_interaction_error(interaction, "Ce formulaire appartient à un autre membre.")
         values = {
@@ -233,6 +238,8 @@ class DraftView(OwnedActivityView):
 
     @discord.ui.button(label="Créer la sortie", style=discord.ButtonStyle.success)
     async def confirm(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if not await self.interaction_check(interaction):
             return
         async with self._lock:
@@ -259,6 +266,8 @@ class DraftView(OwnedActivityView):
 
     @discord.ui.button(label="Corriger", style=discord.ButtonStyle.secondary)
     async def correct(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         if not await self.interaction_check(interaction):
             return
         async with self._lock:
@@ -274,6 +283,8 @@ class DraftView(OwnedActivityView):
 
     @discord.ui.button(label="Abandonner", style=discord.ButtonStyle.secondary)
     async def abandon(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         async with self._lock:
             if not await self.interaction_check(interaction) or self._used:
                 return
@@ -300,30 +311,44 @@ class ActivityCardView(ActivityView):
         )
 
     async def run(self, interaction, action):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await invoke_from_component(self.cog.bot, interaction, "activite", f"{action} {self.event_id}")
 
     @discord.ui.button(label="S'inscrire", style=discord.ButtonStyle.success, custom_id="join")
     async def join(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.run(interaction, "join")
 
     @discord.ui.button(label="Se désinscrire", style=discord.ButtonStyle.secondary, custom_id="leave")
     async def leave(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.run(interaction, "leave")
 
     @discord.ui.button(label="Détails", style=discord.ButtonStyle.secondary, custom_id="info")
     async def info(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.run(interaction, "info")
 
     @discord.ui.button(label="Participants", style=discord.ButtonStyle.secondary, custom_id="roster")
     async def roster(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.run(interaction, "participants")
 
     @discord.ui.button(label="Gérer", style=discord.ButtonStyle.secondary, custom_id="manage")
     async def manage(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await self.run(interaction, "gerer")
 
     @discord.ui.button(label="Calendrier", style=discord.ButtonStyle.secondary, custom_id="calendar", row=1)
     async def calendar(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await invoke_from_component(self.cog.bot, interaction, "calendrier", "")
 
 
@@ -335,12 +360,16 @@ class ActivityManageView(OwnedActivityView):
 
     @discord.ui.button(label="Modifier", style=discord.ButtonStyle.primary)
     async def modify(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await invoke_from_component(
             self.cog.bot, interaction, "activite", f"modifier {self.event_id}", defer_response=False,
         )
 
     @discord.ui.button(label="Annuler la sortie", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         from utils.slash_catalog import custom_routes
         from utils.slash_confirm import request_confirmation
 
@@ -352,6 +381,8 @@ class ActivityManageView(OwnedActivityView):
 
     @discord.ui.button(label="Réparer / publier la fiche", style=discord.ButtonStyle.secondary)
     async def publish(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await invoke_from_component(
             self.cog.bot, interaction, "activite", f"publier {self.event_id}",
         )
@@ -450,12 +481,16 @@ class ActivityListView(OwnedActivityView):
         discord.SelectOption(label="Historique et sorties annulées", value="historique"),
     ])
     async def filter_events(self, interaction, select):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         self.mode = select.values[0]
         self.page = 0
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     @discord.ui.select(placeholder="Choisir une sortie", row=1)
     async def choose(self, interaction, select):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await invoke_from_component(
             self.cog.bot, interaction, "activite", f"{self.action} {select.values[0]}",
         )
@@ -467,26 +502,36 @@ class ActivityListView(OwnedActivityView):
 
     @discord.ui.button(label="Précédent", style=discord.ButtonStyle.secondary, row=2)
     async def previous(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         self.page = max(0, self.page - 1)
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     @discord.ui.button(label="Suivant", style=discord.ButtonStyle.secondary, row=2)
     async def next_page(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         self.page += 1
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     @discord.ui.button(label="Actualiser", style=discord.ButtonStyle.secondary, row=2)
     async def refresh(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     @discord.ui.button(label="Créer une sortie", style=discord.ButtonStyle.success, row=3)
     async def create(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await invoke_from_component(
             self.cog.bot, interaction, "activite", "creer", defer_response=False,
         )
 
     @discord.ui.button(label="Calendrier", style=discord.ButtonStyle.secondary, row=3)
     async def calendar(self, interaction, button):
+        if not await check_interaction_guild(interaction, getattr(self, "bot", None)):
+            return False
         await invoke_from_component(self.cog.bot, interaction, "calendrier", "")
 
 

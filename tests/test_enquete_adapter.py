@@ -11,6 +11,7 @@ import sys
 import tempfile
 from types import ModuleType, SimpleNamespace as NS
 import unittest
+import pytest
 from unittest.mock import AsyncMock, Mock, patch
 
 from utils.enquete_core import Config, EnqueteError, Receipts, ReportMeta, Window
@@ -70,6 +71,13 @@ def load_stubbed_cog():
 
 MOD = load_stubbed_cog()
 JID, GID, UID, CID = "012345abcdef", 100, 200, 300
+
+
+@pytest.fixture(autouse=True)
+def evolution_guild(monkeypatch):
+    # AccessScope uses the synthetic Guild shared with the collector tests.
+    monkeypatch.setenv("BOT_GUILD_ID", str(Guild().id))
+
 
 
 class LifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -216,7 +224,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         channel.send = AsyncMock(return_value=NS(id=10, edit=AsyncMock(), delete=AsyncMock()))
         return interaction, channel
 
-    async def test_default_launch_sends_progress_and_report_to_current_channel_without_env(self):
+    async def test_default_launch_uses_current_channel_without_optional_enquete_env(self):
         interaction, channel = self.launch_interaction()
         collector = NS(collect=AsyncMock(), sources={}, visited_messages=7)
 
@@ -225,7 +233,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             path.write_text("Rapport de test", encoding="utf-8")
             return [path]
 
-        with patch.dict(os.environ, {}, clear=True), \
+        with patch.dict(os.environ, {"BOT_GUILD_ID": str(Guild().id)}, clear=True), \
              patch.object(MOD, "Collector", return_value=collector), \
              patch.object(MOD, "build_report", side_effect=export):
             await self.cog.enquete(interaction, str(TARGET))
@@ -243,7 +251,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_current_public_channel_returns_private_error_without_starting(self):
         interaction, channel = self.launch_interaction()
         channel.visible.add(interaction.guild.id)
-        with patch.dict(os.environ, {}, clear=True), patch.object(self.cog, "_run") as run:
+        with patch.dict(os.environ, {"BOT_GUILD_ID": str(Guild().id)}, clear=True), patch.object(self.cog, "_run") as run:
             await self.cog.enquete(interaction, str(TARGET))
         run.assert_not_called()
         channel.send.assert_not_awaited()
@@ -255,7 +263,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_direct_message_launch_is_rejected(self):
         interaction, channel = self.launch_interaction()
         interaction.guild = None
-        with patch.dict(os.environ, {}, clear=True), patch.object(self.cog, "_run") as run:
+        with patch.dict(os.environ, {"BOT_GUILD_ID": str(Guild().id)}, clear=True), patch.object(self.cog, "_run") as run:
             await self.cog.enquete(interaction, str(TARGET))
         run.assert_not_called()
         channel.send.assert_not_awaited()

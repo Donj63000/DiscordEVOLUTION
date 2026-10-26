@@ -7,6 +7,7 @@ import os
 import logging
 
 from utils.channel_resolver import resolve_text_channel
+from utils.guild_scope import GuildScopeError, get_allowed_guild_id, require_guild
 
 MODEL = "gpt-5.6-luna"
 NANO = 1_000_000_000
@@ -19,6 +20,7 @@ class EvoError(Exception):
 
 def resolve_console_channel(guild):
     """Je retrouve la console du serveur avec les noms de configuration existants."""
+    require_guild(guild)
     for name_env in ("CHANNEL_CONSOLE", "CONSOLE_CHANNEL_NAME"):
         channel = resolve_text_channel(
             guild, id_env="CHANNEL_CONSOLE_ID", name_env=name_env,
@@ -141,16 +143,11 @@ class EvoConfig:
         key = os.getenv("OPENAI_API_KEY", "").strip()
         if not key:
             raise EvoError("OPENAI_API_KEY manque dans la configuration Render.")
-        configured_guilds = ids("EVO_GUILD_ID")
+        try:
+            guild_id = get_allowed_guild_id()
+        except GuildScopeError as exc:
+            raise EvoError(str(exc)) from None
         available_guilds = {guild.id for guild in guilds}
-        if not configured_guilds:
-            if len(available_guilds) != 1:
-                raise EvoError("Configure EVO_GUILD_ID lorsque le bot rejoint plusieurs serveurs.")
-            configured_guilds = frozenset(available_guilds)
-            log.debug("evo configuration inferred guild_id=%s", next(iter(configured_guilds)))
-        if len(configured_guilds) != 1:
-            raise EvoError("EVO_GUILD_ID doit désigner un seul serveur.")
-        guild_id = next(iter(configured_guilds))
         if available_guilds and guild_id not in available_guilds:
             raise EvoError("Le serveur configuré pour Evo n'est pas accessible au bot.")
         channels = ids("EVO_CHANNEL_IDS")

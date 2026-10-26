@@ -7,6 +7,7 @@ import pytest
 import pytest_asyncio
 
 from job import JobCog, STAFF_ROLE_NAME
+from utils.guild_scope import GuildScopeError
 
 
 class FakeContext:
@@ -221,7 +222,12 @@ async def test_job_submission_preserves_other_confirmation_scopes(
     other_author = SimpleNamespace(id=author_id, display_name="Hero", roles=[])
     other_ctx = FakeContext(other_author, guild_id=guild_id, channel_id=channel_id)
 
-    await invoke_job(job_cog, other_ctx, "Mineur", "100")
+    if guild_id != 1:
+        with pytest.raises(GuildScopeError):
+            await invoke_job(job_cog, other_ctx, "Mineur", "100")
+        assert not other_ctx.sent_messages
+    else:
+        await invoke_job(job_cog, other_ctx, "Mineur", "100")
 
     assert not previous.done()
     assert not previous_waiter.done()
@@ -229,8 +235,13 @@ async def test_job_submission_preserves_other_confirmation_scopes(
     await asyncio.wait_for(previous, timeout=2.0)
     assert previous_ctx.sent_messages[-1].embed.title == "Confirmation expirée"
     assert "Métier précédent" in previous_ctx.sent_messages[-1].embed.description
-    assert job_cog.jobs_data[str(author_id)]["jobs"] == {"Mineur": 100}
-    job_cog.save_data_local.assert_called_once_with()
+    if guild_id != 1:
+        assert not job_cog.jobs_data
+        job_cog.save_data_local.assert_not_called()
+        job_cog.dump_data_to_console.assert_not_awaited()
+    else:
+        assert job_cog.jobs_data[str(author_id)]["jobs"] == {"Mineur": 100}
+        job_cog.save_data_local.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -535,7 +546,7 @@ async def test_clear_console_ignores_delete_api_error(job_cog):
 
 @pytest.mark.asyncio
 async def test_on_member_remove_deletes_entry_and_persists(job_cog):
-    guild = SimpleNamespace(id=77)
+    guild = SimpleNamespace(id=1)
     member = SimpleNamespace(id=444, display_name="Crafter", guild=guild)
     job_cog.jobs_data = {
         "444": {
@@ -555,7 +566,7 @@ async def test_on_member_remove_deletes_entry_and_persists(job_cog):
 
 @pytest.mark.asyncio
 async def test_on_member_remove_without_match_skips_persistence(job_cog):
-    guild = SimpleNamespace(id=88)
+    guild = SimpleNamespace(id=1)
     member = SimpleNamespace(id=999, display_name="Absent", guild=guild)
     job_cog.jobs_data = {
         "123": {
@@ -617,3 +628,16 @@ async def test_initialize_data_uses_local_fallback_when_enabled(monkeypatch, tmp
     assert cog.jobs_data["123"]["name"] == "Local"
     assert cog.jobs_data["123"]["jobs"]["Mineur"] == 20
     cog.migrate_legacy_keys.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_foreign_departure_preserves_jobs_and_does_not_persist(job_cog):
+    member = SimpleNamespace(id=444, display_name="Crafter", guild=SimpleNamespace(id=2))
+    record = {"name": "Crafter", "jobs": {"Mineur": 80}}
+    job_cog.jobs_data = {"444": record.copy()}
+    job_cog.save_data_local = Mock()
+    job_cog.dump_data_to_console = AsyncMock()
+    await job_cog.on_member_remove(member)
+    assert job_cog.jobs_data == {"444": record}
+    job_cog.save_data_local.assert_not_called()
+    job_cog.dump_data_to_console.assert_not_awaited()

@@ -9,7 +9,7 @@ from utils.evo_config import EvoConfig, EvoError, resolve_console_channel
 
 class ConfigTests(unittest.TestCase):
     def setUp(self):
-        env = patch.dict(os.environ, {"OPENAI_API_KEY": "unit-test-placeholder"}, clear=True)
+        env = patch.dict(os.environ, {"BOT_GUILD_ID": "1", "OPENAI_API_KEY": "unit-test-placeholder"}, clear=True)
         env.start()
         self.addCleanup(env.stop)
         self.guild = Guild()
@@ -21,15 +21,22 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.channel_ids, frozenset())
         self.assertEqual(settings.model, "gpt-5.6-luna")
 
-    def test_multiple_guilds_require_an_explicit_choice(self):
+    def test_missing_bot_guild_is_rejected_even_with_a_single_cached_guild(self):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "unit-test-placeholder"}, clear=True):
+            with self.assertRaisesRegex(EvoError, "BOT_GUILD_ID"):
+                EvoConfig.from_env(guilds=[self.guild])
+
+    def test_multiple_cached_guilds_use_only_the_explicit_bot_scope(self):
         guilds = [self.guild, Guild(9)]
-        with self.assertRaisesRegex(EvoError, "EVO_GUILD_ID"):
-            EvoConfig.from_env(guilds=guilds)
+        self.assertEqual(EvoConfig.from_env(guilds=guilds).guild_id, 1)
         with patch.dict(os.environ, {"EVO_GUILD_ID": "9"}):
+            with self.assertRaisesRegex(EvoError, "correspondre"):
+                EvoConfig.from_env(guilds=guilds)
+        with patch.dict(os.environ, {"BOT_GUILD_ID": "9", "EVO_GUILD_ID": "9"}):
             self.assertEqual(EvoConfig.from_env(guilds=guilds).guild_id, 9)
 
     def test_unknown_configured_guild_is_rejected(self):
-        with patch.dict(os.environ, {"EVO_GUILD_ID": "9"}):
+        with patch.dict(os.environ, {"BOT_GUILD_ID": "9", "EVO_GUILD_ID": "9"}):
             with self.assertRaisesRegex(EvoError, "accessible"):
                 EvoConfig.from_env(guilds=[self.guild])
 

@@ -20,7 +20,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(config().monthly_nano, 2_000_000_000)
 
     def test_render_needs_no_database(self):
-        env = {"OPENAI_API_KEY": "placeholder", "EVO_GUILD_ID": "1", "EVO_CHANNEL_IDS": "10",
+        env = {"BOT_GUILD_ID": "1", "OPENAI_API_KEY": "placeholder", "EVO_GUILD_ID": "1", "EVO_CHANNEL_IDS": "10",
                "RENDER": "true", "DATABASE_URL": "ignored", "EVO_SQLITE_PATH": "ignored"}
         with patch.dict(os.environ, env, clear=True):
             self.assertEqual(EvoConfig.from_env().guild_id, 1)
@@ -30,7 +30,7 @@ class ConfigurationTests(unittest.TestCase):
             EvoConfig.from_env()
 
     def test_invalid_numeric_settings(self):
-        base = {"OPENAI_API_KEY": "placeholder", "EVO_GUILD_ID": "1", "EVO_CHANNEL_IDS": "10",
+        base = {"BOT_GUILD_ID": "1", "OPENAI_API_KEY": "placeholder", "EVO_GUILD_ID": "1", "EVO_CHANNEL_IDS": "10",
                 "RENDER": "true"}
         for key, value in (("EVO_MONTHLY_USD", "NaN"), ("EVO_MONTHLY_USD", "-2"),
                            ("EVO_MAX_OUTPUT_TOKENS", "10000"),
